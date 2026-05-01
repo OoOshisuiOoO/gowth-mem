@@ -15,8 +15,8 @@
         "name": "duynguyen"
       },
       "source": {
-        "source": "url",
-        "url": "https://github.com/OoOshisuiOoO/gowth-mem.git"
+        "source": "github",
+        "repo": "OoOshisuiOoO/gowth-mem"
       },
       "category": "memory",
       "homepage": "https://github.com/OoOshisuiOoO/gowth-mem",
