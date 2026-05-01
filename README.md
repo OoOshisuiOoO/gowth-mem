@@ -145,6 +145,34 @@ Each user prompt triggers `recall-active.py`:
 8. Updates `.gowth-mem/state.json` with `last_seen` for surfaced paths.
 9. Outputs up to 3-4 distinct files (3 lines each).
 
+## v0.8 improvements (English-only short keyword shortcuts)
+
+Drop Vietnamese natural-language detection. Add OMC-style 4-char shortcut keywords at start of prompt for explicit, low-false-positive triggering.
+
+**Shortcut keywords** (English-only, must appear at start of prompt):
+
+| Type | Triggers |
+|---|---|
+| `mems` | mem-save (save current decision/fact/lesson) |
+| `memd` | mem-distill (chắt lọc journal → exp/ref/tools) |
+| `memr` | mem-reflect (recap / reflections from journal) |
+| `memk` | mem-skillify (extract recurring workflow → docs/skills/) |
+| `memb` | mem-bootstrap (3-line: doing / next / blocker) |
+| `memh` | mem-hyde-recall (HyDE for conceptual queries) |
+| `memj` | mem-journal (open today's journal) |
+| `memx` | mem-reindex (rebuild SQLite index) |
+| `memc` | mem-cost (estimate bootstrap tokens) |
+
+**Examples**:
+```
+mems decided to use EMA cross strategy   → auto-saves to docs/exp.md
+memb                                      → 3-line status summary
+memh how do we handle plugin installs?    → HyDE recall
+memk this build-test-commit loop          → extract reusable skill
+```
+
+Plus natural English phrases as fallback (e.g. "save this", "where am I", "recap"). Vietnamese intent words no longer auto-trigger — type English shortcuts instead.
+
 ## v0.7 improvements (auto-trigger — no more manual skill invocation)
 
 Inspired by [MemPalace](https://github.com/MemPalace/mempalace)'s `mempal_save_hook.sh` (auto-mine every 15 messages) and `mempal_precompact_hook.sh` (block before compact). Adapted for the gowth-mem 4-tier markdown architecture.
