@@ -9,6 +9,10 @@
         },
         {
           "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py\" --pull-only --quiet"
+        },
+        {
+          "type": "command",
           "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/system-augment.py\""
         }
       ]
@@ -21,6 +25,21 @@
         {
           "type": "command",
           "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/precompact-flush.py\""
+        },
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py\" --commit-only --quiet"
+        }
+      ]
+    }
+  ],
+  "PostCompact": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py\" --pull-rebase-push --quiet"
         }
       ]
     }
@@ -29,6 +48,10 @@
     {
       "matcher": "*",
       "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/conflict-detect.py\""
+        },
         {
           "type": "command",
           "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/recall-active.py\""

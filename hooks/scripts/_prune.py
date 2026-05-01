@@ -1,38 +1,29 @@
 #!/usr/bin/env python3
-"""Active prune: DELETE outdated / superseded / duplicate entries from docs/*.md.
-
-Differs from mempalace `invalidate()` (which only sets `valid_to` and keeps the
-row): this script actively removes lines that match strict outdated criteria.
-Per user direction: outdated knowledge = noise, must go.
-
-Pruning rules (line-level, in order):
-  1. Lines with `valid_until: YYYY-MM-DD` where date < today          → DELETE
-  2. Lines containing `(superseded)` (case-insensitive)               → DELETE
-  3. Lines containing `(deprecated)` or `(obsolete)`                  → DELETE
-  4. Lines with `version: X` where X is in DEPRECATED_VERSIONS env    → DELETE
-  5. Within-file near-duplicate entry lines (Jaccard ≥ 0.85)          → DELETE shorter
+"""Active prune (v2.0): DELETE outdated/superseded/duplicate entries from
+~/.gowth-mem/topics/**/*.md and docs/*.md.
 
 Skips:
-  - docs/journal/**/*.md (raw journal is permanent log; don't prune)
-  - Lines outside entry pattern (`- [type]` or section headers)
+  - journal/**  (raw log is permanent)
+  - _index.md   (auto-regenerated)
 
-Usage:
-  python3 _prune.py [--workspace PATH] [--dry-run]
+Rules (line-level, in order):
+  1. Lines with `valid_until: YYYY-MM-DD` past today  → DELETE
+  2. Lines with `(superseded|deprecated|obsolete)`     → DELETE
+  3. Within-file Jaccard ≥ 0.85 duplicates             → DELETE shorter
 
-Output:
-  Reports per-file: deleted N entries (kept M).
+All writes use atomic_write.
 """
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _paths import docs_root  # type: ignore
+from _atomic import atomic_write  # type: ignore
+from _home import docs_dir, gowth_home, topics_dir  # type: ignore
 
 ENTRY_RE = re.compile(r"^\s*[-*]\s+\[")
 VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
@@ -48,7 +39,6 @@ def jaccard(a: str, b: str) -> float:
 
 
 def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
-    """Return (deleted, kept) entry counts for a single file."""
     try:
         text = path.read_text()
     except Exception:
@@ -62,8 +52,6 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
     i = 0
     while i < len(lines):
         line = lines[i]
-
-        # Group an entry with its continuation lines (indented under it).
         if ENTRY_RE.match(line):
             entry_block = [line]
             j = i + 1
@@ -72,7 +60,6 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
                 j += 1
             entry_text = "\n".join(entry_block)
 
-            # Rule 1+2+3: temporal / superseded / deprecated → DELETE
             drop = False
             m = VALID_UNTIL_RE.search(entry_text)
             if m and m.group(1) < today_iso:
@@ -80,13 +67,10 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
             elif SUPERSEDED_RE.search(entry_text):
                 drop = True
 
-            # Rule 5: dedup within file
             if not drop:
                 for prev in kept_entries:
                     if jaccard(entry_text, prev) >= 0.85:
-                        # Keep the longer one; replace prev if new is longer.
                         if len(entry_text) > len(prev):
-                            # Remove prev from kept_lines
                             prev_block_lines = prev.split("\n")
                             for prev_line in prev_block_lines:
                                 if prev_line in kept_lines:
@@ -109,31 +93,43 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
 
     new_text = "\n".join(kept_lines)
     if new_text != text and not dry_run:
-        path.write_text(new_text)
+        atomic_write(path, new_text)
     return (deleted, len(kept_entries))
+
+
+def collect_files() -> list[Path]:
+    out: list[Path] = []
+    td = topics_dir()
+    if td.is_dir():
+        out.extend(p for p in td.rglob("*.md") if p.is_file() and p.name != "_index.md")
+    dd = docs_dir()
+    if dd.is_dir():
+        out.extend(p for p in dd.glob("*.md") if p.is_file())
+    return sorted(out)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workspace", default=None)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
-    workspace = Path(args.workspace or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    docs = docs_root(workspace)
-    if not docs.is_dir():
-        print(f"no docs/ directory at {docs}; nothing to prune")
+
+    gh = gowth_home()
+    if not gh.is_dir():
+        print(f"no ~/.gowth-mem directory; nothing to prune")
         return 0
 
     today_iso = date.today().isoformat()
     total_deleted = 0
     total_kept = 0
     affected: list[tuple[str, int, int]] = []
-    for f in sorted(docs.rglob("*.md")):
-        if "journal" in f.parts:
-            continue
+    for f in collect_files():
         deleted, kept = prune_file(f, args.dry_run, today_iso)
         if deleted > 0:
-            affected.append((str(f.relative_to(workspace)), deleted, kept))
+            try:
+                rel = str(f.relative_to(gh))
+            except ValueError:
+                rel = str(f)
+            affected.append((rel, deleted, kept))
         total_deleted += deleted
         total_kept += kept
 

@@ -1,82 +1,48 @@
-# openclaw-bridge / gowth-mem
+# gowth-mem
 
-OpenClaw-inspired **5-tier memory pipeline** for Claude Code that mirrors human cognition. Pairs with [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) for knowledge-graph layers.
+A Claude Code plugin for **persistent, topic-organized memory** synced across machines via your own git remote. Hooks the chat lifecycle so memory saves itself.
 
-Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, Generative Agents, Voyager, Reflexion, Anthropic contextual retrieval, and SM-2 spaced repetition. See [`RESEARCH.md`](RESEARCH.md) for the full catalog.
+Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Agents, Voyager, Reflexion, Anthropic contextual retrieval, and SM-2 spaced repetition. See [`RESEARCH.md`](RESEARCH.md).
 
-## Why
+## Why v2.0
 
-Single-file `CLAUDE.md` mixes voice, rules, and memory. Role-based split is better but still doesn't reflect how humans consolidate knowledge: **observe → curate → organize by topic → crystallize**. This plugin gives Claude Code that pipeline plus a procedural-skill library, contextual recall, and forgetting-curve resurfacing.
+v1.0 stored memory in `<workspace>/.gowth-mem/` — one folder per project. That's wrong for how knowledge actually works:
 
-## 5-tier architecture
+- **Knowledge is cross-project.** A fact learned in `AI-trade/` is useful in `bot/`. Per-workspace silos force re-discovery.
+- **You think in topics, not folders.** "EMA strategy", "Claude hooks", "Bash gotchas" — single global pool indexed by topic > N project pools.
+- **Multiple Claude sessions run in parallel.** A global pool exposes write races; we need locks.
+- **Compact is the natural sync point.** Pulling/pushing around `/compact` keeps every machine current with no manual `/mem-sync`.
+- **Conflicts shouldn't break recall.** Plain `<<<<<<<` markers in markdown break FTS5; we want Claude to read both versions, ask the user, and apply.
+
+v2.0 = single global memory at `~/.gowth-mem/`, organized by **topic**, safe under parallel sessions, auto-syncing every compact, AI-mediated conflict resolution.
+
+## Architecture
 
 ```
-Tier A — Procedural skill library          docs/skills/<name>.md
-   (Voyager pattern: invoke skill ≪ replay long instructions)
-
-Tier 1 — Raw daily journal                  docs/journal/<YYYY-MM-DD>.md
-   ↓  /mem-distill   (mem0 ADD/UPDATE/DELETE/NOOP)
-Tier 2 — Curated working memory             docs/exp.md  docs/ref.md  docs/tools.md
-   ↓  /mem-reflect   (Generative Agents reflection)
-docs/exp.md § Reflections                   (high-level patterns)
-   ↓  /mem-promote <topic>
-Tier 3 — Topic deep dive                    wiki/topics/<Topic>.md
-   ↓  /save (claude-obsidian)
-Tier 4 — Atomic concepts                    wiki/concepts/<atom>.md
-
-Always-on (state/config):
-   docs/handoff.md   docs/secrets.md   docs/files.md
+~/.gowth-mem/                   single location across all projects
+├── AGENTS.md                   operating rules (synced)
+├── settings.json               plugin behavior (synced)
+├── config.json                 remote+token (gitignored, per-machine)
+├── state.json                  SRS data (gitignored, per-machine)
+├── index.db                    FTS5+vec search (gitignored, per-machine)
+├── .git/                       sync target
+├── .locks/                     fcntl locks (gitignored)
+├── topics/                     ★ topic-organized knowledge
+│   ├── _index.md               topic registry
+│   └── <slug>.md               one file per topic
+├── docs/                       cross-topic registries
+│   ├── handoff.md              session state (host:<name> prefix per line)
+│   ├── secrets.md              POINTER only (env-var names, never values)
+│   └── tools.md                cross-topic tool quirks
+├── journal/<date>.md           raw daily logs (synced)
+└── skills/<slug>.md            Voyager workflows (synced)
 ```
 
-Each tier filters noise upward. Procedural skills (Tier A) sidestep the pipeline for repeatable workflows.
+**7-type schema** at line level inside topic files: `[exp]`, `[ref]`, `[tool]`, `[decision]`, `[reflection]`, `[skill-ref]`, `[secret-ref]`. The `recall-active.py` hook auto-skips `(superseded)` and expired `valid_until: YYYY-MM-DD` entries.
 
-## What you get
+**Topic routing** (`_topic.py`): extract ≥4-char keywords, count overlap against existing `topics/*.md`, pick the slug with most overlap (≥3 common words) or create a new one from top-2 distinctive keywords.
 
-**Hooks** (6, registered in `hooks/hooks.json`):
-
-- **SessionStart × 2**: `bootstrap-load.py` (AGENTS + 6 docs/* + 2 recent journal + skills index), `system-augment.py` (cwd, git, OS, datetime).
-- **PreCompact**: `precompact-flush.py` — **HARD-BLOCKS** Claude until critical info is saved (v0.7 upgrade).
-- **UserPromptSubmit × 2**: `recall-active.py`, `user-augment.py` — auto-injects inline skill instructions on intent match (save / skillify / reflect / bootstrap).
-- **Stop** ✨ (v0.7): `auto-journal.py` — every 10 user turns, blocks Claude with auto-distill instructions (mempalace pattern). User never types `/mem-distill`.
-
-**Slash commands** (9):
-
-| Command | Purpose | Tier |
-|---|---|---|
-| `/mem-init` | Scaffold AGENTS + 6 docs/* + docs/journal/ + docs/skills/ | setup |
-| `/mem-journal` | Open today's journal | 1 |
-| `/mem-distill` | Chắt lọc journal → curated (ADD/UPDATE/DELETE/NOOP) | 1 → 2 |
-| `/mem-skillify <name>` | Extract recurring workflow (Voyager) | A |
-| `/mem-reflect` | High-level reflections across entries | 2 |
-| `/mem-promote <topic>` | Gom → wiki/topics/<Topic>.md | 2 → 3 |
-| `/mem-bootstrap` | 3-line summary: đang làm gì / step kế / blocker | summary |
-| `/mem-flush` | Manual PreCompact reminder | utility |
-| `/mem-cost` | Estimate bootstrap token footprint | utility |
-| `/mem-reindex` ✨ | Build SQLite FTS5 + (opt) sqlite-vec index | setup |
-| `/mem-hyde-recall <q>` ✨ | HyDE-pattern recall for conceptual queries | utility |
-
-**Skills** (7): `mem-save`, `mem-distill`, `mem-skillify`, `mem-reflect`, `mem-cost`, `mem-reindex`, `mem-hyde-recall`.
-
-**Subagent**: `mem-recaller` (haiku) deliberate recall across all tiers.
-
-## v0.5 improvements (token efficiency + intelligence)
-
-| Change | Source | Impact |
-|---|---|---|
-| **Temporal facts convention** | Zep `valid_at` pattern | recall auto-skips `(superseded)` and expired `valid_until: YYYY-MM-DD` entries — keeps stale facts from polluting context |
-| **SM-2-lite spaced resurfacing** | Anki / forgetting-curve | `.gowth-mem/state.json` tracks `last_seen` per file; ~25% prob per prompt resurfaces a file unseen ≥7d. Counters the forgetting curve. |
-| **Token cost estimator** `/mem-cost` | — | shows per-file char + token breakdown before `/compact`. Detects bloat early. |
-| **Provider prompt caching guidance** in AGENTS.md | Anthropic cache | restructure AGENTS / SECRETS / TOOLS as stable prefix → 75-90% discount on cached portion |
-
-## v0.4 improvements (recall quality)
-
-| Change | Source | Impact |
-|---|---|---|
-| **Contextual heading prefix** | Anthropic contextual retrieval | -49 to -67% retrieval failures |
-| **MMR diversity** | Carbonell & Goldstein | distinct files instead of clustered hits |
-| **Skill library + auto index** | Voyager (MineDojo) | -50 to -90% on recurring workflows |
-| **Generative-Agents reflection** | Stanford | 10× compression on patterns |
-| **mem0 ADD/UPDATE/DELETE/NOOP** | mem0ai/mem0 | -30 to -50% file size over time |
+**Cross-references**: `[[other-slug]]` wikilinks; the recall hook follows one hop on the top match.
 
 ## Install
 
@@ -84,7 +50,7 @@ Each tier filters noise upward. Procedural skills (Tier A) sidestep the pipeline
 git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/openclaw-bridge
 ```
 
-If your Claude Code build supports plugin discovery from `~/.claude/plugins/`, restart Claude Code. Otherwise add to `~/.claude/settings.json`:
+Restart Claude Code. If your build doesn't auto-discover plugins, add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -94,251 +60,214 @@ If your Claude Code build supports plugin discovery from `~/.claude/plugins/`, r
 }
 ```
 
-**Recommended companion**: install [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) for tiers 3 + 4.
-
-## Bootstrap your workspace
+Then run the wizard:
 
 ```
-/mem-init
+/mem-install
 ```
 
-Add `.gowth-mem/` to your workspace `.gitignore` (the SRS tracker stores per-file `last_seen` here):
+It scaffolds `~/.gowth-mem/`, asks for git remote + branch + token, writes `settings.json` + `config.json`, runs the initial `_sync.py --init`. Idempotent — re-running on an already-installed system does nothing destructive.
+
+After install:
 
 ```
-echo ".gowth-mem/" >> .gitignore
+memx                  build the search index (FTS5 + optional sqlite-vec)
+/mem-migrate-global   import any v1.0 per-workspace .gowth-mem/ folders
 ```
 
-## Daily workflow
+## Hooks
+
+| Event | Hook | What it does |
+|---|---|---|
+| SessionStart | `bootstrap-load.py` | Inject AGENTS + topics/_index + docs/handoff + top-3 recent topics + today/yesterday journal (12k/file, 60k total) |
+| SessionStart | `auto-sync.py --pull-only --quiet` | Rebase remote into local, no push |
+| SessionStart | `system-augment.py` | cwd, git, OS, datetime |
+| PreCompact | `precompact-flush.py` | **HARD-BLOCK**: distill into topics before compact summarizes |
+| PreCompact | `auto-sync.py --commit-only` | Commit local changes without network |
+| PostCompact | `auto-sync.py --pull-rebase-push` | Full sync; on conflict writes `SYNC-CONFLICT.md` |
+| UserPromptSubmit | `conflict-detect.py` | Inject reminder if `SYNC-CONFLICT.md` is pending |
+| UserPromptSubmit | `recall-active.py` | Hybrid FTS5 + vector + grep recall, MMR diversity, SRS resurfacing, wikilink follow |
+| UserPromptSubmit | `user-augment.py` | Keyword shortcuts (`mems`, `memb`, `memT`, `memI`, `memC`, …) + intent matching |
+| Stop | `auto-journal.py` | Every 10 turns: BLOCK with auto-distill instructions + active prune |
+
+Disable any of them by editing `~/.claude/plugins/openclaw-bridge/hooks/hooks.json`.
+
+## Slash commands & shortcuts
+
+| Command | Shortcut | Purpose |
+|---|---|---|
+| `/mem-install` | `memI` | First-time setup wizard |
+| `/mem-config` | `memg` | Change git remote/branch/token |
+| `/mem-sync` | `memy` | Manual sync (auto runs on PostCompact) |
+| `/mem-sync-resolve` | `memC` | AI-mediated conflict resolution |
+| `/mem-migrate-global` | `memm` | v1.0 per-workspace → v2.0 global |
+| `/mem-migrate` | — | (legacy) v0.9 → v1.0 |
+| `/mem-init` | — | (deprecated stub; use `/mem-install`) |
+| `/mem-topic` | `memT` | List / inspect / route topics |
+| `/mem-save` (skill) | `mems` | Save entry to topic + apply mem0 op |
+| `/mem-distill` | `memd` | Journal → topics |
+| `/mem-reflect` | `memr` | Generate reflections |
+| `/mem-skillify` | `memk` | Extract reusable workflow |
+| `/mem-bootstrap` | `memb` | 3-line: doing/next/blocker |
+| `/mem-hyde-recall` | `memh` | HyDE retrieval for conceptual queries |
+| `/mem-journal` | `memj` | Open today's journal |
+| `/mem-reindex` | `memx` | Rebuild SQLite FTS5+vec index |
+| `/mem-cost` | `memc` | Estimate bootstrap token footprint |
+| `/mem-prune` | `memp` | Active DELETE outdated/superseded/duplicate |
+| `/mem-flush` | — | Manual PreCompact reminder |
+| `/mem-promote` | — | Topic → split into subdir when >1500 lines |
+
+Shortcuts are matched at start of prompt, e.g. `mems decided to use EMA cross strategy`.
+
+## Multi-session safety
+
+Concurrent Claude sessions writing to `~/.gowth-mem/` are protected by:
+
+1. **`fcntl.flock` advisory locks** under `~/.gowth-mem/.locks/`:
+   - `sync.lock` serializes git operations across sessions (timeout 30s).
+   - `state.lock` serializes `state.json` (SRS) updates (timeout 5s).
+2. **Atomic markdown writes** via `_atomic.atomic_write` (tempfile + `os.replace`) — no half-written files.
+3. **SQLite WAL mode** + `busy_timeout=5000` on `index.db` — concurrent readers don't block writes.
+
+Hook variants of sync skip silently if the lock is held (don't fail the hook). The CLI `/mem-sync` waits up to 30s.
+
+Windows note: `fcntl` unavailable → locks are no-ops; assume single-session use.
+
+## Auto pull/push around compact
 
 ```
-1. Throughout the day:
-   /mem-journal              → append to docs/journal/<today>.md
-
-2. Workflow repeated 2+ times:
-   /mem-skillify build-bot   → extract to docs/skills/build-bot.md
-
-3. End of session OR before /compact:
-   /mem-distill              → chắt lọc journal → docs/exp/ref/tools (ADD/UPDATE/DELETE/NOOP)
-   /mem-cost                 → verify bootstrap shrunk
-
-4. Weekly:
-   /mem-reflect              → 1-3 high-level reflections to docs/exp.md § Reflections
-
-5. Topic accumulates 3+ entries:
-   /mem-promote "EMA Cross"  → wiki/topics/EMA Cross.md with [[wikilinks]]
-
-6. Topic stabilizes:
-   /save (claude-obsidian)   → wiki/concepts/ (canonical)
+SessionStart  → auto-sync.py --pull-only         (rebase remote into local; quiet)
+PreCompact    → auto-sync.py --commit-only       (snapshot before compact summarizes)
+PostCompact   → auto-sync.py --pull-rebase-push  (full sync; AI conflict on collision)
 ```
 
-## How recall works (v0.5)
+So the typical flow:
+
+1. You work; entries get saved into `topics/<slug>.md` via `mems` or auto-distill on Stop hook.
+2. You run `/compact`. PreCompact commits local. Compact summarizes the conversation.
+3. After compact, PostCompact pulls latest from remote, rebases your commit on top, pushes. Other machines see your changes on their next SessionStart.
+4. If two machines committed to the same line, PostCompact writes `SYNC-CONFLICT.md` and the next prompt nudges you to run `/mem-sync-resolve`.
+
+Toggle each step in `settings.json` under `auto_sync`.
+
+## AI-mediated conflict resolution
+
+When `git pull --rebase` hits a conflict, `_conflict.py` does **not** leave raw `<<<<<<<` markers in your topic files (which would corrupt FTS5 indexing). Instead:
+
+1. Resets the working copy to the local side so files stay parseable.
+2. Writes `~/.gowth-mem/SYNC-CONFLICT.md` with structured diffs per file (local / remote / common ancestor).
+3. Exits with code 2.
+
+The `conflict-detect.py` hook then reminds you on every prompt: "run `/mem-sync-resolve`". The skill walks each file, asks **keep-local | keep-remote | merge | skip | abort**, applies your choice via `atomic_write`, then `git rebase --continue` + push under `file_lock("sync")`.
+
+You stay in control of every keep/merge decision; AI handles diff presentation, merge proposal, and mechanical git steps.
+
+## Migration
+
+### v1.0 per-workspace → v2.0 global
+
+```
+/mem-migrate-global
+```
+
+The skill scans `~/Git/**` (or paths you provide) for `<ws>/.gowth-mem/AGENTS.md` markers. For each found:
+
+- `docs/{exp,ref,tools}.md` lines → routed to `~/.gowth-mem/topics/<slug>.md` via `_topic.py` (with `Source: <ws>/<file>` provenance).
+- `docs/handoff.md` lines → `~/.gowth-mem/docs/handoff.md` prefixed `host:<ws>`.
+- `docs/secrets.md` → dedup by env-var name.
+- `journal/`, `skills/` → copied (collisions renamed `-from-<ws>`, dedup by slug).
+
+Per-workspace `.gowth-mem/` folders are **left intact**; you remove them manually after verifying.
+
+### v0.9 → v1.0 (legacy)
+
+`/mem-migrate` still works for the older single-tier layout but is rarely needed.
+
+## Recall
 
 Each user prompt triggers `recall-active.py`:
 
-1. Extracts ≥5-char keywords.
-2. Greps `docs/**/*.md` and `wiki/**/*.md`.
-3. **Skips temporal-invalid lines**: `(superseded)` or expired `valid_until:`.
-4. For each match, finds nearest preceding markdown heading → `§ heading | line`.
-5. Tier-scores files: `journal/today (100)` > `journal/yesterday (80)` > `docs/* (60)` > `journal/older (50)` > `wiki/* (30)`.
-6. Applies MMR-style word-overlap penalty (Jaccard >0.6 skipped).
-7. **Spaced resurfacing**: with ~25% prob, appends 1 file unseen ≥7 days.
-8. Updates `.gowth-mem/state.json` with `last_seen` for surfaced paths.
-9. Outputs up to 3-4 distinct files (3 lines each).
+1. Extract ≥5-char keywords (max 8).
+2. **If `index.db` exists**: hybrid FTS5 BM25 + (optional) sqlite-vec, RRF-merged at k=60.
+3. **Else**: grep `topics/**/*.md` and `docs/*.md` (skips `journal/`).
+4. Skip lines with `(superseded)` or expired `valid_until:`.
+5. Tier-score: `journal/today (100)` > `topics/* (80)` > `journal/yesterday (70)` > `docs/* (60)` > `skills/ (40)` > everything else.
+6. Anthropic contextual prefix: `§ <heading> | <line>` for each match.
+7. MMR diversity: skip files whose top match has Jaccard >0.6 with already-selected.
+8. **Wikilink follow**: if top hit references `[[other-slug]]`, also surface that topic's top match.
+9. **Spaced resurfacing**: ~25% probability/prompt, surface a file unseen ≥7 days.
+10. Update `state.json` `last_seen` for surfaced paths (under `file_lock("state")`).
 
-## v1.0 improvements (centralized .gowth-mem/ + git sync across machines)
+## Token efficiency
 
-Per user direction: **all gowth-mem state in one folder, syncable across machines via user-owned git remote**. Conflict-resolution built in.
+- **Stable prefix** (rarely changes): AGENTS.md, docs/secrets.md, docs/tools.md, topics/_index.md → cached by Anthropic at 75-90% discount.
+- **Volatile suffix**: docs/handoff.md, journal/today.md, retrieved snippets → low cost anyway.
+- Caps: 12k chars/file, 60k total.
 
-### Layout
+## Token security
 
-```
-<workspace>/
-├── .gowth-mem/                 ← everything centralized
-│   ├── AGENTS.md               (synced)
-│   ├── docs/
-│   │   ├── handoff.md          (synced)
-│   │   ├── exp.md              (synced)
-│   │   ├── ref.md              (synced)
-│   │   ├── tools.md            (synced)
-│   │   ├── secrets.md          (synced — POINTERS only, never values)
-│   │   ├── files.md            (synced)
-│   │   ├── journal/<date>.md   (synced — daily logs)
-│   │   └── skills/<name>.md    (synced — Voyager workflows)
-│   ├── settings.json           (synced — plugin behavior)
-│   ├── config.json             (gitignored — git remote + token)
-│   ├── state.json              (gitignored — per-machine SRS)
-│   ├── index.db                (gitignored — per-machine FTS5/vector)
-│   ├── .gitignore              (auto-created)
-│   └── .git/                   (sync target)
-└── (your project source)
-```
+- Best: `export GOWTH_MEM_GIT_TOKEN=ghp_xxxx` in shell rc.
+- OK: `config.json["token"]` (gitignored, plaintext on disk; use a fine-scoped GitHub PAT).
+- Never: commit a token into a synced file.
+- Secrets in topics/docs: POINTER only (env-var names + how to obtain). The `secrets.md` file is synced — never put real values there.
 
-### Setup flow
+## Layout cooperation with claude-obsidian
 
-```bash
-# Fresh workspace, machine A:
-/mem-init                          # scaffold .gowth-mem/ centralized layout
-/mem-config                        # set git remote URL + branch
-export GOWTH_MEM_GIT_TOKEN=ghp_... # optional, recommended via env
-/mem-sync --init                   # create .git, push initial state
-memx                               # build search index
+If you also use [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian), it owns `<workspace>/wiki/`. The two layers don't conflict:
 
-# Existing v0.9 workspace, migrate:
-/mem-migrate                       # move workspace AGENTS.md + docs/ → .gowth-mem/
+- gowth-mem owns `~/.gowth-mem/` (global, per-user).
+- claude-obsidian owns `<workspace>/wiki/` (per-project knowledge graph).
+- Both inject SessionStart context; their additionalContext blocks compose without collision.
 
-# New machine B (after A pushed):
-git clone <REMOTE> .gowth-mem      # pull synced content
-/mem-config                        # configure remote+token locally
-memx                               # rebuild local index (per-machine)
+For long-term, project-bound knowledge: `/save` (claude-obsidian) into `wiki/concepts/`. For cross-project knowledge: stays in `~/.gowth-mem/topics/`.
 
-# Daily:
-memy                               # sync (commit + pull rebase + push)
-```
+## Settings
 
-### Conflict resolution
+`~/.gowth-mem/settings.json` (synced — change once, applies on every machine):
 
-`/mem-sync` uses `git pull --rebase`. On conflict:
-
-1. Script writes `.gowth-mem/SYNC-CONFLICT.md` listing affected files.
-2. Open each file, resolve `<<<<<<<` markers manually.
-3. `git -C .gowth-mem add <file>` → `git -C .gowth-mem rebase --continue`
-4. Re-run `memy`.
-
-Abort entirely with `git -C .gowth-mem rebase --abort` (local changes preserved).
-
-### What's NEW in v1.0
-
-| Component | Notes |
-|---|---|
-| `_paths.py` helper | auto-detects v1.0 vs v0.9 layout; backward-compatible fallback |
-| `_sync.py` | git init / pull --rebase / push with token auth, conflict-aware |
-| `/mem-sync` (`memy`) | full sync cycle |
-| `/mem-config` (`memg`) | set up remote + branch + token |
-| `/mem-migrate` (`memm`) | one-shot v0.9 → v1.0 migration |
-| `templates/dot-gowth-mem/` | example config.json + settings.json |
-| Backward-compat | hooks fall back to workspace `AGENTS.md` + `docs/` if `.gowth-mem/` absent |
-
-### Token security
-
-- **Preferred**: `export GOWTH_MEM_GIT_TOKEN=ghp_xxxx` in shell profile.
-- Fallback: `token` field in `.gowth-mem/config.json` — gitignored so never synced, but plaintext on disk. Use a fine-scoped GitHub PAT (only `repo` scope).
-- For SSH (`git@github.com:USER/REPO.git`), no token needed if SSH key is set up.
-
-### What does NOT sync (per-machine state)
-
-- `config.json` — your token + remote
-- `state.json` — SRS tracker (per-machine turn counter, last_seen)
-- `index.db` — FTS5/vector index (rebuild with `memx` after clone)
-
-This way each machine has its own search index + read history without conflicts.
-
-## v0.9 improvements (strict schema + active auto-delete)
-
-Inspired by deeper read of [MemPalace](https://github.com/MemPalace/mempalace) — their `general_extractor.py` (5 memory types + noise rejection rules), `dedup.py` (length-biased near-duplicate removal), and `knowledge_graph.invalidate()` (temporal validity windows). gowth-mem v0.9 adapts these but goes **stricter**: per user direction, outdated knowledge is **DELETED** (not invalidated/preserved). Audit trail lives in `git log`.
-
-**Strict 7-type schema** — every entry MUST start with a `[type]` prefix:
-
-| Prefix | Goes to | For |
-|---|---|---|
-| `[decision]` | docs/exp.md § Decisions | choice + rationale |
-| `[preference]` | docs/exp.md § Preferences | always X / never Y |
-| `[milestone]` | docs/exp.md § Milestones | working solution |
-| `[problem]` | docs/exp.md § Problems | bug / failure / fix |
-| `[fact]` | docs/ref.md (Source REQUIRED) | verified external fact |
-| `[tool]` | docs/tools.md | syntax / gotcha / version |
-| `[secret-ref]` | docs/secrets.md (POINTER only, NEVER value) | env-var / file / resource |
-
-**Quality gates** (mempalace `general_extractor` pattern) — `mem-distill` rejects entries that fail any:
-- < 20 chars → DROP
-- Code-only (no prose) → DROP
-- `[fact]` without Source → DROP or downgrade to `[problem]` with `(needs source)`
-- Vague / hedged ("maybe", "I think") without backing → DROP
-- Jaccard ≥ 0.85 with existing entry → NOOP
-
-**Active auto-DELETE** (v0.9 NEW — diverges from mempalace's invalidate-only philosophy):
-
-`mem-prune` (`/mem-prune` or shortcut `memp`) actively removes entries from `docs/*.md`:
-1. `valid_until: <past-date>` → DELETE
-2. `(superseded)` / `(deprecated)` / `(obsolete)` markers → DELETE
-3. Within-file Jaccard ≥ 0.85 duplicate → DELETE shorter, keep longer
-
-Skips `docs/journal/**` (raw log is permanent).
-
-**Auto-prune in Stop hook**: `auto-journal.py` now runs `_prune.py` synchronously every 10 turns before yielding. Combined with auto-distill, this keeps working memory lean without manual intervention.
-
-## v0.8 improvements (English-only short keyword shortcuts)
-
-Drop Vietnamese natural-language detection. Add OMC-style 4-char shortcut keywords at start of prompt for explicit, low-false-positive triggering.
-
-**Shortcut keywords** (English-only, must appear at start of prompt):
-
-| Type | Triggers |
-|---|---|
-| `mems` | mem-save (save current decision/fact/lesson) |
-| `memd` | mem-distill (chắt lọc journal → exp/ref/tools) |
-| `memr` | mem-reflect (recap / reflections from journal) |
-| `memk` | mem-skillify (extract recurring workflow → docs/skills/) |
-| `memb` | mem-bootstrap (3-line: doing / next / blocker) |
-| `memh` | mem-hyde-recall (HyDE for conceptual queries) |
-| `memj` | mem-journal (open today's journal) |
-| `memx` | mem-reindex (rebuild SQLite index) |
-| `memc` | mem-cost (estimate bootstrap tokens) |
-| `memp` | mem-prune (actively DELETE outdated entries) |
-| `memy` | mem-sync (git pull-rebase-push for `.gowth-mem/`) |
-| `memg` | mem-config (set up git remote + branch + token) |
-| `memm` | mem-migrate (one-shot v0.9 → v1.0 layout migration) |
-
-**Examples**:
-```
-mems decided to use EMA cross strategy   → auto-saves to docs/exp.md
-memb                                      → 3-line status summary
-memh how do we handle plugin installs?    → HyDE recall
-memk this build-test-commit loop          → extract reusable skill
+```json
+{
+  "version": "2.0",
+  "auto_sync": {
+    "on_session_start": true,
+    "on_pre_compact": true,
+    "on_post_compact": true,
+    "on_stop_every_n_turns": 10
+  },
+  "topic_routing": {
+    "min_keyword_overlap": 3,
+    "default_topic": "misc"
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small"
+  },
+  "recall": {
+    "max_chars_per_file": 12000,
+    "max_total_chars": 60000,
+    "wikilink_follow": true
+  },
+  "conflict_resolution": { "mode": "ai-mediated" }
+}
 ```
 
-Plus natural English phrases as fallback (e.g. "save this", "where am I", "recap"). Vietnamese intent words no longer auto-trigger — type English shortcuts instead.
+## Changelog (high level)
 
-## v0.7 improvements (auto-trigger — no more manual skill invocation)
-
-Inspired by [MemPalace](https://github.com/MemPalace/mempalace)'s `mempal_save_hook.sh` (auto-mine every 15 messages) and `mempal_precompact_hook.sh` (block before compact). Adapted for the gowth-mem 4-tier markdown architecture.
-
-| Change | Source | Impact |
-|---|---|---|
-| **Stop hook auto-journal** every 10 user turns | mempalace | replaces manual `/mem-distill`. Hook BLOCKS with detailed inline instructions for Claude to scan recent turns + apply mem0 ADD/UPDATE/DELETE/NOOP to docs/exp.md / ref.md / tools.md. |
-| **PreCompact upgraded to BLOCK** (was advisory) | mempalace | enforces save before compact instead of just suggesting. Claude can't proceed until docs/* are flushed. |
-| **UserPromptSubmit intent → inline skill body** | (this plugin) | when user types "save / lưu / nhớ" → injects mem-save body inline. "skillify / lặp lại workflow" → mem-skillify. "tổng kết / reflect" → mem-reflect. "where am I / đang làm gì" → mem-bootstrap. User no longer types `/mem-*`. |
-
-**Net effect**: 90%+ of memory operations happen automatically. The user rarely types a `/mem-*` command — hooks catch intent + enforce discipline.
-
-**Disable a hook** if too aggressive: edit `~/.claude/plugins/openclaw-bridge/hooks/hooks.json` and remove the offending entry, or comment out by renaming the script.
-
-## v0.6 improvements (hybrid recall + HyDE)
-
-| Change | Source | Impact |
-|---|---|---|
-| **SQLite FTS5 + sqlite-vec hybrid recall** | Anthropic contextual retrieval / Cognee triple-store | RRF fusion of BM25 + vector. Graceful 3-tier fallback: vector → FTS5 → grep. Opt-in via `/mem-reindex`. |
-| **Auto embedding-provider detection** | — | `OPENAI_API_KEY` / `VOYAGE_API_KEY` / `GEMINI_API_KEY` env var; uses `text-embedding-3-small` / `voyage-multilingual-2` / `gemini-embedding-001` accordingly. Stdlib `urllib`, no `openai` / `voyageai` packages required. |
-| **HyDE-lite** `/mem-hyde-recall` | Gao et al. 2022 (HyDE) | Opt-in deliberate command for conceptual queries. Drafts hypothetical answer, retrieves via index/grep, synthesizes against original question. |
-| **mtime tiebreak in tier sort** | — | When tier scores tie, newer files surface first. Fixes index-path edge case where boilerplate-heavy files outrank the actual relevant entry. |
-
-## Roadmap
-
-**Shipped through v0.6**: 4-tier pipeline + skill library + reflection + contextual recall + MMR + temporal facts + SM-2-lite SRS + token cost + prompt caching guidance + FTS5/vector hybrid + HyDE-lite.
-
-**Skipped** (limited ROI for our use case):
-- GPTCache semantic response cache — stale risk for evolving code.
-
-**Out of scope** (custom-model territory, see `RESEARCH.md` Tier 4):
-- LongLLMLingua / AutoCompressor / gist tokens — finetuned models needed.
-- ColBERT / ColPali — overkill for markdown vault.
-- RAPTOR / GraphRAG / HippoRAG — defer to claude-obsidian's wiki-fold.
+- **v2.0** — Global `~/.gowth-mem/`, topic organization, multi-session locks, AI-mediated conflict resolution, auto-sync around compact.
+- **v1.0** — Centralized `<workspace>/.gowth-mem/`, git sync via user-owned remote, conflict reporting.
+- **v0.9** — Strict 7-type schema, active auto-DELETE pruning.
+- **v0.8** — English-only 4-char keyword shortcuts (`mems`, `memb`, …).
+- **v0.7** — Auto-trigger via PreCompact block + Stop-hook auto-distill (mempalace pattern).
+- **v0.6** — Hybrid FTS5 + sqlite-vec recall + HyDE.
+- **v0.5** — Temporal facts, SM-2-lite SRS, token cost estimator.
+- **v0.4** — Anthropic contextual prefix, MMR diversity, Voyager skills, Generative-Agents reflection, mem0 ADD/UPDATE/DELETE/NOOP.
 
 ## What this is not
 
-- Not a SQLite or vector index (yet).
-- Not a knowledge graph engine — that's Obsidian's job.
 - Not a sandbox.
-- Not a system-prompt rewriter — closest mechanism is `additionalContext`.
+- Not a knowledge graph engine — claude-obsidian's `wiki/` is.
+- Not a system-prompt rewriter — closest mechanism is hook `additionalContext`.
+- Not a Windows-first plugin — `fcntl` locks are POSIX; multi-session safety degrades there.
 
 ## License
 

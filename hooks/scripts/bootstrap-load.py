@@ -1,47 +1,50 @@
 #!/usr/bin/env python3
-"""SessionStart hook: assemble AGENTS.md + docs/ working memory + recent journal + skills index.
-
-Path resolution (v1.0 centralized vs v0.9 legacy):
-- If `.gowth-mem/AGENTS.md` or `.gowth-mem/docs/` exists → v1.0; load from there.
-- Else → v0.9 fallback; load from workspace root.
+"""SessionStart hook (v2.0): load global ~/.gowth-mem/ memory.
 
 Files loaded (in order):
-  1. AGENTS.md            — operating rules
-  2. docs/handoff.md      — session state
-  3. docs/exp.md          — episodic curated
-  4. docs/ref.md          — verified facts
-  5. docs/tools.md        — tool registry
-  6. docs/secrets.md      — resource pointers
-  7. docs/files.md        — project structure
-  8. docs/journal/<today>.md
-  9. docs/journal/<yesterday>.md
- 10. docs/skills/_index   — synthesized 1-line index of available skills
+  1. AGENTS.md                   — operating rules
+  2. topics/_index.md            — topic registry
+  3. docs/handoff.md             — session state (per-machine prefixes)
+  4. docs/secrets.md             — resource pointers
+  5. docs/tools.md               — cross-topic tool registry
+  6. top-3 most-recently-touched topics/*.md   — recent context
+  7. journal/<today>.md / <yesterday>.md
+  8. skills/_index               — synthesized 1-line skill index
 
 Caps: 12k char/file, 60k total. Skips blanks, marks truncations.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _paths import resolve_root, docs_root  # type: ignore
+from _home import (  # type: ignore
+    agents_md,
+    docs_dir,
+    gowth_home,
+    journal_dir,
+    skills_dir,
+    topics_dir,
+)
 
 MAX_PER_FILE = 12_000
 MAX_TOTAL = 60_000
 SKILL_INDEX_MAX_CHARS = 2_000
+RECENT_TOPICS = 3
 
 
-def build_skills_index(workspace: Path) -> str:
-    skills_dir = docs_root(workspace) / "skills"
-    if not skills_dir.is_dir():
+def build_skills_index() -> str:
+    sd = skills_dir()
+    if not sd.is_dir():
         return ""
     entries: list[str] = []
-    for f in sorted(skills_dir.glob("*.md")):
+    for f in sorted(sd.glob("*.md")):
+        if f.name == "_index.md":
+            continue
         try:
             text = f.read_text(errors="ignore")
         except Exception:
@@ -63,24 +66,33 @@ def build_skills_index(workspace: Path) -> str:
     return "\n".join(entries)[:SKILL_INDEX_MAX_CHARS]
 
 
+def recent_topic_files() -> list[Path]:
+    td = topics_dir()
+    if not td.is_dir():
+        return []
+    files = [f for f in td.glob("*.md") if f.name != "_index.md"]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[:RECENT_TOPICS]
+
+
 def main() -> int:
-    workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    root = resolve_root(workspace)
-    docs = docs_root(workspace)
+    gh = gowth_home()
+    docs = docs_dir()
     today = date.today()
     yesterday = today - timedelta(days=1)
 
-    candidates = [
-        root / "AGENTS.md",
+    candidates: list[Path] = [
+        agents_md(),
+        topics_dir() / "_index.md",
         docs / "handoff.md",
-        docs / "exp.md",
-        docs / "ref.md",
-        docs / "tools.md",
         docs / "secrets.md",
-        docs / "files.md",
-        docs / "journal" / f"{today.isoformat()}.md",
-        docs / "journal" / f"{yesterday.isoformat()}.md",
+        docs / "tools.md",
     ]
+    candidates.extend(recent_topic_files())
+    candidates.extend([
+        journal_dir() / f"{today.isoformat()}.md",
+        journal_dir() / f"{yesterday.isoformat()}.md",
+    ])
 
     parts: list[str] = []
     total = 0
@@ -107,16 +119,17 @@ def main() -> int:
             truncated_total = True
             stop = True
         try:
-            rel = f.relative_to(workspace)
+            rel = f.relative_to(gh)
+            label = f"~/.gowth-mem/{rel}"
         except ValueError:
-            rel = f
-        marker = f"\n[truncated, see {rel}]" if (truncated_file or truncated_total) else ""
-        parts.append(f"\n=== {rel} ===\n{chunk}{marker}")
+            label = str(f)
+        marker = f"\n[truncated, see {label}]" if (truncated_file or truncated_total) else ""
+        parts.append(f"\n=== {label} ===\n{chunk}{marker}")
         total += len(chunk)
 
-    skills_index = build_skills_index(workspace)
+    skills_index = build_skills_index()
     if skills_index and total + len(skills_index) + 100 < MAX_TOTAL:
-        parts.append(f"\n=== docs/skills/ (index) ===\n{skills_index}")
+        parts.append(f"\n=== ~/.gowth-mem/skills/ (index) ===\n{skills_index}")
         total += len(skills_index)
 
     if not parts:
@@ -125,7 +138,7 @@ def main() -> int:
     out = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": "[openclaw-bridge:bootstrap]" + "".join(parts),
+            "additionalContext": "[gowth-mem:bootstrap]" + "".join(parts),
         }
     }
     print(json.dumps(out))

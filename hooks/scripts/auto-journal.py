@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
-"""Stop hook: auto-distill + auto-prune every N user turns. Blocks Claude until done.
+"""Stop hook (v2.0): auto-distill + auto-prune every N user turns.
 
-v0.9: in addition to instructing distill, the auto-journal cycle now also runs
-the active prune helper (`_prune.py`) automatically before yielding. This keeps
-docs/* lean per user direction (outdated knowledge → DELETE, not just mark).
-
-Algorithm:
-  1. Read session_id from stdin.
-  2. Increment turn counter in .gowth-mem/state.json under session[id].turn_count.
-  3. If turn_count % AUTO_DISTILL_EVERY == 0:
-       - Run `_prune.py` synchronously (deletes superseded/expired/dup entries).
-       - Emit decision=block with detailed instructions for Claude to:
-           * Scan recent decisions / lessons / surprises / pains.
-           * Apply 5-type strict schema with [type] prefix.
-           * Promote signal entries via mem0 ADD/UPDATE/DELETE/NOOP.
-  4. Otherwise → silent (no block).
-  5. Reset counter to 0 right before block.
-
-This replaces manual `/mem-distill` AND `/mem-prune` invocations.
+State lives in global ~/.gowth-mem/state.json (per-machine, gitignored).
+Updates are protected by file_lock("state") for multi-session safety.
 """
 from __future__ import annotations
 
@@ -25,10 +10,35 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _atomic import atomic_write  # type: ignore
+from _home import gowth_home, state_path  # type: ignore
+from _lock import file_lock  # type: ignore
+
 AUTO_DISTILL_EVERY = 10
+
+
+def _load_state() -> dict:
+    p = state_path()
+    if not p.is_file():
+        return {"version": 2, "files": {}, "session": {}}
+    try:
+        d = json.loads(p.read_text())
+        d.setdefault("files", {})
+        d.setdefault("session", {})
+        return d
+    except Exception:
+        return {"version": 2, "files": {}, "session": {}}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        gowth_home().mkdir(parents=True, exist_ok=True)
+        atomic_write(state_path(), json.dumps(state, indent=2))
+    except Exception:
+        pass
 
 
 def main() -> int:
@@ -37,36 +47,29 @@ def main() -> int:
     except Exception:
         return 0
     session_id = data.get("session_id") or "default"
-    workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    state_path = workspace / ".gowth-mem" / "state.json"
-
-    state = {"version": 1, "files": {}, "session": {}}
-    if state_path.is_file():
-        try:
-            state = json.loads(state_path.read_text())
-            state.setdefault("files", {})
-            state.setdefault("session", {})
-        except Exception:
-            pass
-
-    sess = state["session"].setdefault(session_id, {"turn_count": 0})
-    sess["turn_count"] = sess.get("turn_count", 0) + 1
-    turn = sess["turn_count"]
 
     try:
-        state_path.parent.mkdir(exist_ok=True)
-        state_path.write_text(json.dumps(state, indent=2))
-    except Exception:
-        pass
+        with file_lock("state", timeout=5.0):
+            state = _load_state()
+            sess = state["session"].setdefault(session_id, {"turn_count": 0})
+            sess["turn_count"] = sess.get("turn_count", 0) + 1
+            turn = sess["turn_count"]
+            _save_state(state)
+    except TimeoutError:
+        # Another session contended; skip this turn.
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        return 0
 
     if turn < AUTO_DISTILL_EVERY:
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
-    sess["turn_count"] = 0
     try:
-        state_path.write_text(json.dumps(state, indent=2))
-    except Exception:
+        with file_lock("state", timeout=5.0):
+            state = _load_state()
+            state["session"].setdefault(session_id, {"turn_count": 0})["turn_count"] = 0
+            _save_state(state)
+    except TimeoutError:
         pass
 
     # Run active prune synchronously (best-effort).
@@ -75,37 +78,38 @@ def main() -> int:
     if prune_script.is_file():
         try:
             r = subprocess.run(
-                ["python3", str(prune_script), "--workspace", str(workspace)],
-                capture_output=True, text=True, timeout=10,
+                ["python3", str(prune_script)],
+                capture_output=True, text=True, timeout=15,
             )
-            prune_summary = (r.stdout or "").strip().splitlines()[0] if r.stdout else ""
+            if r.stdout:
+                prune_summary = r.stdout.strip().splitlines()[0]
         except Exception:
             pass
 
-    today = date.today().isoformat()
-    reason = f"""[openclaw-bridge:auto-journal] {AUTO_DISTILL_EVERY} turns elapsed.
+    reason = f"""[gowth-mem:auto-journal] {AUTO_DISTILL_EVERY} turns elapsed.
 
 Pre-block prune ran: {prune_summary or '(no prune output)'}
 
 Now do this WITHOUT user prompting before yielding control:
 
 1. Scan the last {AUTO_DISTILL_EVERY} user turns and your replies.
-2. For each high-signal item, classify into ONE of these 7 types and prepend the prefix:
-   [decision]    choice + rationale          → docs/exp.md
-   [preference]  always X / never Y          → docs/exp.md
-   [milestone]   working solution            → docs/exp.md
-   [problem]     bug / failure / fix         → docs/exp.md
-   [fact]        verified external fact      → docs/ref.md (Source REQUIRED)
-   [tool]        syntax / gotcha / version   → docs/tools.md
-   [secret-ref]  env-var / path POINTER      → docs/secrets.md (NEVER value)
-3. Apply quality gates — DROP if:
+2. For each high-signal item, classify into ONE of these types and prepend the prefix:
+   [decision]    choice + rationale          → topics/<slug>.md
+   [exp]         debug / fix / lesson         → topics/<slug>.md
+   [reflection]  pattern / takeaway           → topics/<slug>.md
+   [ref]         verified external fact       → topics/<slug>.md (Source REQUIRED)
+   [tool]        topic-specific gotcha        → topics/<slug>.md OR docs/tools.md (cross-topic)
+   [secret-ref]  env-var POINTER              → docs/secrets.md (NEVER value)
+3. Topic routing: pick existing topics/<slug>.md if keywords overlap (≥3 common words);
+   otherwise create new topics/<new-slug>.md from top-2 distinctive keywords.
+4. Apply quality gates — DROP if:
    - Entry < 20 chars
    - Code-only (no prose)
-   - [fact] without Source
+   - [ref] without Source
    - Vague / hedged ("maybe", "I think") without backing
-4. Apply mem0 ADD / UPDATE / DELETE / NOOP against existing target file content.
-5. Conflict with existing entry → DELETE old, ADD new (or mark `(superseded)` for next prune).
-6. Confirm in 1 line: "auto-journal: kept N, dropped M, promoted K, conflicts resolved J".
+5. Apply mem0 ADD / UPDATE / DELETE / NOOP against existing target file content.
+6. Update docs/handoff.md (prefix host:<machine>) with new task / next / blocker.
+7. Confirm in 1 line: "auto-journal: kept N, dropped M, promoted K, conflicts resolved J".
 
 Don't write the user a long message about this — just do the work silently and continue.
 This is automation, not a conversation step."""

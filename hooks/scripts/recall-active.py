@@ -1,24 +1,17 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: hybrid recall (vector + FTS5 → grep fallback).
+"""UserPromptSubmit hook (v2.0): hybrid recall over global ~/.gowth-mem/.
 
-v0.6 additions over v0.5:
-- **Vector + FTS5 hybrid** via SQLite + sqlite-vec when `.gowth-mem/index.db` exists.
-  Uses RRF (Reciprocal Rank Fusion) k=60 to merge BM25 and vector ranks.
-  Graceful fallback: if sqlite-vec / embedding key missing, FTS5 only.
-  Graceful fallback: if FTS5 / index missing, full v0.5 grep path.
-
-Preserved v0.5:
-- Contextual heading prefix (§ heading | line)
-- MMR-style word-overlap penalty
-- Tier-based file score
-- Temporal facts skip (`(superseded)`, expired `valid_until:`)
-- SM-2-lite spaced resurfacing in `.gowth-mem/state.json`
+Sources: topics/**/*.md + docs/*.md (and skills/*.md). Skips journal/.
+Wikilink follow: when a topic file is the top hit, optionally follow one
+[[other-slug]] hop and surface its top match too.
 
 Decision tree per prompt:
   1. Try vector hybrid (sqlite-vec + embedding) → if works, use it
   2. Try FTS5-only on existing index → if index has BM25, use it
-  3. Fall back to grep walk over docs/** and wiki/**
-  All paths apply the same temporal filter, MMR diversity, tier scoring, SRS bump.
+  3. Fall back to grep walk over topics/** and docs/*.md
+  All paths apply temporal filter, MMR diversity, tier scoring, SRS bump.
+
+State.json updates use file_lock("state") for multi-session safety.
 """
 from __future__ import annotations
 
@@ -34,7 +27,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
-# Optional vector deps
 try:
     import sqlite_vec  # type: ignore
     HAS_VEC = True
@@ -47,7 +39,15 @@ try:
     HAS_EMBED = True
 except ImportError:
     HAS_EMBED = False
-from _paths import docs_root, resolve_root  # type: ignore
+from _atomic import atomic_write  # type: ignore
+from _home import (  # type: ignore
+    docs_dir,
+    gowth_home,
+    index_db,
+    state_path,
+    topics_dir,
+)
+from _lock import file_lock  # type: ignore
 
 MAX_KEYWORDS = 8
 MAX_FILES = 3
@@ -62,16 +62,17 @@ INDEX_TOP_K = 30
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 SUPERSEDED_RE = re.compile(r"\(superseded\b", re.IGNORECASE)
 VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+WIKILINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]{0,40})\]\]")
 
 
-def collect_candidates(workspace: Path) -> list[Path]:
+def collect_candidates() -> list[Path]:
     out: list[Path] = []
-    docs = docs_root(workspace)
-    if docs.is_dir():
-        out.extend(p for p in docs.rglob("*.md") if p.is_file())
-    wiki = workspace / "wiki"
-    if wiki.is_dir():
-        out.extend(p for p in wiki.rglob("*.md") if p.is_file())
+    td = topics_dir()
+    if td.is_dir():
+        out.extend(p for p in td.rglob("*.md") if p.is_file() and p.name != "_index.md")
+    dd = docs_dir()
+    if dd.is_dir():
+        out.extend(p for p in dd.glob("*.md") if p.is_file())
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)[:MAX_CANDIDATE_FILES]
 
 
@@ -92,26 +93,31 @@ def line_is_temporal_invalid(line: str, today_iso: str) -> bool:
     return False
 
 
-def layer_score(workspace: Path, p: Path) -> int:
+def layer_score(p: Path) -> int:
+    """Tier score by location relative to ~/.gowth-mem/."""
+    gh = gowth_home()
     try:
-        rel = p.relative_to(workspace)
+        rel = p.relative_to(gh)
     except ValueError:
-        return 0
+        return 10
     parts = rel.parts
-    # Strip leading ".gowth-mem" if v1.0 layout, so logic is unchanged
-    if parts and parts[0] == ".gowth-mem":
-        parts = parts[1:]
-    today = date.today().isoformat()
-    yday = (date.today() - timedelta(days=1)).isoformat()
-    if len(parts) >= 3 and parts[0] == "docs" and parts[1] == "journal":
-        if today in parts[-1]:
-            return 100
-        if yday in parts[-1]:
-            return 80
-        return 50
-    if len(parts) >= 2 and parts[0] == "docs":
+    if not parts:
+        return 10
+    if parts[0] == "topics":
+        # Recent topic > older; rough proxy: rely on mtime sort. Flat 80.
+        return 80
+    if parts[0] == "docs":
+        # handoff/secrets/tools cross-topic registries
         return 60
-    if len(parts) >= 2 and parts[0] == "wiki":
+    if parts[0] == "skills":
+        return 40
+    if parts[0] == "journal":
+        today = date.today().isoformat()
+        yday = (date.today() - timedelta(days=1)).isoformat()
+        if today in p.name:
+            return 100
+        if yday in p.name:
+            return 70
         return 30
     return 10
 
@@ -124,23 +130,22 @@ def jaccard_words(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
-def load_srs_state(workspace: Path) -> dict:
-    p = workspace / ".gowth-mem" / "state.json"
+def load_srs_state() -> dict:
+    p = state_path()
     if not p.is_file():
-        return {"version": 1, "files": {}}
+        return {"version": 2, "files": {}}
     try:
         d = json.loads(p.read_text())
         d.setdefault("files", {})
         return d
     except Exception:
-        return {"version": 1, "files": {}}
+        return {"version": 2, "files": {}}
 
 
-def save_srs_state(workspace: Path, state: dict) -> None:
-    p = workspace / ".gowth-mem"
+def save_srs_state(state: dict) -> None:
     try:
-        p.mkdir(exist_ok=True)
-        (p / "state.json").write_text(json.dumps(state, indent=2))
+        gowth_home().mkdir(parents=True, exist_ok=True)
+        atomic_write(state_path(), json.dumps(state, indent=2))
     except Exception:
         pass
 
@@ -149,26 +154,22 @@ def serialize_vec(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
-def index_recall(workspace: Path, prompt: str, kws: list[str]) -> Optional[list[tuple[str, str, str]]]:
-    """Try SQLite FTS5 + (optional) vector hybrid. Return None if index missing.
-
-    Returns list of (path, heading, content_snippet) ranked by RRF.
-    """
-    db_path = workspace / ".gowth-mem" / "index.db"
+def index_recall(prompt: str, kws: list[str]) -> Optional[list[tuple[str, str, str]]]:
+    """Try SQLite FTS5 + (optional) vector hybrid. Return None if index missing."""
+    db_path = index_db()
     if not db_path.is_file():
         return None
     try:
         db = sqlite3.connect(db_path)
+        db.execute("PRAGMA busy_timeout=5000")
     except sqlite3.Error:
         return None
     try:
-        # Verify FTS5 exists in this index
         try:
             db.execute("SELECT 1 FROM chunks_fts LIMIT 1")
         except sqlite3.OperationalError:
             return None
 
-        # FTS5 BM25 query
         fts_q = " OR ".join(f'"{k}"' for k in kws)
         bm25_rows = db.execute(
             "SELECT c.id, c.path, c.heading, c.content, bm25(chunks_fts) "
@@ -179,11 +180,9 @@ def index_recall(workspace: Path, prompt: str, kws: list[str]) -> Optional[list[
             (fts_q, INDEX_TOP_K),
         ).fetchall()
 
-        # Optional vector path
         vec_rows: list[tuple] = []
         if HAS_VEC and HAS_EMBED:
             try:
-                # Check chunks_vec exists
                 db.execute("SELECT 1 FROM chunks_vec LIMIT 1")
                 sqlite_vec.load(db)  # type: ignore
                 qvec = embed_one(prompt)
@@ -198,7 +197,6 @@ def index_recall(workspace: Path, prompt: str, kws: list[str]) -> Optional[list[
             except (sqlite3.OperationalError, AttributeError):
                 vec_rows = []
 
-        # RRF fusion
         scores: dict[int, float] = {}
         meta: dict[int, tuple[str, str, str]] = {}
         for rank, row in enumerate(bm25_rows):
@@ -214,16 +212,12 @@ def index_recall(workspace: Path, prompt: str, kws: list[str]) -> Optional[list[
             return []
 
         ranked = sorted(scores.items(), key=lambda x: -x[1])
-        out: list[tuple[str, str, str]] = []
-        for cid, _s in ranked:
-            path, heading, content = meta[cid]
-            out.append((path, heading, content))
-        return out
+        return [meta[cid] for cid, _ in ranked]
     finally:
         db.close()
 
 
-def grep_recall(workspace: Path, candidates: list[Path], pattern: re.Pattern, today_iso: str
+def grep_recall(candidates: list[Path], pattern: re.Pattern, today_iso: str
                 ) -> list[tuple[Path, list[tuple[int, str, str]], int]]:
     raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
     for f in candidates:
@@ -242,18 +236,19 @@ def grep_recall(workspace: Path, candidates: list[Path], pattern: re.Pattern, to
             heading = find_heading(lines, idx)
             matched.append((idx, heading, ln_stripped))
         if matched:
-            raw_hits.append((f, matched[:MAX_LINES_PER_FILE * 2], layer_score(workspace, f)))
+            raw_hits.append((f, matched[:MAX_LINES_PER_FILE * 2], layer_score(f)))
     return raw_hits
 
 
-def find_due_resurface(workspace, state, excluded_paths, candidates, pattern, today_iso):
+def find_due_resurface(state, excluded_paths, candidates, pattern, today_iso):
+    gh = gowth_home()
     now = time.time()
     threshold = now - SRS_RESURFACE_DAYS * 86400
     files_meta = state.get("files", {})
     eligible: list[tuple[Path, float]] = []
     for f in candidates:
         try:
-            rel = str(f.relative_to(workspace))
+            rel = str(f.relative_to(gh))
         except ValueError:
             continue
         if rel in excluded_paths:
@@ -285,6 +280,42 @@ def find_due_resurface(workspace, state, excluded_paths, candidates, pattern, to
     return None
 
 
+def follow_wikilinks(top_file: Path, pattern: re.Pattern, today_iso: str
+                     ) -> Optional[tuple[Path, list[tuple[int, str, str]]]]:
+    """If top hit is a topic, follow first [[wikilink]] one hop deep."""
+    if "topics" not in top_file.parts:
+        return None
+    try:
+        text = top_file.read_text(errors="ignore")
+    except Exception:
+        return None
+    m = WIKILINK_RE.search(text)
+    if not m:
+        return None
+    target = topics_dir() / f"{m.group(1)}.md"
+    if not target.is_file() or target == top_file:
+        return None
+    try:
+        ttext = target.read_text(errors="ignore")
+    except Exception:
+        return None
+    lines = ttext.splitlines()
+    matched: list[tuple[int, str, str]] = []
+    for idx, ln in enumerate(lines):
+        ln_stripped = ln.strip()
+        if not pattern.search(ln_stripped):
+            continue
+        if line_is_temporal_invalid(ln_stripped, today_iso):
+            continue
+        heading = find_heading(lines, idx)
+        matched.append((idx, heading, ln_stripped))
+        if len(matched) >= MAX_LINES_PER_FILE:
+            break
+    if not matched:
+        return None
+    return target, matched
+
+
 def main() -> int:
     try:
         data = json.load(sys.stdin)
@@ -294,8 +325,7 @@ def main() -> int:
     if not prompt.strip():
         return 0
 
-    workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    candidates = collect_candidates(workspace)
+    candidates = collect_candidates()
     if not candidates:
         return 0
 
@@ -314,14 +344,13 @@ def main() -> int:
 
     pattern = re.compile("|".join(re.escape(k) for k in kws), re.IGNORECASE)
     today_iso = date.today().isoformat()
+    gh = gowth_home()
 
-    # Try index path first
-    index_results = index_recall(workspace, prompt, kws)
+    index_results = index_recall(prompt, kws)
     backend_label = "grep"
     raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
 
     if index_results is not None and len(index_results) > 0:
-        # Convert (path, heading, content) into per-file matches
         backend_label = "index" + ("+vec" if HAS_VEC and HAS_EMBED else "+fts5")
         per_file: dict[str, list[tuple[int, str, str]]] = {}
         for path, heading, content in index_results:
@@ -335,15 +364,18 @@ def main() -> int:
                 if len(per_file[path]) >= MAX_LINES_PER_FILE * 2:
                     break
         for path, matches in per_file.items():
-            full = workspace / path
+            full = gh / path
             if not full.is_file():
-                continue
-            raw_hits.append((full, matches[:MAX_LINES_PER_FILE * 2], layer_score(workspace, full)))
+                # Index might have been built relative to a workspace-rooted layout;
+                # try absolute path.
+                full = Path(path)
+                if not full.is_file():
+                    continue
+            raw_hits.append((full, matches[:MAX_LINES_PER_FILE * 2], layer_score(full)))
 
     if not raw_hits:
-        # Fallback to grep
         backend_label = "grep"
-        raw_hits = grep_recall(workspace, candidates, pattern, today_iso)
+        raw_hits = grep_recall(candidates, pattern, today_iso)
 
     if not raw_hits:
         return 0
@@ -365,38 +397,82 @@ def main() -> int:
     if not selected:
         return 0
 
-    state = load_srs_state(workspace)
+    # Wikilink follow on the top hit
+    wikilink_extra: Optional[tuple[Path, list[tuple[int, str, str]]]] = None
+    if selected:
+        wikilink_extra = follow_wikilinks(selected[0][0], pattern, today_iso)
+
+    # SRS — protected by file_lock
+    state = load_srs_state()
     prob_seed = hashlib.sha1((today_iso + prompt).encode()).digest()[0]
     resurfaced = None
     if prob_seed % SRS_RESURFACE_PROB == 0:
-        excluded = {str(f.relative_to(workspace)) for f, _ in selected}
-        resurfaced = find_due_resurface(workspace, state, excluded, candidates, pattern, today_iso)
+        excluded = set()
+        for f, _ in selected:
+            try:
+                excluded.add(str(f.relative_to(gh)))
+            except ValueError:
+                pass
+        resurfaced = find_due_resurface(state, excluded, candidates, pattern, today_iso)
 
-    parts = [f"[openclaw-bridge:recall:{backend_label}] Có thể relevant:"]
+    parts = [f"[gowth-mem:recall:{backend_label}] Có thể relevant:"]
     for f, matches in selected:
-        rel = f.relative_to(workspace)
-        parts.append(f"\n--- {rel} ---")
+        try:
+            rel = f.relative_to(gh)
+            label = f"~/.gowth-mem/{rel}"
+        except ValueError:
+            label = str(f)
+        parts.append(f"\n--- {label} ---")
         for _idx, heading, line in matches:
+            prefix = f"§ {heading} | " if heading else ""
+            parts.append(f"{prefix}{line}")
+    if wikilink_extra:
+        wf, wmatches = wikilink_extra
+        try:
+            rel = wf.relative_to(gh)
+            label = f"~/.gowth-mem/{rel}"
+        except ValueError:
+            label = str(wf)
+        parts.append(f"\n--- {label} (wikilink follow) ---")
+        for _idx, heading, line in wmatches:
             prefix = f"§ {heading} | " if heading else ""
             parts.append(f"{prefix}{line}")
     if resurfaced:
         rf, rmatches = resurfaced
-        rel = rf.relative_to(workspace)
-        parts.append(f"\n--- {rel} (resurfaced — chưa seen ≥{SRS_RESURFACE_DAYS}d) ---")
+        try:
+            rel = rf.relative_to(gh)
+            label = f"~/.gowth-mem/{rel}"
+        except ValueError:
+            label = str(rf)
+        parts.append(f"\n--- {label} (resurfaced — chưa seen ≥{SRS_RESURFACE_DAYS}d) ---")
         for _idx, heading, line in rmatches:
             prefix = f"§ {heading} | " if heading else ""
             parts.append(f"{prefix}{line}")
 
-    now = time.time()
-    files_meta = state.setdefault("files", {})
-    surfaced_paths = [str(f.relative_to(workspace)) for f, _ in selected]
-    if resurfaced:
-        surfaced_paths.append(str(resurfaced[0].relative_to(workspace)))
-    for rel in surfaced_paths:
-        rec = files_meta.setdefault(rel, {})
-        rec["last_seen"] = now
-        rec["count"] = rec.get("count", 0) + 1
-    save_srs_state(workspace, state)
+    # Update SRS under lock
+    try:
+        with file_lock("state", timeout=5.0):
+            state = load_srs_state()  # re-read to get latest
+            now = time.time()
+            files_meta = state.setdefault("files", {})
+            surfaced_paths = []
+            for f, _ in selected:
+                try:
+                    surfaced_paths.append(str(f.relative_to(gh)))
+                except ValueError:
+                    pass
+            if resurfaced:
+                try:
+                    surfaced_paths.append(str(resurfaced[0].relative_to(gh)))
+                except ValueError:
+                    pass
+            for rel in surfaced_paths:
+                rec = files_meta.setdefault(rel, {})
+                rec["last_seen"] = now
+                rec["count"] = rec.get("count", 0) + 1
+            save_srs_state(state)
+    except TimeoutError:
+        pass  # don't block recall on contention
 
     out = {
         "hookSpecificOutput": {

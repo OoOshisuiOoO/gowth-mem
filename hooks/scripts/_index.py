@@ -1,36 +1,31 @@
 #!/usr/bin/env python3
-"""Build SQLite FTS5 + (optional) sqlite-vec index of docs/**/*.md and wiki/**/*.md.
+"""Build SQLite FTS5 + (optional) sqlite-vec index over global ~/.gowth-mem/.
 
-Storage: .gowth-mem/index.db in workspace root.
+Storage: ~/.gowth-mem/index.db (per-machine, gitignored).
 
 Schema:
   chunks(id PK, path, heading, content, mtime, hash)
-  chunks_fts (FTS5 virtual over chunks.content; BM25 native)
-  chunks_vec (sqlite-vec virtual; only created if sqlite-vec importable AND embedding key)
+  chunks_fts (FTS5 virtual over chunks.content)
+  chunks_vec (sqlite-vec virtual; only if sqlite-vec installed AND embedding key)
+
+Sources: topics/, docs/, journal/, skills/  (all under ~/.gowth-mem/)
+Stored paths are relative to ~/.gowth-mem/.
+
+Concurrency: WAL + busy_timeout so concurrent readers don't block writes.
 
 Usage:
-  python3 _index.py [--full] [--workspace PATH]
-
-  --full         Drop and rebuild everything.
-  Otherwise: incremental (only re-index files whose mtime changed).
-
-Graceful fallback:
-- If FTS5 unavailable in this Python's sqlite3 → exit with WARNING.
-- If sqlite-vec not installed → skip vector table; FTS5-only index still built.
-- If embedding API key missing → skip vector embeddings; FTS5-only.
+  python3 _index.py [--full]
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import re
 import sqlite3
 import struct
 import sys
 from pathlib import Path
 
-# Lazy imports - guarded
 try:
     import sqlite_vec  # type: ignore
     HAS_VEC = True
@@ -43,7 +38,14 @@ try:
     HAS_EMBED_MODULE = True
 except ImportError:
     HAS_EMBED_MODULE = False
-from _paths import docs_root  # type: ignore
+from _home import (  # type: ignore
+    docs_dir,
+    gowth_home,
+    index_db,
+    journal_dir,
+    skills_dir,
+    topics_dir,
+)
 
 CHUNK_SIZE = 1500
 
@@ -82,24 +84,25 @@ def serialize_vec(vec: list[float]) -> bytes:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true")
-    ap.add_argument("--workspace", default=None)
     args = ap.parse_args()
-    workspace = Path(args.workspace or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    idx_dir = workspace / ".gowth-mem"
-    idx_dir.mkdir(exist_ok=True)
-    db_path = idx_dir / "index.db"
-    db = sqlite3.connect(db_path)
 
-    # FTS5 availability check
+    gh = gowth_home()
+    gh.mkdir(parents=True, exist_ok=True)
+    db_path = index_db()
+    db = sqlite3.connect(db_path)
+    # Concurrency-safe pragmas
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.execute("PRAGMA busy_timeout=5000")
+
     try:
         db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_test USING fts5(x)")
         db.execute("DROP TABLE _fts5_test")
     except sqlite3.OperationalError as e:
-        print(f"ERROR: SQLite FTS5 not available in this Python build: {e}", file=sys.stderr)
+        print(f"ERROR: SQLite FTS5 not available: {e}", file=sys.stderr)
         db.close()
         return 1
 
-    # Determine vector availability
     provider_info = None
     sample_dim = 0
     use_vec = False
@@ -142,18 +145,15 @@ def main() -> int:
         db.commit()
 
     sources: list[Path] = []
-    docs = docs_root(workspace)
-    if docs.is_dir():
-        sources.extend(p for p in docs.rglob("*.md") if p.is_file())
-    wiki = workspace / "wiki"
-    if wiki.is_dir():
-        sources.extend(p for p in wiki.rglob("*.md") if p.is_file())
+    for d in (topics_dir(), docs_dir(), journal_dir(), skills_dir()):
+        if d.is_dir():
+            sources.extend(p for p in d.rglob("*.md") if p.is_file())
 
     indexed_files = 0
     indexed_chunks = 0
     embed_calls = 0
     for f in sources:
-        rel = str(f.relative_to(workspace))
+        rel = str(f.relative_to(gh))
         mtime = f.stat().st_mtime
         cur = db.execute("SELECT mtime FROM chunks WHERE path=? LIMIT 1", (rel,))
         row = cur.fetchone()
@@ -163,7 +163,6 @@ def main() -> int:
             text = f.read_text(errors="ignore")
         except Exception:
             continue
-        # Drop old chunks for this file
         old_ids = [r[0] for r in db.execute("SELECT id FROM chunks WHERE path=?", (rel,))]
         for oid in old_ids:
             db.execute("DELETE FROM chunks_fts WHERE rowid=?", (oid,))
@@ -190,7 +189,7 @@ def main() -> int:
     db.commit()
     db.close()
 
-    print(f"indexed: {indexed_files} files, {indexed_chunks} chunks at .gowth-mem/index.db")
+    print(f"indexed: {indexed_files} files, {indexed_chunks} chunks at ~/.gowth-mem/index.db")
     if use_vec:
         print(f"vector: {embed_calls} embeddings via {provider_info[0]} (dim={sample_dim})")
     else:
@@ -198,7 +197,7 @@ def main() -> int:
         if not HAS_VEC:
             reason.append("sqlite-vec not installed")
         if not HAS_EMBED_MODULE or not (HAS_EMBED_MODULE and detect_provider()):
-            reason.append("no embedding API key (OPENAI_API_KEY / VOYAGE_API_KEY / GEMINI_API_KEY)")
+            reason.append("no embedding API key")
         print(f"vector: skipped ({'; '.join(reason) if reason else 'unknown'}) — FTS5-only index")
     return 0
 

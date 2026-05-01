@@ -1,0 +1,44 @@
+{
+  "version": "2.0",
+  "language": "vi+en",
+  "auto_sync": {
+    "on_session_start": true,
+    "on_pre_compact": true,
+    "on_post_compact": true,
+    "on_stop_every_n_turns": 10
+  },
+  "topic_routing": {
+    "min_keyword_overlap": 3,
+    "auto_create_threshold": 5,
+    "default_topic": "misc"
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small"
+  },
+  "recall": {
+    "max_chars_per_file": 12000,
+    "max_total_chars": 60000,
+    "top_k": 8,
+    "mmr_lambda": 0.7,
+    "srs_resurface_days": 7,
+    "srs_resurface_prob": 4,
+    "wikilink_follow": true
+  },
+  "conflict_resolution": {
+    "mode": "ai-mediated"
+  },
+  "_notes": {
+    "version": "schema version (2.0 = global ~/.gowth-mem with topics/)",
+    "auto_sync.on_session_start": "Pull-only at SessionStart. Adds 1-3s latency on cold cache.",
+    "auto_sync.on_pre_compact": "Commit-only before /compact summarizes — captures full context.",
+    "auto_sync.on_post_compact": "Full pull-rebase-push after /compact. Triggers AI conflict if remote diverged.",
+    "auto_sync.on_stop_every_n_turns": "Stop-hook auto-journal cycle. 0 = disable.",
+    "topic_routing.min_keyword_overlap": "Number of common ≥4-char keywords required to route to an existing topic.",
+    "topic_routing.auto_create_threshold": "Reserved for future: create new topic only after N unmatched entries on the same theme.",
+    "topic_routing.default_topic": "Slug used when no topic matches and no distinctive keywords found.",
+    "embedding.provider": "openai | voyage | gemini | none. Auto-detected from API keys.",
+    "recall.wikilink_follow": "If top hit is a topic file with [[other-slug]], also surface other-slug top match.",
+    "conflict_resolution.mode": "ai-mediated | manual | abort"
+  }
+}

@@ -1,44 +1,26 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: short keyword shortcuts (OMC-style) + intent-driven auto-skill.
+"""UserPromptSubmit hook (v2.0): keyword shortcuts + intent-driven auto-skill.
 
-v0.8: drop Vietnamese intent matching. Add short English keyword shortcuts
-(like OMC's `ulw`) at start of prompt — explicit, low false-positive.
+Shortcuts (must appear at start of prompt):
 
-Shortcut keywords (must appear at start of prompt, optionally followed by content):
+  mems   →  mem-save             (save current memory entry to topic+docs)
+  memd   →  mem-distill          (distill journal → topics)
+  memr   →  mem-reflect          (recap / reflections)
+  memk   →  mem-skillify         (extract reusable workflow → skills/)
+  memb   →  mem-bootstrap        (3-line: doing what / next / blocker)
+  memh   →  mem-hyde-recall      (HyDE for conceptual queries)
+  memj   →  mem-journal          (open today's journal)
+  memx   →  mem-reindex          (rebuild SQLite index)
+  memc   →  mem-cost             (estimate bootstrap token footprint)
+  memp   →  mem-prune             (active delete outdated)
+  memy   →  mem-sync             (git pull/push)
+  memg   →  mem-config           (set up remote+token)
+  memm   →  mem-migrate-global   (v1.0 → v2.0 migration)
+  memT   →  mem-topic            (list / inspect topics)
+  memI   →  mem-install          (first-time setup wizard)
+  memC   →  mem-sync-resolve     (AI conflict resolution)
 
-  mems   →  mem-save          (save current decision/fact/lesson)
-  memd   →  mem-distill       (chắt lọc journal → docs/exp/ref/tools)
-  memr   →  mem-reflect       (recap / generate reflections from journal)
-  memk   →  mem-skillify      (extract recurring workflow → docs/skills/)
-  memb   →  mem-bootstrap     (3-line: doing what / next / blocker)
-  memh   →  mem-hyde-recall   (HyDE for conceptual queries)
-  memj   →  mem-journal       (open today's journal)
-  memx   →  mem-reindex       (rebuild SQLite FTS5/vector index)
-  memc   →  mem-cost          (estimate bootstrap token footprint)
-
-Natural English phrases (loose match, lower priority than shortcuts):
-
-  save this / remember this / note this   →  mem-save
-  recap / summarize / reflect             →  mem-reflect
-  where am I / status / current state     →  mem-bootstrap
-  make this a skill / extract skill       →  mem-skillify
-
-Plain nudges (no inline skill, just intent hint):
-
-  review / critique                       →  examine, don't implement
-  fix / debug / repair                    →  root-cause first
-  research / find / investigate           →  read first, save findings
-  plan / design / architect               →  produce structure first
-
-@-shortcuts (unchanged):
-
-  @today @yesterday @ws @user @hot
-
-Examples:
-  "mems decided to use EMA cross strategy"   →  inline mem-save body + content
-  "memb"                                     →  inline mem-bootstrap (3-line summary)
-  "where am I in this project?"              →  inline mem-bootstrap (NL match)
-  "save this finding from research"          →  inline mem-save (NL match)
+@-shortcuts: @today @yesterday @user
 """
 from __future__ import annotations
 
@@ -49,152 +31,196 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _home import agents_md  # type: ignore
 
-# ---------------------------------------------------------------------------
-# Inline skill bodies — what Claude executes when the intent matches.
+RULES_MAX_CHARS = 12_000
+
 
 INLINE_MEM_SAVE = """[auto-skill: mem-save] Intent = save. Execute inline (no /mem-save needed):
 
-Routing table (1-2 lines / entry, Source required for facts):
-| Episodic (debug, fix, lesson, surprise, anti-pattern) | docs/exp.md |
-| Verified semantic fact (with Source URL) | docs/ref.md |
-| Tool syntax / gotcha / version | docs/tools.md |
-| Resource pointer (env-var name; NEVER value) | docs/secrets.md |
-| Session state (current task / next / blocker) | docs/handoff.md |
-| Workflow done 2+ times | docs/skills/<name>.md (use memk) |
+Routing table (1-2 lines / entry, Source required for [ref]):
+| Episodic experience (debug, fix, lesson, surprise)  | topics/<slug>.md  - [exp] |
+| Verified semantic fact (with Source URL)            | topics/<slug>.md  - [ref] |
+| Topic-specific tool quirk                           | topics/<slug>.md  - [tool] |
+| Architectural decision                              | topics/<slug>.md  - [decision] |
+| Lesson / takeaway / pattern                         | topics/<slug>.md  - [reflection] |
+| Cross-topic tool quirk                              | docs/tools.md |
+| Resource pointer (env-var name; NEVER value)        | docs/secrets.md |
+| Session state (host: prefix; current/next/blocker)  | docs/handoff.md |
+| Workflow done 2+ times                              | skills/<name>.md (use memk) |
+
+Topic routing:
+- Find existing topics/<slug>.md whose keywords overlap (≥3 common words). Append there.
+- Else create topics/<new-slug>.md from top-2 distinctive keywords (kebab-case ≤40 chars).
+- Use python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --route '<text>' to compute slug.
 
 Apply mem0 ADD / UPDATE / DELETE / NOOP. Conflict with existing → drop old. Confirm path written."""
 
 INLINE_MEM_DISTILL = """[auto-skill: mem-distill] Intent = distill. Execute inline (no /mem-distill needed):
 
-1. Read docs/journal/<today>.md and <yesterday>.md.
-2. Classify each entry: lesson → docs/exp.md; verified fact → docs/ref.md; tool note → docs/tools.md;
-   resource pointer → docs/secrets.md; pure noise → drop.
-3. For each kept entry, apply mem0 ADD / UPDATE / DELETE / NOOP against the target file.
+1. Read journal/<today>.md and <yesterday>.md (under ~/.gowth-mem/).
+2. For each high-signal entry: route to a topic (use _topic.py) or to docs/{handoff,secrets,tools}.md.
+3. Apply mem0 ADD / UPDATE / DELETE / NOOP against the target file.
 4. Mark distilled journal entries with `(distilled)` suffix.
 5. Report: ADD N, UPDATE M, DELETE K, NOOP J, DROP D, LEFT L."""
 
 INLINE_MEM_REFLECT = """[auto-skill: mem-reflect] Intent = reflect/recap. Execute inline (no /mem-reflect needed):
 
-1. Read docs/journal/*.md from last 7 days + docs/exp.md.
+1. Read journal/*.md from last 7 days + recent topics/*.md.
 2. Score entries by importance × recency × novelty.
 3. Pick top 3 patterns (clusters of related entries).
-4. Append to docs/exp.md § Reflections:
+4. Append to the matching topics/<slug>.md as `- [reflection] ...` with:
    ### YYYY-MM-DD: <title>
    **Claim**: <evergreen 1-line>
    **Evidence**: <file:line refs (≥2)>
    **Implication**: <1-line action>
-5. Suggest /save (claude-obsidian) for portable reflections.
 NEVER invent — every reflection cites ≥2 source entries."""
 
-INLINE_MEM_SKILLIFY = """[auto-skill: mem-skillify] Intent = extract reusable skill. Execute inline (no /mem-skillify needed):
+INLINE_MEM_SKILLIFY = """[auto-skill: mem-skillify] Intent = extract reusable skill. Execute inline:
 
 1. Identify the recurring workflow's core steps (parameterize variables).
 2. Pick a kebab-case <name> ≤30 chars.
-3. mkdir -p docs/skills if missing.
-4. Write docs/skills/<name>.md with frontmatter (name, description, created, inputs)
+3. Write ~/.gowth-mem/skills/<name>.md with frontmatter (name, description, created, inputs)
    and sections: Description / Steps (parameterized) / Variations / Token cost / Source.
-5. Confirm path. Suggest invocation: `do <name> for <input>`."""
+4. Confirm path. Suggest invocation: `do <name> for <input>`."""
 
-INLINE_MEM_BOOTSTRAP = """[auto-skill: mem-bootstrap] Intent = where-am-I / status. Execute inline (no /mem-bootstrap needed):
+INLINE_MEM_BOOTSTRAP = """[auto-skill: mem-bootstrap] Intent = where-am-I / status. Execute inline:
 
-Read docs/handoff.md. Emit EXACTLY 3 lines for the user:
+Read ~/.gowth-mem/docs/handoff.md (filter by host:<this-machine> if multiple hosts).
+Emit EXACTLY 3 lines for the user:
 1. **doing**: <Current task — 1 line>
 2. **next**: <Next step — 1 line>
 3. **blocker**: <Blocker — 1 line, or `none`>
 
-If docs/handoff.md is missing/empty, say so and suggest /mem-init."""
+If handoff.md is missing/empty, say so and suggest /mem-install."""
 
 INLINE_MEM_HYDE = """[auto-skill: mem-hyde-recall] Intent = HyDE recall (conceptual query). Execute inline:
 
-1. Draft a 1-2 paragraph hypothetical answer to the question (just for retrieval, not authoritative).
-2. If `.gowth-mem/index.db` + `sqlite-vec` + embedding key all available:
-   embed the hypothetical answer, vector top-K against chunks_vec, RRF-merge with FTS5 BM25 over original.
-3. Else: extract ≥5-char keywords from hypothetical answer and grep docs/**/*.md and wiki/**/*.md.
+1. Draft a 1-2 paragraph hypothetical answer (just for retrieval).
+2. If ~/.gowth-mem/index.db + sqlite-vec + embedding key all available:
+   embed the hypothetical, vector top-K, RRF-merge with FTS5 BM25 over the original prompt.
+3. Else: extract ≥5-char keywords from the hypothetical and grep topics/**/*.md and docs/*.md.
 4. Filter temporal-invalid lines (`(superseded)`, expired `valid_until:`).
-5. Synthesize against original question, citing each chunk like `docs/exp.md § Lessons`.
-6. If no useful match: suggest /mem-reindex or /wiki-query (claude-obsidian)."""
+5. Synthesize against the original question, citing each chunk like `topics/python-venv.md § Lessons`.
+6. If no useful match: suggest /mem-reindex."""
 
 INLINE_MEM_JOURNAL = """[auto-skill: mem-journal] Intent = open today's journal. Execute inline:
 
-1. WS=$CLAUDE_PROJECT_DIR or $PWD.
-2. mkdir -p $WS/docs/journal.
-3. If docs/journal/<today>.md missing: copy from ${CLAUDE_PLUGIN_ROOT}/templates/journal-day.md, replace YYYY-MM-DD placeholder.
-4. Show current contents.
-5. Ask user what to log and which section (Logs / Wins / Pains / Questions).
-6. Append with HH:MM prefix for Logs entries."""
+1. mkdir -p ~/.gowth-mem/journal.
+2. If journal/<today>.md missing: copy from ${CLAUDE_PLUGIN_ROOT}/templates/journal-day.md, replace YYYY-MM-DD.
+3. Show current contents.
+4. Ask user what to log (Logs / Wins / Pains / Questions). Append with HH:MM prefix for Logs."""
 
 INLINE_MEM_REINDEX = """[auto-skill: mem-reindex] Intent = rebuild search index. Execute inline:
 
-Run: `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py` from workspace root.
-- Default: incremental (only re-indexes files with changed mtime).
-- Pass `--full` to drop and rebuild.
-Report files / chunks indexed and which fallback (FTS5-only vs vector hybrid).
-Add `.gowth-mem/` to workspace `.gitignore` if not present."""
+Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py
+- Default: incremental (only re-indexes changed mtimes).
+- Pass --full to drop and rebuild.
+Indexes ~/.gowth-mem/{topics,docs,journal,skills}/**/*.md into ~/.gowth-mem/index.db.
+Report files / chunks indexed and which fallback (FTS5-only vs vector hybrid)."""
 
 INLINE_MEM_COST = """[auto-skill: mem-cost] Intent = estimate bootstrap token footprint. Execute inline:
 
-Sum char count of: AGENTS.md + docs/handoff.md + docs/exp.md + docs/ref.md + docs/tools.md +
-docs/secrets.md + docs/files.md + docs/journal/<today>.md + docs/journal/<yesterday>.md.
+Sum char count of: AGENTS.md + topics/_index.md + docs/handoff.md + docs/secrets.md + docs/tools.md +
+top-3 most-recent topics/*.md + journal/<today>.md + journal/<yesterday>.md.
 Estimate tokens = chars / 4. Print per-file breakdown + total.
 Cap = 60,000 chars (~15,000 tokens). Warn if >40k or >60k."""
 
+INLINE_MEM_PRUNE = """[auto-skill: mem-prune] Intent = actively DELETE outdated entries. Execute inline:
 
-# ---------------------------------------------------------------------------
-# Shortcut keyword table (3-4 char codes at START of prompt, OMC ulw-style).
-
-INLINE_MEM_PRUNE = """[auto-skill: mem-prune] Intent = actively DELETE outdated entries from docs/*.md. Execute inline:
-
-Run: `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_prune.py --workspace ${CLAUDE_PROJECT_DIR:-$PWD}`
-Pass `--dry-run` first if user wants preview.
+Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_prune.py
+Pass --dry-run first if user wants preview.
 
 Deletion rules (in order):
-1. Entry containing `valid_until: YYYY-MM-DD` past today → DELETE
-2. Entry containing `(superseded)` / `(deprecated)` / `(obsolete)` → DELETE
-3. Within-file Jaccard ≥ 0.85 duplicate → DELETE the SHORTER, keep longer/richer
+1. Entry with `valid_until: YYYY-MM-DD` past today → DELETE
+2. Entry with `(superseded)` / `(deprecated)` / `(obsolete)` → DELETE
+3. Within-file Jaccard ≥ 0.85 duplicate → DELETE the SHORTER
 
-Skips docs/journal/** (raw log is permanent). Report: deleted N, kept K."""
+Walks ~/.gowth-mem/topics/**/*.md and docs/*.md. Skips journal/. Report: deleted N, kept K."""
 
-INLINE_MEM_SYNC = """[auto-skill: mem-sync] Intent = sync .gowth-mem/ via git remote. Execute inline:
+INLINE_MEM_SYNC = """[auto-skill: mem-sync] Intent = sync ~/.gowth-mem/ via git remote. Execute inline:
 
-Pre-req: `.gowth-mem/config.json` configured with `remote` + `branch` (use /mem-config). Token via env GOWTH_MEM_GIT_TOKEN preferred.
+Pre-req: ~/.gowth-mem/config.json with `remote`+`branch` (use /mem-config). Token via env GOWTH_MEM_GIT_TOKEN preferred.
 
-Run: `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py --workspace ${CLAUDE_PROJECT_DIR:-$PWD}`
+Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py
+Flags: --init (first-time) | --pull-only | --push-only
 
-Flags:
-  --init        first-time setup (creates .git, push initial state)
-  --pull-only   fetch+rebase, no push
-  --push-only   commit+push, no pull
+What syncs: AGENTS.md, settings.json, topics/*, docs/*, journal/*, skills/*.
+Gitignored (per-machine): config.json, state.json, index.db, .locks/.
 
-What gets synced: AGENTS.md, docs/*, settings.json. Gitignored (per-machine): config.json, state.json, index.db.
+On conflict: writes ~/.gowth-mem/SYNC-CONFLICT.md and exits 2.
+Run /mem-sync-resolve to walk through it."""
 
-On conflict: writes .gowth-mem/SYNC-CONFLICT.md. Resolve markers manually, `git -C .gowth-mem add <files>`, `git -C .gowth-mem rebase --continue`, re-run."""
+INLINE_MEM_CONFIG = """[auto-skill: mem-config] Intent = set up ~/.gowth-mem/config.json for git sync. Execute inline:
 
-INLINE_MEM_CONFIG = """[auto-skill: mem-config] Intent = set up .gowth-mem/config.json for git sync. Execute inline:
-
-1. Ensure .gowth-mem/ exists (if not, suggest /mem-init).
+1. Ensure ~/.gowth-mem/ exists (if not, suggest /mem-install).
 2. Ask user for git remote URL (HTTPS or SSH).
 3. Ask for branch (default: main).
 4. Recommend token via env: `export GOWTH_MEM_GIT_TOKEN=ghp_...`
-   (Optional fallback: ask if user wants token in config.json. Warn it's plaintext.)
-5. Write `.gowth-mem/config.json`:
-   {"remote": "<URL>", "branch": "<branch>"}
+   (Optional: ask if user wants token in config.json. Warn it's plaintext.)
+5. Write ~/.gowth-mem/config.json:
+   {"remote": "<URL>", "branch": "<branch>", "host_id": "<machine>"}
    Plus "token": "<value>" only if user explicitly chose that path.
-6. Verify .gowth-mem/.gitignore excludes config.json (the _sync.py creates one if missing).
+6. Verify ~/.gowth-mem/.gitignore excludes config.json (auto-created on first sync).
 7. Suggest next: /mem-sync --init to push initial state."""
 
-INLINE_MEM_MIGRATE = """[auto-skill: mem-migrate] Intent = migrate v0.9 (workspace-rooted) → v1.0 (.gowth-mem/ centralized). Execute inline:
+INLINE_MEM_MIGRATE_GLOBAL = """[auto-skill: mem-migrate-global] Intent = v1.0 per-workspace → v2.0 global. Execute inline:
 
-1. mkdir -p .gowth-mem/docs/journal .gowth-mem/docs/skills
-2. Move workspace AGENTS.md → .gowth-mem/AGENTS.md (if exists, target missing)
-3. Move workspace docs/{handoff,exp,ref,tools,secrets,files}.md → .gowth-mem/docs/
-4. Move workspace docs/journal/* → .gowth-mem/docs/journal/
-5. Move workspace docs/skills/* → .gowth-mem/docs/skills/
-6. Remove now-empty workspace docs/ dir
-7. Create .gowth-mem/settings.json + .gitignore from templates if missing
-8. Suggest next: /mem-config → /mem-sync --init → memx (rebuild index)
+1. Scan ~/Git/** (or user-provided list) for <ws>/.gowth-mem/ dirs (v1.0 layout).
+2. For each found:
+   - Walk docs/exp.md, docs/ref.md, docs/tools.md lines.
+   - Use _topic.py route() to pick or create topics/<slug>.md under ~/.gowth-mem/.
+   - Append migrated lines with provenance suffix `Source: <ws>/<file>`.
+   - Copy docs/handoff.md lines into ~/.gowth-mem/docs/handoff.md, prefixed `host:<ws>`.
+   - Copy docs/secrets.md lines (dedup by env-var name).
+   - Copy journal/*.md into ~/.gowth-mem/journal/ (rename collisions).
+   - Copy skills/*.md (dedup by slug).
+3. Print summary: N topics created, M lines migrated, K skipped (dups).
+4. Leave per-workspace .gowth-mem/ intact. User removes manually after verifying."""
 
-Idempotent — each move guards against existing target."""
+INLINE_MEM_TOPIC = """[auto-skill: mem-topic] Intent = list / inspect topics. Execute inline:
+
+Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --list
+Show table: slug | title | last touched.
+
+If user names a slug: open ~/.gowth-mem/topics/<slug>.md and show first 80 lines.
+If user gives content text: show what slug --route would pick.
+To regenerate _index.md: python3 _topic.py --regen-index."""
+
+INLINE_MEM_INSTALL = """[auto-skill: mem-install] Intent = first-time setup wizard. Execute inline:
+
+If ~/.gowth-mem/ already exists and has AGENTS.md, refuse and suggest /mem-config or /mem-sync.
+
+1. mkdir -p ~/.gowth-mem/{topics,docs,journal,skills}
+2. Copy templates from ${CLAUDE_PLUGIN_ROOT}/templates/:
+   - AGENTS.md → ~/.gowth-mem/AGENTS.md
+   - dot-gowth-mem/settings.example.v2.json → ~/.gowth-mem/settings.json (rewrite version=2.0)
+   - topics/_index.md, topics/misc.md → ~/.gowth-mem/topics/
+   - docs/{handoff,secrets,tools}.md → ~/.gowth-mem/docs/
+3. Ask user 3 questions:
+   a. Git remote URL (HTTPS preferred for token-based auth)
+   b. Branch (default: main)
+   c. Token preference: env var GOWTH_MEM_GIT_TOKEN, or stored in config.json (warn plaintext)
+4. Write ~/.gowth-mem/config.json with {remote, branch, host_id, token?}.
+5. Run /mem-sync --init to push initial state to remote.
+6. Suggest next: memx (build search index)."""
+
+INLINE_MEM_SYNC_RESOLVE = """[auto-skill: mem-sync-resolve] Intent = AI-mediated conflict resolution. Execute inline:
+
+1. Read ~/.gowth-mem/SYNC-CONFLICT.md. If missing, say "no conflict pending" and exit.
+2. For each conflicted file in the report:
+   a. Show the user the local vs remote diff (concise).
+   b. Ask: keep-local | keep-remote | merge | skip | abort.
+   c. If merge: propose a merged version, ask user to confirm or edit.
+   d. Apply chosen version via atomic write to ~/.gowth-mem/<path>.
+3. After all files resolved:
+   - cd ~/.gowth-mem && git add -A
+   - git rebase --continue (commit if needed)
+   - git push origin <branch>  (under file_lock("sync"))
+4. Delete ~/.gowth-mem/SYNC-CONFLICT.md.
+5. Confirm to user: "resolved N files, pushed to origin"."""
+
 
 SHORTCUT_KEYWORDS: dict[str, str] = {
     "mems": INLINE_MEM_SAVE,
@@ -209,18 +235,18 @@ SHORTCUT_KEYWORDS: dict[str, str] = {
     "memp": INLINE_MEM_PRUNE,
     "memy": INLINE_MEM_SYNC,
     "memg": INLINE_MEM_CONFIG,
-    "memm": INLINE_MEM_MIGRATE,
+    "memm": INLINE_MEM_MIGRATE_GLOBAL,
+    "memT": INLINE_MEM_TOPIC,
+    "memI": INLINE_MEM_INSTALL,
+    "memC": INLINE_MEM_SYNC_RESOLVE,
 }
 
+# memT/memI/memC are case-sensitive (capital T/I/C) to avoid false matches with memt/memi/memc;
+# the regex below uses re.IGNORECASE for lowercase ones but special-cases the capitals.
 SHORTCUT_RE = re.compile(
-    r"^\s*(" + "|".join(re.escape(k) for k in SHORTCUT_KEYWORDS) + r")\b",
-    re.IGNORECASE,
+    r"^\s*(mems|memd|memr|memk|memb|memh|memj|memx|memc|memp|memy|memg|memm|memT|memI|memC)\b"
 )
 
-
-# ---------------------------------------------------------------------------
-# Natural English phrase patterns (lower priority than shortcuts).
-# (regex, payload, is_inline_skill)
 
 NL_PATTERNS: list[tuple[re.Pattern[str], str, bool]] = [
     (re.compile(r"\b(save\s+(this|it|that)|remember\s+(this|it|that)|note\s+(this|it|that))\b", re.I),
@@ -231,13 +257,12 @@ NL_PATTERNS: list[tuple[re.Pattern[str], str, bool]] = [
      INLINE_MEM_SKILLIFY, True),
     (re.compile(r"^\s*(where\s+am\s+i|what's?\s+the\s+status|current\s+state)\b", re.I),
      INLINE_MEM_BOOTSTRAP, True),
-    # Plain nudges (no inline skill body):
     (re.compile(r"^\s*(review|critique)\b", re.I),
      "intent=review: examine and point out flaws, do not implement unless asked.", False),
     (re.compile(r"^\s*(fix|debug|repair)\b", re.I),
      "intent=fix: root-cause first, minimal diff, verify before claiming done.", False),
     (re.compile(r"^\s*(research|find|investigate|explain)\b", re.I),
-     "intent=research: read first, no edits, cite sources, save findings to docs/ref.md.", False),
+     "intent=research: read first, no edits, cite sources, save findings under topics/.", False),
     (re.compile(r"^\s*(plan|design|architect)\b", re.I),
      "intent=plan: produce structure, list steps, do not implement yet.", False),
 ]
@@ -252,7 +277,6 @@ def main() -> int:
     if not prompt:
         return 0
 
-    workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     today = date.today()
     yesterday = today - timedelta(days=1)
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
@@ -262,26 +286,16 @@ def main() -> int:
         expansions["@today"] = today.isoformat()
     if re.search(r"@yesterday\b", prompt):
         expansions["@yesterday"] = yesterday.isoformat()
-    if re.search(r"@ws\b|@workspace\b", prompt):
-        expansions["@ws / @workspace"] = str(workspace)
     if re.search(r"@user\b", prompt):
         expansions["@user"] = user
-    if re.search(r"@hot\b", prompt):
-        hot = workspace / "wiki" / "hot.md"
-        if hot.is_file():
-            expansions["@hot"] = f"read {hot.relative_to(workspace)} (claude-obsidian hot cache)"
-        else:
-            expansions["@hot"] = "wiki/hot.md not found"
 
-    # 1) Shortcut keyword takes priority over NL patterns.
     triggered_block: str | None = None
     nudge: str | None = None
 
     m = SHORTCUT_RE.match(prompt)
     if m:
-        triggered_block = SHORTCUT_KEYWORDS[m.group(1).lower()]
+        triggered_block = SHORTCUT_KEYWORDS[m.group(1)]
     else:
-        # 2) Natural English fallback.
         for pattern, payload, is_inline in NL_PATTERNS:
             if pattern.search(prompt):
                 if is_inline:
@@ -290,10 +304,27 @@ def main() -> int:
                     nudge = payload
                 break
 
-    if not expansions and triggered_block is None and nudge is None:
+    # Always include AGENTS.md as <Rules>...</Rules> so the operating rules
+    # are present on every turn (cache-friendly: rules rarely change).
+    rules_block = ""
+    am = agents_md()
+    if am.is_file():
+        try:
+            rules_text = am.read_text(errors="ignore")
+            if len(rules_text) > RULES_MAX_CHARS:
+                rules_text = rules_text[:RULES_MAX_CHARS] + "\n[truncated]"
+            rules_block = f"<Rules>\n{rules_text}\n</Rules>"
+        except Exception:
+            pass
+
+    if not rules_block and not expansions and triggered_block is None and nudge is None:
         return 0
 
-    parts = ["[openclaw-bridge:user-augment]"]
+    parts: list[str] = []
+    if rules_block:
+        parts.append(rules_block)
+        parts.append("")
+    parts.append("[gowth-mem:user-augment]")
     if expansions:
         parts.append("Shortcuts:")
         for k, v in expansions.items():

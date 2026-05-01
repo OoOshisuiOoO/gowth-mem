@@ -1,92 +1,55 @@
 ---
-description: Scaffold .gowth-mem/ centralized layout (v1.0): AGENTS.md + 6 docs/* + docs/journal/ + docs/skills/ + settings.json + .gitignore. All gowth-mem state in one folder ready for git sync.
+description: (v2.0 stub) Redirect to /mem-install for first-time setup of the global ~/.gowth-mem/. The old per-workspace .gowth-mem/ is replaced.
 ---
 
-Scaffold the v1.0 centralized layout in the current workspace.
+In v2.0, memory lives at `~/.gowth-mem/` (global) instead of `<workspace>/.gowth-mem/` (per-workspace).
 
-Run with the Bash tool:
+If `~/.gowth-mem/AGENTS.md` already exists, this command exits silently — you're already initialized.
+
+Otherwise, this command **redirects to `/mem-install`** which:
+
+1. Scaffolds `~/.gowth-mem/{topics,docs,journal,skills}/`
+2. Copies templates (AGENTS.md, settings.json, topics/_index.md, topics/misc.md, docs/handoff.md, docs/secrets.md, docs/tools.md)
+3. Asks for git remote + branch + token preference
+4. Writes `~/.gowth-mem/config.json`
+5. Runs initial `_sync.py --init`
 
 ```bash
-WS="${CLAUDE_PROJECT_DIR:-$PWD}"
-GM="$WS/.gowth-mem"
-
-# 1. Create centralized dir tree
-mkdir -p "$GM/docs/journal" "$GM/docs/skills"
-
-# 2. Copy AGENTS.md
-[ -f "$GM/AGENTS.md" ] || cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" "$GM/AGENTS.md"
-
-# 3. Copy 6 doc files
-for f in handoff exp ref tools secrets files; do
-  if [ ! -f "$GM/docs/$f.md" ]; then
-    cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/$f.md" "$GM/docs/$f.md"
-  fi
-done
-
-# 4. Today's journal from template
-TODAY=$(date +%Y-%m-%d)
-JOURNAL="$GM/docs/journal/$TODAY.md"
-if [ ! -f "$JOURNAL" ]; then
-  cp "${CLAUDE_PLUGIN_ROOT}/templates/journal-day.md" "$JOURNAL"
-  python3 -c "
-p='$JOURNAL'; t='$TODAY'
-content = open(p).read().replace('YYYY-MM-DD', t)
-open(p, 'w').write(content)
-"
+# Detect existing
+if [ -f "$HOME/.gowth-mem/AGENTS.md" ]; then
+  echo "~/.gowth-mem/ already initialized."
+  echo "  - /mem-config to change remote"
+  echo "  - /mem-sync   to sync"
+  echo "  - /mem-migrate-global to import v1.0 per-workspace data"
+  exit 0
 fi
 
-# 5. settings.json from template
-[ -f "$GM/settings.json" ] || cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.json" "$GM/settings.json"
-
-# 6. .gitignore (excludes per-machine state + token)
-if [ ! -f "$GM/.gitignore" ]; then
-  cat > "$GM/.gitignore" <<EOF
-config.json
-state.json
-index.db
-index.db-shm
-index.db-wal
-__pycache__/
-*.pyc
-SYNC-CONFLICT.md
-EOF
+# Detect v1.0 per-workspace
+if [ -d "${CLAUDE_PROJECT_DIR:-$PWD}/.gowth-mem" ]; then
+  echo "Detected v1.0 per-workspace .gowth-mem/. Run /mem-migrate-global to import it after /mem-install."
 fi
 
-# 7. Show result
-ls -la "$GM" "$GM/docs" "$GM/docs/journal" "$GM/docs/skills"
-echo
-echo "✅ Centralized layout ready at .gowth-mem/"
-echo "Optional next steps:"
-echo "  /mem-config        configure git remote for sync"
-echo "  /mem-sync --init   push initial state to remote"
-echo "  memx               build search index"
+echo "Run /mem-install to set up the global ~/.gowth-mem/."
 ```
 
-Do not overwrite existing files. Each step skips if target exists.
-
-## v1.0 layout
+## v2.0 layout
 
 ```
-.gowth-mem/
-├── AGENTS.md              # operating rules
-├── docs/
-│   ├── handoff.md         # session state
-│   ├── exp.md             # episodic + reflections
-│   ├── ref.md             # verified facts (Source REQUIRED)
-│   ├── tools.md           # tool registry
-│   ├── secrets.md         # POINTER only (never values)
-│   ├── files.md           # project structure
-│   ├── journal/           # raw daily logs
-│   └── skills/            # Voyager reusable workflows
+~/.gowth-mem/
+├── AGENTS.md              # operating rules (synced)
 ├── settings.json          # plugin behavior (synced)
-├── .gitignore             # excludes config + state + index
-├── config.json            # NOT created here — run /mem-config
-├── state.json             # auto-created on first recall
-└── index.db               # auto-created on first /mem-reindex
+├── config.json            # remote+token (gitignored, per-machine)
+├── state.json             # SRS data (gitignored, per-machine)
+├── index.db               # FTS5+vec search (gitignored, per-machine)
+├── .git/                  # synced repo
+├── .locks/                # flock files (gitignored)
+├── topics/                # ★ topic-organized knowledge
+│   ├── _index.md
+│   └── <slug>.md          # one file per topic, 7-type [exp]/[ref]/[tool]/...
+├── docs/                  # cross-topic registries
+│   ├── handoff.md         # session state (host:<name> prefix per line)
+│   ├── secrets.md         # POINTER only (env-var names)
+│   └── tools.md           # cross-topic tool registry
+├── journal/<date>.md      # raw daily logs (synced; small, append-only)
+└── skills/<slug>.md       # Voyager workflows (synced)
 ```
-
-For long-term knowledge (wiki/), use claude-obsidian's `/wiki` separately. The two layers cooperate without conflict.
-
-## Migrating from v0.9?
-
-If you have an older workspace with `docs/` + `AGENTS.md` at the root, run `/mem-migrate` instead — it moves them into `.gowth-mem/` preserving content.
