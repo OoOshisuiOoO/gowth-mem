@@ -50,9 +50,11 @@ Each tier filters noise upward. Procedural skills (Tier A) sidestep the pipeline
 | `/mem-promote <topic>` | Gom → wiki/topics/<Topic>.md | 2 → 3 |
 | `/mem-bootstrap` | 3-line summary: đang làm gì / step kế / blocker | summary |
 | `/mem-flush` | Manual PreCompact reminder | utility |
-| `/mem-cost` ✨ | Estimate bootstrap token footprint | utility |
+| `/mem-cost` | Estimate bootstrap token footprint | utility |
+| `/mem-reindex` ✨ | Build SQLite FTS5 + (opt) sqlite-vec index | setup |
+| `/mem-hyde-recall <q>` ✨ | HyDE-pattern recall for conceptual queries | utility |
 
-**Skills** (5): `mem-save`, `mem-distill`, `mem-skillify`, `mem-reflect`, `mem-cost`.
+**Skills** (7): `mem-save`, `mem-distill`, `mem-skillify`, `mem-reflect`, `mem-cost`, `mem-reindex`, `mem-hyde-recall`.
 
 **Subagent**: `mem-recaller` (haiku) deliberate recall across all tiers.
 
@@ -142,14 +144,26 @@ Each user prompt triggers `recall-active.py`:
 8. Updates `.gowth-mem/state.json` with `last_seen` for surfaced paths.
 9. Outputs up to 3-4 distinct files (3 lines each).
 
-## Roadmap (RESEARCH.md Tier 2/3)
+## v0.6 improvements (hybrid recall + HyDE)
 
-**Shipped v0.5**: temporal facts, SM-2-lite SRS, token cost estimator, prompt caching guidance.
+| Change | Source | Impact |
+|---|---|---|
+| **SQLite FTS5 + sqlite-vec hybrid recall** | Anthropic contextual retrieval / Cognee triple-store | RRF fusion of BM25 + vector. Graceful 3-tier fallback: vector → FTS5 → grep. Opt-in via `/mem-reindex`. |
+| **Auto embedding-provider detection** | — | `OPENAI_API_KEY` / `VOYAGE_API_KEY` / `GEMINI_API_KEY` env var; uses `text-embedding-3-small` / `voyage-multilingual-2` / `gemini-embedding-001` accordingly. Stdlib `urllib`, no `openai` / `voyageai` packages required. |
+| **HyDE-lite** `/mem-hyde-recall` | Gao et al. 2022 (HyDE) | Opt-in deliberate command for conceptual queries. Drafts hypothetical answer, retrieves via index/grep, synthesizes against original question. |
+| **mtime tiebreak in tier sort** | — | When tier scores tie, newer files surface first. Fixes index-path edge case where boilerplate-heavy files outrank the actual relevant entry. |
 
-**Deferred v0.6+**:
-- sqlite-vec hybrid recall (BM25+vector fusion) — needs `pip install sqlite-vec` + embedding API key. Will be opt-in with graceful fallback.
-- HyDE-lite for ambiguous queries — needs LLM call from hook (latency cost).
-- GPTCache semantic response cache — limited applicability for code dev (stale risk).
+## Roadmap
+
+**Shipped through v0.6**: 4-tier pipeline + skill library + reflection + contextual recall + MMR + temporal facts + SM-2-lite SRS + token cost + prompt caching guidance + FTS5/vector hybrid + HyDE-lite.
+
+**Skipped** (limited ROI for our use case):
+- GPTCache semantic response cache — stale risk for evolving code.
+
+**Out of scope** (custom-model territory, see `RESEARCH.md` Tier 4):
+- LongLLMLingua / AutoCompressor / gist tokens — finetuned models needed.
+- ColBERT / ColPali — overkill for markdown vault.
+- RAPTOR / GraphRAG / HippoRAG — defer to claude-obsidian's wiki-fold.
 
 ## What this is not
 

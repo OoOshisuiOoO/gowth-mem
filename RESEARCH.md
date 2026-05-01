@@ -97,14 +97,14 @@ NEW: contextual recall         ←  Anthropic contextual retrieval
 
 ### Tier 2 — needs light infra (sqlite-vec, embedding API)
 
-6. **DEFERRED v0.6**: Hybrid BM25 + vector recall — sqlite-vec + auto-detect OpenAI/Voyage key. Will be opt-in (graceful fallback to BM25 when no `pip install sqlite-vec` or no embedding key).
+6. ✅ **SHIPPED v0.6**: Hybrid BM25 + vector recall via SQLite FTS5 + sqlite-vec + RRF fusion. Auto-detects `OPENAI_API_KEY` / `VOYAGE_API_KEY` / `GEMINI_API_KEY`. Graceful 3-tier fallback: vector hybrid → FTS5-only → grep. Build/refresh via `/mem-reindex`.
 7. **SKIPPED**: Semantic response cache (GPTCache pattern). Stale-answer risk for evolving code work; limited ROI for our retrieval-only path.
 8. ✅ **SHIPPED v0.5**: Spaced resurfacing — `.gowth-mem/state.json` SM-2-lite tracker; ~25% prob per prompt resurfaces files unseen ≥7 days.
 
 ### Tier 3 — architectural
 
 9. ✅ **SHIPPED v0.5**: Temporal facts — `valid_until: YYYY-MM-DD` and `(superseded)` markers; recall auto-skips invalid lines.
-10. **DEFERRED v0.6+**: HyDE-lite for ambiguous queries. Needs LLM call from hook (latency cost on every prompt). Better as opt-in via dedicated subagent path.
+10. ✅ **SHIPPED v0.6**: HyDE-lite — exposed as opt-in `/mem-hyde-recall <question>` skill rather than auto-on-prompt. Drafts hypothetical answer, embeds via index (or falls back to keyword grep), synthesizes against retrieved chunks.
 11. ✅ **SHIPPED v0.5**: Provider prompt caching guidance in `templates/AGENTS.md` § Token efficiency. Stable prefix (AGENTS / SECRETS / TOOLS / FILES) → cache hit; volatile suffix (handoff / journal / recall) → cache miss expected.
 
 ### Bonus shipped v0.5

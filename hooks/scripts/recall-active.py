@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: contextual recall with MMR + temporal facts + spaced resurfacing.
+"""UserPromptSubmit hook: hybrid recall (vector + FTS5 → grep fallback).
 
-v0.5 additions over v0.4:
-- **Temporal facts** (Zep pattern): skip match lines tagged `(superseded)` or
-  with `valid_until: YYYY-MM-DD` in the past. Stale facts stop polluting recall.
-- **SM-2-lite spaced resurfacing** (Anki / forgetting-curve): track last_seen
-  per file in `.gowth-mem/state.json`. With deterministic probability
-  (hash of today + prompt mod 4 == 0, ≈25%), append 1 entry from a file that
-  hasn't been surfaced in ≥7 days. Keeps old knowledge from drifting out.
+v0.6 additions over v0.5:
+- **Vector + FTS5 hybrid** via SQLite + sqlite-vec when `.gowth-mem/index.db` exists.
+  Uses RRF (Reciprocal Rank Fusion) k=60 to merge BM25 and vector ranks.
+  Graceful fallback: if sqlite-vec / embedding key missing, FTS5 only.
+  Graceful fallback: if FTS5 / index missing, full v0.5 grep path.
 
-Existing v0.4 behavior preserved:
+Preserved v0.5:
 - Contextual heading prefix (§ heading | line)
-- MMR-style word-overlap penalty (Jaccard >0.6 skipped)
-- Tier-based file score (journal/today > docs/* > wiki/*)
+- MMR-style word-overlap penalty
+- Tier-based file score
+- Temporal facts skip (`(superseded)`, expired `valid_until:`)
+- SM-2-lite spaced resurfacing in `.gowth-mem/state.json`
 
-Scans:
-  - docs/**/*.md   (gowth-mem: journal + curated)
-  - wiki/**/*.md   (claude-obsidian, if vault exists)
-
-Silent if nothing matches.
+Decision tree per prompt:
+  1. Try vector hybrid (sqlite-vec + embedding) → if works, use it
+  2. Try FTS5-only on existing index → if index has BM25, use it
+  3. Fall back to grep walk over docs/** and wiki/**
+  All paths apply the same temporal filter, MMR diversity, tier scoring, SRS bump.
 """
 from __future__ import annotations
 
@@ -26,10 +26,27 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
+import struct
 import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional
+
+# Optional vector deps
+try:
+    import sqlite_vec  # type: ignore
+    HAS_VEC = True
+except ImportError:
+    HAS_VEC = False
+
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from _embed import embed_one  # type: ignore
+    HAS_EMBED = True
+except ImportError:
+    HAS_EMBED = False
 
 MAX_KEYWORDS = 8
 MAX_FILES = 3
@@ -37,7 +54,9 @@ MAX_LINES_PER_FILE = 3
 MAX_PROMPT_CHARS = 1500
 MAX_CANDIDATE_FILES = 80
 SRS_RESURFACE_DAYS = 7
-SRS_RESURFACE_PROB = 4  # hash mod N == 0 → resurface
+SRS_RESURFACE_PROB = 4
+RRF_K = 60
+INDEX_TOP_K = 30
 
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 SUPERSEDED_RE = re.compile(r"\(superseded\b", re.IGNORECASE)
@@ -46,12 +65,10 @@ VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORE
 
 def collect_candidates(workspace: Path) -> list[Path]:
     out: list[Path] = []
-    docs_dir = workspace / "docs"
-    if docs_dir.is_dir():
-        out.extend(p for p in docs_dir.rglob("*.md") if p.is_file())
-    wiki_dir = workspace / "wiki"
-    if wiki_dir.is_dir():
-        out.extend(p for p in wiki_dir.rglob("*.md") if p.is_file())
+    for sub in ("docs", "wiki"):
+        d = workspace / sub
+        if d.is_dir():
+            out.extend(p for p in d.rglob("*.md") if p.is_file())
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)[:MAX_CANDIDATE_FILES]
 
 
@@ -64,7 +81,6 @@ def find_heading(lines: list[str], idx: int) -> str:
 
 
 def line_is_temporal_invalid(line: str, today_iso: str) -> bool:
-    """True if line is superseded or expired."""
     if SUPERSEDED_RE.search(line):
         return True
     m = VALID_UNTIL_RE.search(line)
@@ -120,18 +136,111 @@ def save_srs_state(workspace: Path, state: dict) -> None:
         p.mkdir(exist_ok=True)
         (p / "state.json").write_text(json.dumps(state, indent=2))
     except Exception:
-        pass  # tracker is non-critical
+        pass
 
 
-def find_due_resurface(
-    workspace: Path,
-    state: dict,
-    excluded_paths: set[str],
-    candidates: list[Path],
-    pattern: re.Pattern,
-    today_iso: str,
-) -> tuple[Path, list[tuple[int, str, str]]] | None:
-    """Pick 1 file not seen in N days, with at least one matched line."""
+def serialize_vec(vec: list[float]) -> bytes:
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+def index_recall(workspace: Path, prompt: str, kws: list[str]) -> Optional[list[tuple[str, str, str]]]:
+    """Try SQLite FTS5 + (optional) vector hybrid. Return None if index missing.
+
+    Returns list of (path, heading, content_snippet) ranked by RRF.
+    """
+    db_path = workspace / ".gowth-mem" / "index.db"
+    if not db_path.is_file():
+        return None
+    try:
+        db = sqlite3.connect(db_path)
+    except sqlite3.Error:
+        return None
+    try:
+        # Verify FTS5 exists in this index
+        try:
+            db.execute("SELECT 1 FROM chunks_fts LIMIT 1")
+        except sqlite3.OperationalError:
+            return None
+
+        # FTS5 BM25 query
+        fts_q = " OR ".join(f'"{k}"' for k in kws)
+        bm25_rows = db.execute(
+            "SELECT c.id, c.path, c.heading, c.content, bm25(chunks_fts) "
+            "FROM chunks_fts JOIN chunks c ON chunks_fts.rowid = c.id "
+            "WHERE chunks_fts MATCH ? "
+            "ORDER BY bm25(chunks_fts) "
+            "LIMIT ?",
+            (fts_q, INDEX_TOP_K),
+        ).fetchall()
+
+        # Optional vector path
+        vec_rows: list[tuple] = []
+        if HAS_VEC and HAS_EMBED:
+            try:
+                # Check chunks_vec exists
+                db.execute("SELECT 1 FROM chunks_vec LIMIT 1")
+                sqlite_vec.load(db)  # type: ignore
+                qvec = embed_one(prompt)
+                if qvec is not None:
+                    vec_rows = db.execute(
+                        "SELECT c.id, c.path, c.heading, c.content, distance "
+                        "FROM chunks_vec v JOIN chunks c ON v.id = c.id "
+                        "WHERE v.embedding MATCH ? AND k = ? "
+                        "ORDER BY distance",
+                        (serialize_vec(qvec), INDEX_TOP_K),
+                    ).fetchall()
+            except (sqlite3.OperationalError, AttributeError):
+                vec_rows = []
+
+        # RRF fusion
+        scores: dict[int, float] = {}
+        meta: dict[int, tuple[str, str, str]] = {}
+        for rank, row in enumerate(bm25_rows):
+            cid = row[0]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
+            meta[cid] = (row[1], row[2] or "", row[3])
+        for rank, row in enumerate(vec_rows):
+            cid = row[0]
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
+            meta[cid] = (row[1], row[2] or "", row[3])
+
+        if not scores:
+            return []
+
+        ranked = sorted(scores.items(), key=lambda x: -x[1])
+        out: list[tuple[str, str, str]] = []
+        for cid, _s in ranked:
+            path, heading, content = meta[cid]
+            out.append((path, heading, content))
+        return out
+    finally:
+        db.close()
+
+
+def grep_recall(workspace: Path, candidates: list[Path], pattern: re.Pattern, today_iso: str
+                ) -> list[tuple[Path, list[tuple[int, str, str]], int]]:
+    raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
+    for f in candidates:
+        try:
+            text = f.read_text(errors="ignore")
+        except Exception:
+            continue
+        lines = text.splitlines()
+        matched: list[tuple[int, str, str]] = []
+        for idx, ln in enumerate(lines):
+            ln_stripped = ln.strip()
+            if not pattern.search(ln_stripped):
+                continue
+            if line_is_temporal_invalid(ln_stripped, today_iso):
+                continue
+            heading = find_heading(lines, idx)
+            matched.append((idx, heading, ln_stripped))
+        if matched:
+            raw_hits.append((f, matched[:MAX_LINES_PER_FILE * 2], layer_score(workspace, f)))
+    return raw_hits
+
+
+def find_due_resurface(workspace, state, excluded_paths, candidates, pattern, today_iso):
     now = time.time()
     threshold = now - SRS_RESURFACE_DAYS * 86400
     files_meta = state.get("files", {})
@@ -147,8 +256,8 @@ def find_due_resurface(
         if last_seen >= threshold:
             continue
         eligible.append((f, last_seen))
-    eligible.sort(key=lambda x: x[1])  # oldest first
-    for f, _last in eligible:
+    eligible.sort(key=lambda x: x[1])
+    for f, _ in eligible:
         try:
             text = f.read_text(errors="ignore")
         except Exception:
@@ -200,29 +309,40 @@ def main() -> int:
     pattern = re.compile("|".join(re.escape(k) for k in kws), re.IGNORECASE)
     today_iso = date.today().isoformat()
 
+    # Try index path first
+    index_results = index_recall(workspace, prompt, kws)
+    backend_label = "grep"
     raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
-    for f in candidates:
-        try:
-            text = f.read_text(errors="ignore")
-        except Exception:
-            continue
-        lines = text.splitlines()
-        matched: list[tuple[int, str, str]] = []
-        for idx, ln in enumerate(lines):
-            ln_stripped = ln.strip()
-            if not pattern.search(ln_stripped):
+
+    if index_results is not None and len(index_results) > 0:
+        # Convert (path, heading, content) into per-file matches
+        backend_label = "index" + ("+vec" if HAS_VEC and HAS_EMBED else "+fts5")
+        per_file: dict[str, list[tuple[int, str, str]]] = {}
+        for path, heading, content in index_results:
+            for idx, ln in enumerate(content.splitlines()):
+                ln_stripped = ln.strip()
+                if not pattern.search(ln_stripped):
+                    continue
+                if line_is_temporal_invalid(ln_stripped, today_iso):
+                    continue
+                per_file.setdefault(path, []).append((idx, heading, ln_stripped))
+                if len(per_file[path]) >= MAX_LINES_PER_FILE * 2:
+                    break
+        for path, matches in per_file.items():
+            full = workspace / path
+            if not full.is_file():
                 continue
-            if line_is_temporal_invalid(ln_stripped, today_iso):
-                continue
-            heading = find_heading(lines, idx)
-            matched.append((idx, heading, ln_stripped))
-        if matched:
-            raw_hits.append((f, matched[:MAX_LINES_PER_FILE * 2], layer_score(workspace, f)))
+            raw_hits.append((full, matches[:MAX_LINES_PER_FILE * 2], layer_score(workspace, full)))
+
+    if not raw_hits:
+        # Fallback to grep
+        backend_label = "grep"
+        raw_hits = grep_recall(workspace, candidates, pattern, today_iso)
 
     if not raw_hits:
         return 0
 
-    raw_hits.sort(key=lambda h: -h[2])
+    raw_hits.sort(key=lambda h: (-h[2], -h[0].stat().st_mtime))
     selected: list[tuple[Path, list[tuple[int, str, str]]]] = []
     selected_text: list[str] = []
     for f, matches, _score in raw_hits:
@@ -239,7 +359,6 @@ def main() -> int:
     if not selected:
         return 0
 
-    # SM-2-lite spaced resurfacing: with ~25% probability, append 1 stale file.
     state = load_srs_state(workspace)
     prob_seed = hashlib.sha1((today_iso + prompt).encode()).digest()[0]
     resurfaced = None
@@ -247,7 +366,7 @@ def main() -> int:
         excluded = {str(f.relative_to(workspace)) for f, _ in selected}
         resurfaced = find_due_resurface(workspace, state, excluded, candidates, pattern, today_iso)
 
-    parts = ["[openclaw-bridge:recall] Có thể relevant (contextual+MMR+temporal):"]
+    parts = [f"[openclaw-bridge:recall:{backend_label}] Có thể relevant:"]
     for f, matches in selected:
         rel = f.relative_to(workspace)
         parts.append(f"\n--- {rel} ---")
@@ -262,7 +381,6 @@ def main() -> int:
             prefix = f"§ {heading} | " if heading else ""
             parts.append(f"{prefix}{line}")
 
-    # Update SRS tracker for surfaced paths.
     now = time.time()
     files_meta = state.setdefault("files", {})
     surfaced_paths = [str(f.relative_to(workspace)) for f, _ in selected]
