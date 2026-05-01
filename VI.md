@@ -62,6 +62,33 @@ Trong topic file dùng `[[other-slug]]`. Hook recall sẽ follow 1 hop khi top h
 
 ## Cài đặt
 
+Repo này vừa là plugin chuẩn vừa là marketplace 1-plugin của Claude Code, nên có 2 cách cài.
+
+### Cách A — Qua plugin manager của Claude Code (KHUYẾN NGHỊ)
+
+Trong Claude Code:
+
+```
+/plugin marketplace add OoOshisuiOoO/gowth-mem
+/plugin install gowth-mem@gowth-mem
+```
+
+Restart Claude Code để hook đăng ký. Update về sau:
+
+```
+/plugin marketplace update gowth-mem
+/plugin update gowth-mem@gowth-mem
+```
+
+Gỡ:
+
+```
+/plugin uninstall gowth-mem@gowth-mem
+/plugin marketplace remove gowth-mem
+```
+
+### Cách B — Clone thủ công
+
 ```bash
 git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem
 ```
@@ -76,7 +103,7 @@ Restart Claude Code. Nếu build của bạn không tự discover plugin, thêm 
 }
 ```
 
-Sau đó chạy wizard cài đặt:
+### Sau đó chạy wizard cài đặt
 
 ```
 /mem-install

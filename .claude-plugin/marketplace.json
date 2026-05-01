@@ -1,0 +1,38 @@
+{
+  "name": "gowth-mem",
+  "owner": {
+    "name": "duynguyen",
+    "email": "claude.fgt-system@firegroup.io",
+    "url": "https://github.com/OoOshisuiOoO"
+  },
+  "metadata": {
+    "description": "Single-plugin marketplace for gowth-mem — global topic-organized memory layer for Claude Code.",
+    "version": "2.0.0"
+  },
+  "plugins": [
+    {
+      "name": "gowth-mem",
+      "source": ".",
+      "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, hybrid FTS5+vector recall.",
+      "version": "2.0.0",
+      "author": {
+        "name": "duynguyen"
+      },
+      "homepage": "https://github.com/OoOshisuiOoO/gowth-mem",
+      "license": "MIT",
+      "category": "memory",
+      "tags": [
+        "memory",
+        "topic",
+        "git-sync",
+        "multi-session",
+        "fts5",
+        "sqlite-vec",
+        "hooks",
+        "voyager",
+        "mem0"
+      ],
+      "strict": false
+    }
+  ]
+}

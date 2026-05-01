@@ -46,6 +46,33 @@ v2.0 = single global memory at `~/.gowth-mem/`, organized by **topic**, safe und
 
 ## Install
 
+The repo is both a standalone plugin AND a single-plugin Claude Code marketplace, so two install paths are supported.
+
+### A. Via Claude Code plugin manager (recommended)
+
+In Claude Code:
+
+```
+/plugin marketplace add OoOshisuiOoO/gowth-mem
+/plugin install gowth-mem@gowth-mem
+```
+
+Restart Claude Code so the hooks register. To update later:
+
+```
+/plugin marketplace update gowth-mem
+/plugin update gowth-mem@gowth-mem
+```
+
+To uninstall:
+
+```
+/plugin uninstall gowth-mem@gowth-mem
+/plugin marketplace remove gowth-mem
+```
+
+### B. Manual clone
+
 ```bash
 git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem
 ```
@@ -60,7 +87,7 @@ Restart Claude Code. If your build doesn't auto-discover plugins, add to `~/.cla
 }
 ```
 
-Then run the wizard:
+### Then run the wizard
 
 ```
 /mem-install
