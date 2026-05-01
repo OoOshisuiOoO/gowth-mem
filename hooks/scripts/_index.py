@@ -43,6 +43,7 @@ try:
     HAS_EMBED_MODULE = True
 except ImportError:
     HAS_EMBED_MODULE = False
+from _paths import docs_root  # type: ignore
 
 CHUNK_SIZE = 1500
 
@@ -141,10 +142,12 @@ def main() -> int:
         db.commit()
 
     sources: list[Path] = []
-    for sub in ("docs", "wiki"):
-        d = workspace / sub
-        if d.is_dir():
-            sources.extend(p for p in d.rglob("*.md") if p.is_file())
+    docs = docs_root(workspace)
+    if docs.is_dir():
+        sources.extend(p for p in docs.rglob("*.md") if p.is_file())
+    wiki = workspace / "wiki"
+    if wiki.is_dir():
+        sources.extend(p for p in wiki.rglob("*.md") if p.is_file())
 
     indexed_files = 0
     indexed_chunks = 0

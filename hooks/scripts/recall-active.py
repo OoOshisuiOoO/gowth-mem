@@ -47,6 +47,7 @@ try:
     HAS_EMBED = True
 except ImportError:
     HAS_EMBED = False
+from _paths import docs_root, resolve_root  # type: ignore
 
 MAX_KEYWORDS = 8
 MAX_FILES = 3
@@ -65,10 +66,12 @@ VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORE
 
 def collect_candidates(workspace: Path) -> list[Path]:
     out: list[Path] = []
-    for sub in ("docs", "wiki"):
-        d = workspace / sub
-        if d.is_dir():
-            out.extend(p for p in d.rglob("*.md") if p.is_file())
+    docs = docs_root(workspace)
+    if docs.is_dir():
+        out.extend(p for p in docs.rglob("*.md") if p.is_file())
+    wiki = workspace / "wiki"
+    if wiki.is_dir():
+        out.extend(p for p in wiki.rglob("*.md") if p.is_file())
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)[:MAX_CANDIDATE_FILES]
 
 
@@ -95,6 +98,9 @@ def layer_score(workspace: Path, p: Path) -> int:
     except ValueError:
         return 0
     parts = rel.parts
+    # Strip leading ".gowth-mem" if v1.0 layout, so logic is unchanged
+    if parts and parts[0] == ".gowth-mem":
+        parts = parts[1:]
     today = date.today().isoformat()
     yday = (date.today() - timedelta(days=1)).isoformat()
     if len(parts) >= 3 and parts[0] == "docs" and parts[1] == "journal":

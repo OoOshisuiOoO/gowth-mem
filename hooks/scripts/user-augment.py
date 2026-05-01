@@ -155,6 +155,47 @@ Deletion rules (in order):
 
 Skips docs/journal/** (raw log is permanent). Report: deleted N, kept K."""
 
+INLINE_MEM_SYNC = """[auto-skill: mem-sync] Intent = sync .gowth-mem/ via git remote. Execute inline:
+
+Pre-req: `.gowth-mem/config.json` configured with `remote` + `branch` (use /mem-config). Token via env GOWTH_MEM_GIT_TOKEN preferred.
+
+Run: `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py --workspace ${CLAUDE_PROJECT_DIR:-$PWD}`
+
+Flags:
+  --init        first-time setup (creates .git, push initial state)
+  --pull-only   fetch+rebase, no push
+  --push-only   commit+push, no pull
+
+What gets synced: AGENTS.md, docs/*, settings.json. Gitignored (per-machine): config.json, state.json, index.db.
+
+On conflict: writes .gowth-mem/SYNC-CONFLICT.md. Resolve markers manually, `git -C .gowth-mem add <files>`, `git -C .gowth-mem rebase --continue`, re-run."""
+
+INLINE_MEM_CONFIG = """[auto-skill: mem-config] Intent = set up .gowth-mem/config.json for git sync. Execute inline:
+
+1. Ensure .gowth-mem/ exists (if not, suggest /mem-init).
+2. Ask user for git remote URL (HTTPS or SSH).
+3. Ask for branch (default: main).
+4. Recommend token via env: `export GOWTH_MEM_GIT_TOKEN=ghp_...`
+   (Optional fallback: ask if user wants token in config.json. Warn it's plaintext.)
+5. Write `.gowth-mem/config.json`:
+   {"remote": "<URL>", "branch": "<branch>"}
+   Plus "token": "<value>" only if user explicitly chose that path.
+6. Verify .gowth-mem/.gitignore excludes config.json (the _sync.py creates one if missing).
+7. Suggest next: /mem-sync --init to push initial state."""
+
+INLINE_MEM_MIGRATE = """[auto-skill: mem-migrate] Intent = migrate v0.9 (workspace-rooted) → v1.0 (.gowth-mem/ centralized). Execute inline:
+
+1. mkdir -p .gowth-mem/docs/journal .gowth-mem/docs/skills
+2. Move workspace AGENTS.md → .gowth-mem/AGENTS.md (if exists, target missing)
+3. Move workspace docs/{handoff,exp,ref,tools,secrets,files}.md → .gowth-mem/docs/
+4. Move workspace docs/journal/* → .gowth-mem/docs/journal/
+5. Move workspace docs/skills/* → .gowth-mem/docs/skills/
+6. Remove now-empty workspace docs/ dir
+7. Create .gowth-mem/settings.json + .gitignore from templates if missing
+8. Suggest next: /mem-config → /mem-sync --init → memx (rebuild index)
+
+Idempotent — each move guards against existing target."""
+
 SHORTCUT_KEYWORDS: dict[str, str] = {
     "mems": INLINE_MEM_SAVE,
     "memd": INLINE_MEM_DISTILL,
@@ -166,6 +207,9 @@ SHORTCUT_KEYWORDS: dict[str, str] = {
     "memx": INLINE_MEM_REINDEX,
     "memc": INLINE_MEM_COST,
     "memp": INLINE_MEM_PRUNE,
+    "memy": INLINE_MEM_SYNC,
+    "memg": INLINE_MEM_CONFIG,
+    "memm": INLINE_MEM_MIGRATE,
 }
 
 SHORTCUT_RE = re.compile(

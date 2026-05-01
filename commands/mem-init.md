@@ -1,31 +1,92 @@
 ---
-description: Scaffold AGENTS.md + 6 docs/ working-memory files + docs/journal/ + docs/skills/ + today's journal entry, in the current workspace from gowth-mem templates.
+description: Scaffold .gowth-mem/ centralized layout (v1.0): AGENTS.md + 6 docs/* + docs/journal/ + docs/skills/ + settings.json + .gitignore. All gowth-mem state in one folder ready for git sync.
 ---
 
-Scaffold the gowth-mem working-memory files in the current working directory.
+Scaffold the v1.0 centralized layout in the current workspace.
 
-Run these steps using the Bash tool:
+Run with the Bash tool:
 
-1. Resolve workspace: `WS="${CLAUDE_PROJECT_DIR:-$PWD}"`.
-2. `mkdir -p "$WS/docs" "$WS/docs/journal" "$WS/docs/skills"`.
-3. Copy `AGENTS.md` if missing: `[ -f "$WS/AGENTS.md" ] || cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" "$WS/AGENTS.md"`.
-4. For each `name` in `handoff exp ref tools secrets files`:
-   - Source: `${CLAUDE_PLUGIN_ROOT}/templates/docs/<name>.md`
-   - Destination: `$WS/docs/<name>.md`
-   - Skip if destination exists (report `exists: docs/<name>.md`).
-5. Today's journal: `TODAY=$(date +%Y-%m-%d); JOURNAL="$WS/docs/journal/$TODAY.md"`.
-   - If missing: copy `${CLAUDE_PLUGIN_ROOT}/templates/journal-day.md` → `$JOURNAL`, then replace `YYYY-MM-DD` with `$TODAY`.
-6. Touch `$WS/docs/skills/.gitkeep` so the directory tracks in git when empty.
-7. End with `ls -la "$WS" "$WS/docs" "$WS/docs/journal" "$WS/docs/skills"`.
+```bash
+WS="${CLAUDE_PROJECT_DIR:-$PWD}"
+GM="$WS/.gowth-mem"
 
-Do not overwrite existing files. Report which were created and which were skipped.
+# 1. Create centralized dir tree
+mkdir -p "$GM/docs/journal" "$GM/docs/skills"
 
-**Note**: This plugin handles **layers 1, 2 + procedural skills** (raw journal + curated docs + skill library). For **layers 3 + 4** (topic deep dive + atomic concepts), use claude-obsidian's `/wiki` to scaffold a `wiki/` vault.
+# 2. Copy AGENTS.md
+[ -f "$GM/AGENTS.md" ] || cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" "$GM/AGENTS.md"
 
-After scaffolding, the typical flow:
+# 3. Copy 6 doc files
+for f in handoff exp ref tools secrets files; do
+  if [ ! -f "$GM/docs/$f.md" ]; then
+    cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/$f.md" "$GM/docs/$f.md"
+  fi
+done
 
-1. Throughout the day → `/mem-journal` to log raw observations.
-2. End of session / before `/compact` → `/mem-distill` (uses mem0 ADD/UPDATE/DELETE/NOOP semantics).
-3. When a workflow repeats ≥2× → `/mem-skillify <name>` to extract a reusable skill (Voyager pattern).
-4. Periodically → `/mem-reflect` to generate high-level reflections (Generative Agents pattern).
-5. When a topic accumulates → `/mem-promote <topic>` to gom into `wiki/topics/<Topic>.md`.
+# 4. Today's journal from template
+TODAY=$(date +%Y-%m-%d)
+JOURNAL="$GM/docs/journal/$TODAY.md"
+if [ ! -f "$JOURNAL" ]; then
+  cp "${CLAUDE_PLUGIN_ROOT}/templates/journal-day.md" "$JOURNAL"
+  python3 -c "
+p='$JOURNAL'; t='$TODAY'
+content = open(p).read().replace('YYYY-MM-DD', t)
+open(p, 'w').write(content)
+"
+fi
+
+# 5. settings.json from template
+[ -f "$GM/settings.json" ] || cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.json" "$GM/settings.json"
+
+# 6. .gitignore (excludes per-machine state + token)
+if [ ! -f "$GM/.gitignore" ]; then
+  cat > "$GM/.gitignore" <<EOF
+config.json
+state.json
+index.db
+index.db-shm
+index.db-wal
+__pycache__/
+*.pyc
+SYNC-CONFLICT.md
+EOF
+fi
+
+# 7. Show result
+ls -la "$GM" "$GM/docs" "$GM/docs/journal" "$GM/docs/skills"
+echo
+echo "✅ Centralized layout ready at .gowth-mem/"
+echo "Optional next steps:"
+echo "  /mem-config        configure git remote for sync"
+echo "  /mem-sync --init   push initial state to remote"
+echo "  memx               build search index"
+```
+
+Do not overwrite existing files. Each step skips if target exists.
+
+## v1.0 layout
+
+```
+.gowth-mem/
+├── AGENTS.md              # operating rules
+├── docs/
+│   ├── handoff.md         # session state
+│   ├── exp.md             # episodic + reflections
+│   ├── ref.md             # verified facts (Source REQUIRED)
+│   ├── tools.md           # tool registry
+│   ├── secrets.md         # POINTER only (never values)
+│   ├── files.md           # project structure
+│   ├── journal/           # raw daily logs
+│   └── skills/            # Voyager reusable workflows
+├── settings.json          # plugin behavior (synced)
+├── .gitignore             # excludes config + state + index
+├── config.json            # NOT created here — run /mem-config
+├── state.json             # auto-created on first recall
+└── index.db               # auto-created on first /mem-reindex
+```
+
+For long-term knowledge (wiki/), use claude-obsidian's `/wiki` separately. The two layers cooperate without conflict.
+
+## Migrating from v0.9?
+
+If you have an older workspace with `docs/` + `AGENTS.md` at the root, run `/mem-migrate` instead — it moves them into `.gowth-mem/` preserving content.

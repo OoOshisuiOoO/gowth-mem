@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """SessionStart hook: assemble AGENTS.md + docs/ working memory + recent journal + skills index.
 
-Loads in this order (matches AI-trade bootstrap rule + adds journal + skill layer):
+Path resolution (v1.0 centralized vs v0.9 legacy):
+- If `.gowth-mem/AGENTS.md` or `.gowth-mem/docs/` exists → v1.0; load from there.
+- Else → v0.9 fallback; load from workspace root.
+
+Files loaded (in order):
   1. AGENTS.md            — operating rules
   2. docs/handoff.md      — session state
-  3. docs/exp.md          — episodic curated (includes § Reflections)
+  3. docs/exp.md          — episodic curated
   4. docs/ref.md          — verified facts
   5. docs/tools.md        — tool registry
   6. docs/secrets.md      — resource pointers
   7. docs/files.md        — project structure
-  8. docs/journal/<today>.md      — raw daily journal (layer 1)
-  9. docs/journal/<yesterday>.md  — journal one day back
- 10. docs/skills/_index   — index of available skills (Voyager pattern)
-       Lists skill names + 1-line descriptions only (not full bodies).
-       Full skill bodies are loaded JIT by recall when a skill name matches.
+  8. docs/journal/<today>.md
+  9. docs/journal/<yesterday>.md
+ 10. docs/skills/_index   — synthesized 1-line index of available skills
 
-Caps: 12k char/file, 60k total. Skills index is a synthesized index, not a real file.
-
-Long-term knowledge (wiki/) is loaded by claude-obsidian's own SessionStart hook.
+Caps: 12k char/file, 60k total. Skips blanks, marks truncations.
 """
 from __future__ import annotations
 
@@ -28,17 +28,16 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _paths import resolve_root, docs_root  # type: ignore
+
 MAX_PER_FILE = 12_000
 MAX_TOTAL = 60_000
 SKILL_INDEX_MAX_CHARS = 2_000
 
 
 def build_skills_index(workspace: Path) -> str:
-    """Read docs/skills/*.md and produce a 1-line-per-skill index (Voyager pattern).
-
-    Reads only the frontmatter `name` + `description` to keep tokens minimal.
-    """
-    skills_dir = workspace / "docs" / "skills"
+    skills_dir = docs_root(workspace) / "skills"
     if not skills_dir.is_dir():
         return ""
     entries: list[str] = []
@@ -49,7 +48,6 @@ def build_skills_index(workspace: Path) -> str:
             continue
         name = f.stem
         desc = ""
-        # Extract description from frontmatter if present
         m = re.search(r"^---\s*$(.*?)^---\s*$", text, re.DOTALL | re.MULTILINE)
         if m:
             front = m.group(1)
@@ -67,19 +65,21 @@ def build_skills_index(workspace: Path) -> str:
 
 def main() -> int:
     workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    root = resolve_root(workspace)
+    docs = docs_root(workspace)
     today = date.today()
     yesterday = today - timedelta(days=1)
 
     candidates = [
-        workspace / "AGENTS.md",
-        workspace / "docs" / "handoff.md",
-        workspace / "docs" / "exp.md",
-        workspace / "docs" / "ref.md",
-        workspace / "docs" / "tools.md",
-        workspace / "docs" / "secrets.md",
-        workspace / "docs" / "files.md",
-        workspace / "docs" / "journal" / f"{today.isoformat()}.md",
-        workspace / "docs" / "journal" / f"{yesterday.isoformat()}.md",
+        root / "AGENTS.md",
+        docs / "handoff.md",
+        docs / "exp.md",
+        docs / "ref.md",
+        docs / "tools.md",
+        docs / "secrets.md",
+        docs / "files.md",
+        docs / "journal" / f"{today.isoformat()}.md",
+        docs / "journal" / f"{yesterday.isoformat()}.md",
     ]
 
     parts: list[str] = []
@@ -106,12 +106,14 @@ def main() -> int:
             chunk = chunk[:room]
             truncated_total = True
             stop = True
-        rel = f.relative_to(workspace)
+        try:
+            rel = f.relative_to(workspace)
+        except ValueError:
+            rel = f
         marker = f"\n[truncated, see {rel}]" if (truncated_file or truncated_total) else ""
         parts.append(f"\n=== {rel} ===\n{chunk}{marker}")
         total += len(chunk)
 
-    # Append skills index (lightweight, names + descriptions only)
     skills_index = build_skills_index(workspace)
     if skills_index and total + len(skills_index) + 100 < MAX_TOTAL:
         parts.append(f"\n=== docs/skills/ (index) ===\n{skills_index}")

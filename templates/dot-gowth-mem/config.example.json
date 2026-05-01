@@ -1,0 +1,7 @@
+{
+  "remote": "https://github.com/YOUR-USER/YOUR-REPO.git",
+  "branch": "main",
+  "_token_note": "Prefer setting env var GOWTH_MEM_GIT_TOKEN. As fallback only, you may add a 'token' field here — but this file is gitignored so it never syncs.",
+  "_remote_note": "For SSH instead of HTTPS+token, use git@github.com:USER/REPO.git",
+  "_branch_note": "Default is 'main'. Use a separate branch per machine if you want to merge manually."
+}

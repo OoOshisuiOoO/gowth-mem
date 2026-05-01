@@ -1,0 +1,14 @@
+{
+  "auto_distill_every_turns": 10,
+  "srs_resurface_days": 7,
+  "srs_resurface_prob": 4,
+  "auto_sync_on_session_start": false,
+  "auto_sync_on_stop": false,
+  "_notes": {
+    "auto_distill_every_turns": "Stop hook auto-journal cycle. Lower = more frequent saves. 0 = disable.",
+    "srs_resurface_days": "Days a file must be unseen before it's eligible for spaced resurfacing.",
+    "srs_resurface_prob": "1-in-N chance to resurface per prompt. Higher = less frequent.",
+    "auto_sync_on_session_start": "Run mem-sync on every SessionStart. May add 1-3s latency.",
+    "auto_sync_on_stop": "Run mem-sync after every Stop hook. Heavier; recommend false unless multi-device."
+  }
+}

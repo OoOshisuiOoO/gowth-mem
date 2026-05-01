@@ -145,6 +145,93 @@ Each user prompt triggers `recall-active.py`:
 8. Updates `.gowth-mem/state.json` with `last_seen` for surfaced paths.
 9. Outputs up to 3-4 distinct files (3 lines each).
 
+## v1.0 improvements (centralized .gowth-mem/ + git sync across machines)
+
+Per user direction: **all gowth-mem state in one folder, syncable across machines via user-owned git remote**. Conflict-resolution built in.
+
+### Layout
+
+```
+<workspace>/
+├── .gowth-mem/                 ← everything centralized
+│   ├── AGENTS.md               (synced)
+│   ├── docs/
+│   │   ├── handoff.md          (synced)
+│   │   ├── exp.md              (synced)
+│   │   ├── ref.md              (synced)
+│   │   ├── tools.md            (synced)
+│   │   ├── secrets.md          (synced — POINTERS only, never values)
+│   │   ├── files.md            (synced)
+│   │   ├── journal/<date>.md   (synced — daily logs)
+│   │   └── skills/<name>.md    (synced — Voyager workflows)
+│   ├── settings.json           (synced — plugin behavior)
+│   ├── config.json             (gitignored — git remote + token)
+│   ├── state.json              (gitignored — per-machine SRS)
+│   ├── index.db                (gitignored — per-machine FTS5/vector)
+│   ├── .gitignore              (auto-created)
+│   └── .git/                   (sync target)
+└── (your project source)
+```
+
+### Setup flow
+
+```bash
+# Fresh workspace, machine A:
+/mem-init                          # scaffold .gowth-mem/ centralized layout
+/mem-config                        # set git remote URL + branch
+export GOWTH_MEM_GIT_TOKEN=ghp_... # optional, recommended via env
+/mem-sync --init                   # create .git, push initial state
+memx                               # build search index
+
+# Existing v0.9 workspace, migrate:
+/mem-migrate                       # move workspace AGENTS.md + docs/ → .gowth-mem/
+
+# New machine B (after A pushed):
+git clone <REMOTE> .gowth-mem      # pull synced content
+/mem-config                        # configure remote+token locally
+memx                               # rebuild local index (per-machine)
+
+# Daily:
+memy                               # sync (commit + pull rebase + push)
+```
+
+### Conflict resolution
+
+`/mem-sync` uses `git pull --rebase`. On conflict:
+
+1. Script writes `.gowth-mem/SYNC-CONFLICT.md` listing affected files.
+2. Open each file, resolve `<<<<<<<` markers manually.
+3. `git -C .gowth-mem add <file>` → `git -C .gowth-mem rebase --continue`
+4. Re-run `memy`.
+
+Abort entirely with `git -C .gowth-mem rebase --abort` (local changes preserved).
+
+### What's NEW in v1.0
+
+| Component | Notes |
+|---|---|
+| `_paths.py` helper | auto-detects v1.0 vs v0.9 layout; backward-compatible fallback |
+| `_sync.py` | git init / pull --rebase / push with token auth, conflict-aware |
+| `/mem-sync` (`memy`) | full sync cycle |
+| `/mem-config` (`memg`) | set up remote + branch + token |
+| `/mem-migrate` (`memm`) | one-shot v0.9 → v1.0 migration |
+| `templates/dot-gowth-mem/` | example config.json + settings.json |
+| Backward-compat | hooks fall back to workspace `AGENTS.md` + `docs/` if `.gowth-mem/` absent |
+
+### Token security
+
+- **Preferred**: `export GOWTH_MEM_GIT_TOKEN=ghp_xxxx` in shell profile.
+- Fallback: `token` field in `.gowth-mem/config.json` — gitignored so never synced, but plaintext on disk. Use a fine-scoped GitHub PAT (only `repo` scope).
+- For SSH (`git@github.com:USER/REPO.git`), no token needed if SSH key is set up.
+
+### What does NOT sync (per-machine state)
+
+- `config.json` — your token + remote
+- `state.json` — SRS tracker (per-machine turn counter, last_seen)
+- `index.db` — FTS5/vector index (rebuild with `memx` after clone)
+
+This way each machine has its own search index + read history without conflicts.
+
 ## v0.9 improvements (strict schema + active auto-delete)
 
 Inspired by deeper read of [MemPalace](https://github.com/MemPalace/mempalace) — their `general_extractor.py` (5 memory types + noise rejection rules), `dedup.py` (length-biased near-duplicate removal), and `knowledge_graph.invalidate()` (temporal validity windows). gowth-mem v0.9 adapts these but goes **stricter**: per user direction, outdated knowledge is **DELETED** (not invalidated/preserved). Audit trail lives in `git log`.
@@ -197,6 +284,9 @@ Drop Vietnamese natural-language detection. Add OMC-style 4-char shortcut keywor
 | `memx` | mem-reindex (rebuild SQLite index) |
 | `memc` | mem-cost (estimate bootstrap tokens) |
 | `memp` | mem-prune (actively DELETE outdated entries) |
+| `memy` | mem-sync (git pull-rebase-push for `.gowth-mem/`) |
+| `memg` | mem-config (set up git remote + branch + token) |
+| `memm` | mem-migrate (one-shot v0.9 → v1.0 layout migration) |
 
 **Examples**:
 ```

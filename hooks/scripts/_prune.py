@@ -31,6 +31,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _paths import docs_root  # type: ignore
+
 ENTRY_RE = re.compile(r"^\s*[-*]\s+\[")
 VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 SUPERSEDED_RE = re.compile(r"\((?:superseded|deprecated|obsolete)\b", re.IGNORECASE)
@@ -116,9 +119,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     workspace = Path(args.workspace or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    docs = workspace / "docs"
+    docs = docs_root(workspace)
     if not docs.is_dir():
-        print("no docs/ directory; nothing to prune")
+        print(f"no docs/ directory at {docs}; nothing to prune")
         return 0
 
     today_iso = date.today().isoformat()
