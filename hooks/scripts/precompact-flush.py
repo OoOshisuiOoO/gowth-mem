@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""PreCompact hook: remind agent to save critical info before compaction.
+"""PreCompact hook: BLOCK Claude until critical info is flushed (auto, no manual).
 
-OpenClaw-inspired pre-compaction memory flush. Prints a reminder via
-PreCompact hookSpecificOutput so the agent has one final chance to persist
-decisions, lessons, and verified facts before older turns get summarized.
+v0.7 upgrade: changed from `additionalContext` (advisory) to `decision: "block"`
+(enforced). Inspired by MemPalace's mempal_precompact_hook.sh which blocks the
+AI to force emergency save before context compresses.
 
-Wording matches the AI-trade taxonomy convention: route info to the right
-docs/* file by type (exp / ref / tools / secrets / handoff).
+If you want the previous advisory-only behavior (no blocking), edit this file
+to switch back to `additionalContext`.
 """
 from __future__ import annotations
 
@@ -14,29 +14,29 @@ import json
 import sys
 
 
-REMINDER = """[openclaw-bridge:precompact-flush]
-Sắp compact context. Trước khi tóm tắt, lưu critical info xuống đúng file:
+REASON = """[openclaw-bridge:precompact-flush] HARD-BLOCK: compact incoming. Save EVERYTHING critical first.
 
-- Episodic experiences (debug / fix / lesson / surprise) -> docs/exp.md
-- Verified facts (with Source link) -> docs/ref.md
-- Tool notes (cú pháp đã work, gotcha, version) -> docs/tools.md
-- Secret pointers (env-var name only, KHÔNG value) -> docs/secrets.md
-- Session state (đang làm / next / blocker / open threads) -> docs/handoff.md
-- Long-term knowledge (concepts, methods cross-session) -> /save vào wiki/ qua claude-obsidian
+Before context is summarized, do this WITHOUT user prompting:
 
-Quy tắc: cốt lõi 1-2 dòng / entry, không noise, có Source để verify lại.
-Conflict cũ -> xóa cũ, không giữ song song.
-""".strip()
+1. Scan this entire conversation for high-signal info that hasn't been saved yet.
+2. Append to the right docs/* file (use mem0 ADD / UPDATE / DELETE / NOOP):
+   - Episodic experiences (debug / fix / lesson / surprise) → docs/exp.md
+   - Verified facts (Source link required) → docs/ref.md
+   - Tool notes (syntax that worked, gotcha, version) → docs/tools.md
+   - Secret pointers (env-var name only, NEVER value) → docs/secrets.md
+   - Session state (current task / next / blocker / open threads) → docs/handoff.md
+   - Workflow that repeated 2+ times → docs/skills/<name>.md
+3. Append raw observations to today's docs/journal/<today>.md if useful.
+4. Update docs/handoff.md so the next session can resume.
+5. Confirm in one line: "precompact-flush: saved N items across <files>".
+
+Quy tắc: cốt lõi 1-2 dòng / entry, có Source. Conflict cũ → xóa cũ. KHÔNG commit secret value.
+
+Once saved, the user can run /compact again (the block clears after this turn)."""
 
 
 def main() -> int:
-    out = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreCompact",
-            "additionalContext": REMINDER,
-        }
-    }
-    print(json.dumps(out))
+    print(json.dumps({"decision": "block", "reason": REASON}))
     return 0
 
 

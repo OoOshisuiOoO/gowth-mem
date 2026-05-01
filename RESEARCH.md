@@ -111,6 +111,18 @@ NEW: contextual recall         ←  Anthropic contextual retrieval
 
 12. ✅ **Token cost estimator** `/mem-cost` — char + token breakdown of bootstrap; warns if approaching 60k cap.
 
+### Shipped v0.7 — auto-trigger hooks (mempalace-inspired)
+
+After studying [MemPalace](https://github.com/MemPalace/mempalace) (their `mempal_save_hook.sh` fires every 15 messages and BLOCKS the AI; `mempal_precompact_hook.sh` forces emergency save before compact), shipped 3 auto-trigger upgrades to remove manual skill invocation:
+
+13. ✅ **Stop hook `auto-journal.py`** — counts user turns in `.gowth-mem/state.json` per session; every 10 turns, emits `decision: "block"` with full mem-distill instructions inline. Claude saves before yielding. Replaces manual `/mem-distill`.
+
+14. ✅ **PreCompact upgraded to BLOCK** — was advisory `additionalContext`; now `decision: "block"` with full save instructions. Compact can't proceed until docs/* are flushed.
+
+15. ✅ **UserPromptSubmit intent → inline skill body** — `user-augment.py` detects intents (save / skillify / reflect / bootstrap; English + Vietnamese) and injects FULL skill instructions inline. Claude executes the skill behavior without `/mem-*` slash command.
+
+Note on MemPalace storage: their plugin DOES use ChromaDB embeddings under the hood (verified from `mempalace/searcher.py` + plugin manifest keywords `chromadb`). What's distinctive is they store **verbatim text** with embeddings as the index — no summarization/paraphrasing. The "no manual skill" pattern was the actual lesson worth porting.
+
 ### Tier 4 — out of scope
 
 12. RAPTOR / GraphRAG / HippoRAG — handled by claude-obsidian's wiki-fold + lint, or future plugin.

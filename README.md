@@ -32,11 +32,12 @@ Each tier filters noise upward. Procedural skills (Tier A) sidestep the pipeline
 
 ## What you get
 
-**Hooks** (5, registered in `hooks/hooks.json`):
+**Hooks** (6, registered in `hooks/hooks.json`):
 
 - **SessionStart × 2**: `bootstrap-load.py` (AGENTS + 6 docs/* + 2 recent journal + skills index), `system-augment.py` (cwd, git, OS, datetime).
-- **PreCompact**: `precompact-flush.py` (route reminder by type).
-- **UserPromptSubmit × 2**: `recall-active.py`, `user-augment.py`.
+- **PreCompact**: `precompact-flush.py` — **HARD-BLOCKS** Claude until critical info is saved (v0.7 upgrade).
+- **UserPromptSubmit × 2**: `recall-active.py`, `user-augment.py` — auto-injects inline skill instructions on intent match (save / skillify / reflect / bootstrap).
+- **Stop** ✨ (v0.7): `auto-journal.py` — every 10 user turns, blocks Claude with auto-distill instructions (mempalace pattern). User never types `/mem-distill`.
 
 **Slash commands** (9):
 
@@ -143,6 +144,20 @@ Each user prompt triggers `recall-active.py`:
 7. **Spaced resurfacing**: with ~25% prob, appends 1 file unseen ≥7 days.
 8. Updates `.gowth-mem/state.json` with `last_seen` for surfaced paths.
 9. Outputs up to 3-4 distinct files (3 lines each).
+
+## v0.7 improvements (auto-trigger — no more manual skill invocation)
+
+Inspired by [MemPalace](https://github.com/MemPalace/mempalace)'s `mempal_save_hook.sh` (auto-mine every 15 messages) and `mempal_precompact_hook.sh` (block before compact). Adapted for the gowth-mem 4-tier markdown architecture.
+
+| Change | Source | Impact |
+|---|---|---|
+| **Stop hook auto-journal** every 10 user turns | mempalace | replaces manual `/mem-distill`. Hook BLOCKS with detailed inline instructions for Claude to scan recent turns + apply mem0 ADD/UPDATE/DELETE/NOOP to docs/exp.md / ref.md / tools.md. |
+| **PreCompact upgraded to BLOCK** (was advisory) | mempalace | enforces save before compact instead of just suggesting. Claude can't proceed until docs/* are flushed. |
+| **UserPromptSubmit intent → inline skill body** | (this plugin) | when user types "save / lưu / nhớ" → injects mem-save body inline. "skillify / lặp lại workflow" → mem-skillify. "tổng kết / reflect" → mem-reflect. "where am I / đang làm gì" → mem-bootstrap. User no longer types `/mem-*`. |
+
+**Net effect**: 90%+ of memory operations happen automatically. The user rarely types a `/mem-*` command — hooks catch intent + enforce discipline.
+
+**Disable a hook** if too aggressive: edit `~/.claude/plugins/openclaw-bridge/hooks/hooks.json` and remove the offending entry, or comment out by renaming the script.
 
 ## v0.6 improvements (hybrid recall + HyDE)
 
