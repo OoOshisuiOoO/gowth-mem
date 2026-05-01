@@ -1,0 +1,12 @@
+{
+  "name": "openclaw-bridge",
+  "version": "0.1.0",
+  "description": "OpenClaw-inspired memory + bootstrap layer for Claude Code. Splits CLAUDE.md into role files (AGENTS/SOUL/TOOLS/USER), adds daily episodic memory, pre-compaction flush reminder, and grep-based active recall hook.",
+  "author": {
+    "name": "duynguyen",
+    "email": "claude.fgt-system@firegroup.io"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/openclaw/openclaw",
+  "keywords": ["memory", "bootstrap", "openclaw", "hooks", "compaction"]
+}
