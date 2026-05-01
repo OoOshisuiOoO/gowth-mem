@@ -64,7 +64,7 @@ Trong topic file dùng `[[other-slug]]`. Hook recall sẽ follow 1 hop khi top h
 
 Repo này vừa là plugin chuẩn vừa là marketplace 1-plugin của Claude Code, nên có 2 cách cài.
 
-### Cách A — Qua plugin manager của Claude Code (KHUYẾN NGHỊ)
+### Cách A — Qua plugin manager của Claude Code
 
 Trong Claude Code:
 
@@ -87,7 +87,17 @@ Gỡ:
 /plugin marketplace remove gowth-mem
 ```
 
-### Cách B — Clone thủ công
+**Lưu ý**: Claude Code clone qua SSH (`git@github.com:...`) mặc định. Nếu chưa register SSH key cho GitHub, install sẽ báo `Permission denied (publickey)`. 3 cách fix:
+- Register SSH key tại https://github.com/settings/keys, hoặc
+- Force git rewrite SSH → HTTPS cho github.com:
+  ```bash
+  git config --global url."https://github.com/".insteadOf git@github.com:
+  ```
+- Hoặc dùng **Cách B** (clone thủ công, không cần SSH).
+
+Nếu Claude Code báo `source type your Claude Code version does not support` → update Claude Code hoặc dùng Cách B.
+
+### Cách B — Clone thủ công (KHUYẾN NGHỊ nếu Cách A lỗi)
 
 ```bash
 git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem

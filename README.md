@@ -48,7 +48,7 @@ v2.0 = single global memory at `~/.gowth-mem/`, organized by **topic**, safe und
 
 The repo is both a standalone plugin AND a single-plugin Claude Code marketplace, so two install paths are supported.
 
-### A. Via Claude Code plugin manager (recommended)
+### A. Via Claude Code plugin manager
 
 In Claude Code:
 
@@ -71,7 +71,17 @@ To uninstall:
 /plugin marketplace remove gowth-mem
 ```
 
-### B. Manual clone
+**Caveat**: Claude Code clones via SSH (`git@github.com:...`) by default. If you don't have a GitHub SSH key registered, the install fails with `Permission denied (publickey)`. Either:
+- Register an SSH key at https://github.com/settings/keys, or
+- Force git to rewrite SSH→HTTPS for github.com:
+  ```bash
+  git config --global url."https://github.com/".insteadOf git@github.com:
+  ```
+- Or use **method B** below (manual clone, no SSH).
+
+If Claude Code reports `source type your Claude Code version does not support`, update Claude Code or use method B.
+
+### B. Manual clone (recommended fallback)
 
 ```bash
 git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem
