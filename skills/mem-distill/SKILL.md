@@ -1,76 +1,93 @@
 ---
 name: mem-distill
-description: Use at end of day, end of session, or before /compact to chắt lọc raw journal entries (docs/journal/<date>.md) into curated working memory (docs/exp.md, docs/ref.md, docs/tools.md). Uses mem0-style ADD/UPDATE/DELETE/NOOP rewrite logic to keep target files lean. Drops noise.
+description: Use at end of day, end of session, or before /compact to chắt lọc raw journal entries into curated docs/exp.md / ref.md / tools.md / secrets.md. Strict schema with [type] prefixes, mempalace-inspired noise rejection, mem0 ADD/UPDATE/DELETE/NOOP semantics.
 ---
 
 # mem-distill
 
-Distill recent journal entries into the curated working layer using mem0-style write semantics.
+Distill journal entries into the curated working layer using strict schema + noise rejection.
 
 ## Inputs
 
 - Optional date or date range. Default: today + yesterday.
 - Workspace root (`$CLAUDE_PROJECT_DIR` or `$PWD`).
 
-## Source files
+## Strict schema (mempalace-inspired 5-type + 2 plugin-specific)
 
-- `docs/journal/<YYYY-MM-DD>.md` (raw observations under sections: Logs, Questions, Wins, Pains).
+Every promoted entry MUST start with a `[type]` prefix from this fixed set:
 
-## Routing table
-
-| Entry signal | Target file | Section |
+| Prefix | Goes to | Use for |
 |---|---|---|
-| Lesson learned, fix, surprise, anti-pattern | `docs/exp.md` | `## Lessons` / `## Surprises` / `## Anti-patterns` |
-| Verified external fact (HAS Source link) | `docs/ref.md` | `## API / SDK` / `## Specs / Standards` / `## Numbers / Limits` |
-| Tool usage syntax / gotcha / version | `docs/tools.md` | `## Cú pháp đã work` |
-| Resource pointer (env-var name, file path) | `docs/secrets.md` | `## Env vars` or `## Files (gitignored)` |
-| Pure chatter, vague feeling, unrelated | DROP (do not promote) |
-| Question without answer | LEAVE in journal (don't promote — still open) |
+| `[decision]` | `docs/exp.md` § Decisions | Choice + rationale |
+| `[preference]` | `docs/exp.md` § Preferences | Recurring rule (always X / never Y) |
+| `[milestone]` | `docs/exp.md` § Milestones | Working solution / breakthrough |
+| `[problem]` | `docs/exp.md` § Problems | Bug / failure / fix |
+| `[fact]` | `docs/ref.md` (Source REQUIRED) | Verified external fact |
+| `[tool]` | `docs/tools.md` | Tool syntax / gotcha / version |
+| `[secret-ref]` | `docs/secrets.md` | Resource pointer (env-var name only — NEVER value) |
 
-## Write semantics — mem0 ADD/UPDATE/DELETE/NOOP (CRITICAL)
+No prefix → REJECT (don't promote). The prefix is searchable + drives downstream prune behavior.
 
-For each candidate entry, before writing, decide one of four actions:
+## Quality gates (mempalace `general_extractor.py` pattern)
 
-| Action | When | What to do |
+REJECT entries that fail ANY gate:
+
+- **Length**: < 20 chars → DROP
+- **Code-only**: line is shell/imports/operators with no prose → DROP
+- **Source-required for `[fact]`**: missing `Source:` URL or `file:line` → either drop or downgrade to `[problem]` with `(needs source)` note
+- **Confidence**: vague, hedged ("maybe", "I think") → DROP unless backed by Source
+- **Prose-to-symbol ratio**: < 30% words → DROP
+- **Duplicate**: Jaccard ≥ 0.85 with existing entry in target → NOOP (don't add)
+
+## Write semantics — mem0 ADD / UPDATE / DELETE / NOOP
+
+For each candidate that passes gates:
+
+| Action | When | What |
 |---|---|---|
-| **ADD** | No similar existing entry in target | Append new entry under correct section |
-| **UPDATE** | Existing entry with same subject but new info | Replace the old entry's content; keep one entry per fact |
-| **DELETE** | New entry contradicts an old one (the new is correct) | Remove the old entry, then ADD the new one |
-| **NOOP** | Exact duplicate or strict subset of an existing entry | Skip; do nothing |
+| **ADD** | No similar existing entry | Append under correct section |
+| **UPDATE** | Existing entry with same subject + new info | Replace old; keep one entry per fact |
+| **DELETE** | New entry contradicts old (new is correct) | Remove old, then ADD new |
+| **NOOP** | Exact dup or strict subset of existing | Skip |
 
-This avoids endless append; target files stay lean and contradiction-free over time.
+Per user direction: contradicts → **DELETE** (do not keep both with `(superseded)`); audit lives in `git log`.
+
+Exception: when in doubt about which is correct, mark old as `(superseded)` so `mem-prune` will delete on next run, and add new. This 2-step gives reviewer a chance to roll back via `git checkout`.
 
 ## Steps
 
-1. Determine target date range (default today + yesterday).
-2. For each journal file in range:
-   a. Read the file. Parse entries under each section header.
-   b. For each entry: classify by signal (use routing table).
-   c. If DROP → skip.
-   d. Else format per target convention (1-2 lines, with Source if available).
-3. For each formatted candidate:
-   a. Read the target `docs/<name>.md` file.
-   b. **Decide ADD / UPDATE / DELETE / NOOP** by comparing the candidate against existing entries (string match for keys + LLM judgement for semantic conflict).
-   c. Apply the action.
-4. Mark each promoted source journal entry with `(distilled)` suffix.
-5. Report:
+1. Determine date range (default today + yesterday journal files).
+2. Read each journal file. Parse entries under sections (Logs / Wins / Pains / Questions).
+3. For each entry:
+   a. Apply quality gates → DROP failures.
+   b. Classify type (5-type schema above).
+   c. Format with `[type]` prefix + Source.
+4. For each formatted candidate:
+   a. Read target docs/<name>.md.
+   b. Decide ADD / UPDATE / DELETE / NOOP.
+   c. Apply.
+5. Mark distilled source journal entries with `(distilled)` suffix.
+6. Run `mem-prune` (or `_prune.py`) to clean up any newly-marked superseded.
+7. Report:
    - ADD: N
    - UPDATE: M
-   - DELETE: K (old entries removed)
-   - NOOP: J (already covered)
-   - DROP: D (noise removed before promotion)
-   - LEFT IN JOURNAL: L (open questions, unverified facts)
+   - DELETE: K (old contradicting entries removed)
+   - NOOP: J (already covered / dup)
+   - DROP: D (noise removed)
+   - LEFT IN JOURNAL: L (open questions / unverified facts)
 
 ## Hard rules
 
-- Never invent facts not in the journal.
-- Never write secret values into `docs/secrets.md` — only env-var name or path.
-- Refuse to add to `docs/ref.md` if no Source link → promote to `docs/exp.md` instead with note `(needs source verification)`.
-- Conflict → DELETE old, ADD new. Never leave both.
-- Do NOT delete the journal file itself (the journal is a permanent log).
+- Never invent facts not in journal.
+- Never write secret values to `docs/secrets.md` — only env-var name + how to obtain.
+- Refuse `[fact]` without Source — downgrade to `[problem]` with `(needs source)` instead, OR DROP.
+- Conflict → DELETE old + ADD new (or mark `(superseded)` then prune). Never keep both.
+- Do NOT delete the journal file (raw log is permanent).
+- Do NOT promote entries that don't start with a recognized `[type]` prefix.
 
-## Cadence guidance
+## Cadence
 
-- Daily distill (small): end of session, takes <1 minute.
-- Weekly distill (larger): catches accumulated open questions; triggers `/mem-reflect` afterward.
-- Pre-compact distill (mandatory): run before `/compact` to ensure nothing critical is lost.
+- Daily: end of session, fast.
+- Weekly: larger pass, follow with `/mem-reflect` for cross-entry patterns.
+- Pre-compact: mandatory.
+- Always: follow with `/mem-prune` to clear superseded markers.

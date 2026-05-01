@@ -1,20 +1,43 @@
 # docs/tools.md
 
-Tool registry. Ghi sau mỗi lần dùng / cài tool mới.
+Tool registry. Ghi sau mỗi lần dùng / cài tool.
 
-Trước khi viết script Python/Bash → tra file này. Có tool → dùng tool. Không có → mới được tự code, và phải ghi vào đây lý do "không có tool nào cover".
+## Schema
+
+Each entry MUST start with `[tool]` prefix.
+
+| Section | Format |
+|---|---|
+| Installed | `\| <tool> \| <version> \| <install cmd> \| <use case> \|` (table row) |
+| Cú pháp đã work | `- [tool] <command syntax> — gotcha: <X> — version: <Y>` |
+| Đã thử nhưng bỏ | `- [tool] (rejected) <name> — reason: <why>` |
+
+Optional metadata:
+- `version: <number>` for version-pinned syntax (mem-prune deletes when version is in DEPRECATED list or `valid_until` past)
+
+## Quality gates
+
+- Tool name + version explicit
+- Working syntax (not theoretical)
+- Reproducible (`brew install x` not "install somehow")
 
 ## Installed
 
 | Tool | Version | Cài bằng | Use case |
 |---|---|---|---|
-| (e.g. ripgrep) | 14.0 | `brew install rg` | grep nhanh, recursive default |
+| ripgrep | 14.0 | `brew install rg` | grep recursive default, ignores .gitignore |
 
 ## Cú pháp đã work
 
-- `rg "pattern" -t py` — chỉ search file Python
-  Gotcha: rg ignore .gitignore mặc định; thêm `-uu` để search hết.
+- [tool] `rg "pattern" -t py` — only Python files
+  Gotcha: ignores .gitignore by default; add `-uu` for full search.
 
-## Tools đã thử nhưng không dùng
+- [tool] `gh repo create OWNER/NAME --public --source . --push` — version: gh 2.89
 
-- (tool) — (lý do bỏ: chậm / lỗi / overlap với cái đã có)
+## Đã thử nhưng bỏ
+
+- [tool] (rejected) <name> — reason: (slow / lỗi / overlap)
+
+## Conflict rule
+
+Multiple ways to do the same thing → keep the simplest. DELETE longer/clunkier alternatives.

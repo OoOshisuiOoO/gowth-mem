@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
-"""Stop hook: auto-distill every N user turns. Blocks Claude until journal is digested.
+"""Stop hook: auto-distill + auto-prune every N user turns. Blocks Claude until done.
 
-Inspired by MemPalace's mempal_save_hook.sh which fires every 15 user messages
-and blocks the AI to save topics/decisions/quotes.
+v0.9: in addition to instructing distill, the auto-journal cycle now also runs
+the active prune helper (`_prune.py`) automatically before yielding. This keeps
+docs/* lean per user direction (outdated knowledge → DELETE, not just mark).
 
 Algorithm:
   1. Read session_id from stdin.
   2. Increment turn counter in .gowth-mem/state.json under session[id].turn_count.
-  3. If turn_count % AUTO_DISTILL_EVERY == 0 → emit decision=block with detailed
-     instructions for Claude to:
-       - Scan recent decisions / lessons / surprises / pains from this session.
-       - Append signal entries to docs/journal/<today>.md.
-       - Apply mem0 ADD/UPDATE/DELETE/NOOP to docs/exp.md / ref.md / tools.md.
+  3. If turn_count % AUTO_DISTILL_EVERY == 0:
+       - Run `_prune.py` synchronously (deletes superseded/expired/dup entries).
+       - Emit decision=block with detailed instructions for Claude to:
+           * Scan recent decisions / lessons / surprises / pains.
+           * Apply 5-type strict schema with [type] prefix.
+           * Promote signal entries via mem0 ADD/UPDATE/DELETE/NOOP.
   4. Otherwise → silent (no block).
-  5. Reset counter to 0 right before block so Claude only triggers once.
+  5. Reset counter to 0 right before block.
 
-This replaces manual `/mem-distill`. User never has to type it.
+This replaces manual `/mem-distill` AND `/mem-prune` invocations.
 """
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
-AUTO_DISTILL_EVERY = 10  # block every N user turns
+AUTO_DISTILL_EVERY = 10
 
 
 def main() -> int:
@@ -50,46 +53,61 @@ def main() -> int:
     sess["turn_count"] = sess.get("turn_count", 0) + 1
     turn = sess["turn_count"]
 
-    # Persist incremented counter (best-effort; failures are non-critical)
     try:
         state_path.parent.mkdir(exist_ok=True)
         state_path.write_text(json.dumps(state, indent=2))
     except Exception:
         pass
 
-    # Only block when threshold reached.
     if turn < AUTO_DISTILL_EVERY:
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
-    # Reset counter so the next 10 turns can accumulate before next auto-distill.
     sess["turn_count"] = 0
     try:
         state_path.write_text(json.dumps(state, indent=2))
     except Exception:
         pass
 
-    today = date.today().isoformat()
-    reason = f"""[openclaw-bridge:auto-journal] {AUTO_DISTILL_EVERY} turns elapsed — auto-distill before stopping.
+    # Run active prune synchronously (best-effort).
+    prune_summary = ""
+    prune_script = Path(__file__).parent / "_prune.py"
+    if prune_script.is_file():
+        try:
+            r = subprocess.run(
+                ["python3", str(prune_script), "--workspace", str(workspace)],
+                capture_output=True, text=True, timeout=10,
+            )
+            prune_summary = (r.stdout or "").strip().splitlines()[0] if r.stdout else ""
+        except Exception:
+            pass
 
-Before yielding control, do this WITHOUT user prompting:
+    today = date.today().isoformat()
+    reason = f"""[openclaw-bridge:auto-journal] {AUTO_DISTILL_EVERY} turns elapsed.
+
+Pre-block prune ran: {prune_summary or '(no prune output)'}
+
+Now do this WITHOUT user prompting before yielding control:
 
 1. Scan the last {AUTO_DISTILL_EVERY} user turns and your replies.
-2. Extract any:
-   - Decisions made (what was chosen, why)
-   - Lessons learned (what failed, what worked, surprise)
-   - Verified facts with Source links
-   - Tool notes (syntax that worked, gotcha)
-   - Resource pointers (env-var names, file paths — NEVER values)
-3. Append signal entries to `docs/journal/{today}.md` under correct sections (Logs / Wins / Pains / Questions).
-4. Apply mem0-style **ADD / UPDATE / DELETE / NOOP** to promote any high-signal entries already in journal into:
-   - `docs/exp.md` for episodic lessons
-   - `docs/ref.md` for verified facts (require Source link)
-   - `docs/tools.md` for tool notes
-5. Drop pure chatter / noise.
-6. Confirm with one line: "auto-journal: kept N, dropped M, promoted K".
+2. For each high-signal item, classify into ONE of these 7 types and prepend the prefix:
+   [decision]    choice + rationale          → docs/exp.md
+   [preference]  always X / never Y          → docs/exp.md
+   [milestone]   working solution            → docs/exp.md
+   [problem]     bug / failure / fix         → docs/exp.md
+   [fact]        verified external fact      → docs/ref.md (Source REQUIRED)
+   [tool]        syntax / gotcha / version   → docs/tools.md
+   [secret-ref]  env-var / path POINTER      → docs/secrets.md (NEVER value)
+3. Apply quality gates — DROP if:
+   - Entry < 20 chars
+   - Code-only (no prose)
+   - [fact] without Source
+   - Vague / hedged ("maybe", "I think") without backing
+4. Apply mem0 ADD / UPDATE / DELETE / NOOP against existing target file content.
+5. Conflict with existing entry → DELETE old, ADD new (or mark `(superseded)` for next prune).
+6. Confirm in 1 line: "auto-journal: kept N, dropped M, promoted K, conflicts resolved J".
 
-Don't write the user a long message about this — just do the saves silently and continue.
+Don't write the user a long message about this — just do the work silently and continue.
 This is automation, not a conversation step."""
 
     print(json.dumps({"decision": "block", "reason": reason}))

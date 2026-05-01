@@ -143,6 +143,18 @@ Cap = 60,000 chars (~15,000 tokens). Warn if >40k or >60k."""
 # ---------------------------------------------------------------------------
 # Shortcut keyword table (3-4 char codes at START of prompt, OMC ulw-style).
 
+INLINE_MEM_PRUNE = """[auto-skill: mem-prune] Intent = actively DELETE outdated entries from docs/*.md. Execute inline:
+
+Run: `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_prune.py --workspace ${CLAUDE_PROJECT_DIR:-$PWD}`
+Pass `--dry-run` first if user wants preview.
+
+Deletion rules (in order):
+1. Entry containing `valid_until: YYYY-MM-DD` past today → DELETE
+2. Entry containing `(superseded)` / `(deprecated)` / `(obsolete)` → DELETE
+3. Within-file Jaccard ≥ 0.85 duplicate → DELETE the SHORTER, keep longer/richer
+
+Skips docs/journal/** (raw log is permanent). Report: deleted N, kept K."""
+
 SHORTCUT_KEYWORDS: dict[str, str] = {
     "mems": INLINE_MEM_SAVE,
     "memd": INLINE_MEM_DISTILL,
@@ -153,6 +165,7 @@ SHORTCUT_KEYWORDS: dict[str, str] = {
     "memj": INLINE_MEM_JOURNAL,
     "memx": INLINE_MEM_REINDEX,
     "memc": INLINE_MEM_COST,
+    "memp": INLINE_MEM_PRUNE,
 }
 
 SHORTCUT_RE = re.compile(

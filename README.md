@@ -145,6 +145,40 @@ Each user prompt triggers `recall-active.py`:
 8. Updates `.gowth-mem/state.json` with `last_seen` for surfaced paths.
 9. Outputs up to 3-4 distinct files (3 lines each).
 
+## v0.9 improvements (strict schema + active auto-delete)
+
+Inspired by deeper read of [MemPalace](https://github.com/MemPalace/mempalace) — their `general_extractor.py` (5 memory types + noise rejection rules), `dedup.py` (length-biased near-duplicate removal), and `knowledge_graph.invalidate()` (temporal validity windows). gowth-mem v0.9 adapts these but goes **stricter**: per user direction, outdated knowledge is **DELETED** (not invalidated/preserved). Audit trail lives in `git log`.
+
+**Strict 7-type schema** — every entry MUST start with a `[type]` prefix:
+
+| Prefix | Goes to | For |
+|---|---|---|
+| `[decision]` | docs/exp.md § Decisions | choice + rationale |
+| `[preference]` | docs/exp.md § Preferences | always X / never Y |
+| `[milestone]` | docs/exp.md § Milestones | working solution |
+| `[problem]` | docs/exp.md § Problems | bug / failure / fix |
+| `[fact]` | docs/ref.md (Source REQUIRED) | verified external fact |
+| `[tool]` | docs/tools.md | syntax / gotcha / version |
+| `[secret-ref]` | docs/secrets.md (POINTER only, NEVER value) | env-var / file / resource |
+
+**Quality gates** (mempalace `general_extractor` pattern) — `mem-distill` rejects entries that fail any:
+- < 20 chars → DROP
+- Code-only (no prose) → DROP
+- `[fact]` without Source → DROP or downgrade to `[problem]` with `(needs source)`
+- Vague / hedged ("maybe", "I think") without backing → DROP
+- Jaccard ≥ 0.85 with existing entry → NOOP
+
+**Active auto-DELETE** (v0.9 NEW — diverges from mempalace's invalidate-only philosophy):
+
+`mem-prune` (`/mem-prune` or shortcut `memp`) actively removes entries from `docs/*.md`:
+1. `valid_until: <past-date>` → DELETE
+2. `(superseded)` / `(deprecated)` / `(obsolete)` markers → DELETE
+3. Within-file Jaccard ≥ 0.85 duplicate → DELETE shorter, keep longer
+
+Skips `docs/journal/**` (raw log is permanent).
+
+**Auto-prune in Stop hook**: `auto-journal.py` now runs `_prune.py` synchronously every 10 turns before yielding. Combined with auto-distill, this keeps working memory lean without manual intervention.
+
 ## v0.8 improvements (English-only short keyword shortcuts)
 
 Drop Vietnamese natural-language detection. Add OMC-style 4-char shortcut keywords at start of prompt for explicit, low-false-positive triggering.
@@ -162,6 +196,7 @@ Drop Vietnamese natural-language detection. Add OMC-style 4-char shortcut keywor
 | `memj` | mem-journal (open today's journal) |
 | `memx` | mem-reindex (rebuild SQLite index) |
 | `memc` | mem-cost (estimate bootstrap tokens) |
+| `memp` | mem-prune (actively DELETE outdated entries) |
 
 **Examples**:
 ```
