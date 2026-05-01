@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: contextual recall with MMR diversity.
+"""UserPromptSubmit hook: contextual recall with MMR + temporal facts + spaced resurfacing.
 
-Improvements over v0.3:
-- **Contextual retrieval (Anthropic)**: each match line is prepended with the
-  nearest preceding `## ` / `### ` heading, so the model sees WHERE the snippet
-  lives. This was reported to cut retrieval failures by 35-67%.
-- **MMR diversity (Maximal Marginal Relevance)**: when multiple hits would
-  otherwise come from the same file/section, prefer hits from distinct files
-  to maximize informational coverage.
-- **Per-layer score boost**: docs/journal/today gets a recency boost; docs/*
-  curated files get a quality boost; wiki/* files are reachable but lower priority.
+v0.5 additions over v0.4:
+- **Temporal facts** (Zep pattern): skip match lines tagged `(superseded)` or
+  with `valid_until: YYYY-MM-DD` in the past. Stale facts stop polluting recall.
+- **SM-2-lite spaced resurfacing** (Anki / forgetting-curve): track last_seen
+  per file in `.gowth-mem/state.json`. With deterministic probability
+  (hash of today + prompt mod 4 == 0, ≈25%), append 1 entry from a file that
+  hasn't been surfaced in ≥7 days. Keeps old knowledge from drifting out.
+
+Existing v0.4 behavior preserved:
+- Contextual heading prefix (§ heading | line)
+- MMR-style word-overlap penalty (Jaccard >0.6 skipped)
+- Tier-based file score (journal/today > docs/* > wiki/*)
 
 Scans:
   - docs/**/*.md   (gowth-mem: journal + curated)
   - wiki/**/*.md   (claude-obsidian, if vault exists)
 
-Returns up to 3 matching files (top 3 lines each) as additional context.
 Silent if nothing matches.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -32,8 +36,12 @@ MAX_FILES = 3
 MAX_LINES_PER_FILE = 3
 MAX_PROMPT_CHARS = 1500
 MAX_CANDIDATE_FILES = 80
+SRS_RESURFACE_DAYS = 7
+SRS_RESURFACE_PROB = 4  # hash mod N == 0 → resurface
 
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+SUPERSEDED_RE = re.compile(r"\(superseded\b", re.IGNORECASE)
+VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 
 
 def collect_candidates(workspace: Path) -> list[Path]:
@@ -48,7 +56,6 @@ def collect_candidates(workspace: Path) -> list[Path]:
 
 
 def find_heading(lines: list[str], idx: int) -> str:
-    """Walk backward from line index to find the nearest preceding markdown heading."""
     for i in range(idx, -1, -1):
         m = HEADING_RE.match(lines[i])
         if m:
@@ -56,8 +63,17 @@ def find_heading(lines: list[str], idx: int) -> str:
     return ""
 
 
+def line_is_temporal_invalid(line: str, today_iso: str) -> bool:
+    """True if line is superseded or expired."""
+    if SUPERSEDED_RE.search(line):
+        return True
+    m = VALID_UNTIL_RE.search(line)
+    if m and m.group(1) < today_iso:
+        return True
+    return False
+
+
 def layer_score(workspace: Path, p: Path) -> int:
-    """Higher score = preferred. journal/today > curated docs > wiki."""
     try:
         rel = p.relative_to(workspace)
     except ValueError:
@@ -84,6 +100,74 @@ def jaccard_words(a: str, b: str) -> float:
     if not sa or not sb:
         return 0.0
     return len(sa & sb) / len(sa | sb)
+
+
+def load_srs_state(workspace: Path) -> dict:
+    p = workspace / ".gowth-mem" / "state.json"
+    if not p.is_file():
+        return {"version": 1, "files": {}}
+    try:
+        d = json.loads(p.read_text())
+        d.setdefault("files", {})
+        return d
+    except Exception:
+        return {"version": 1, "files": {}}
+
+
+def save_srs_state(workspace: Path, state: dict) -> None:
+    p = workspace / ".gowth-mem"
+    try:
+        p.mkdir(exist_ok=True)
+        (p / "state.json").write_text(json.dumps(state, indent=2))
+    except Exception:
+        pass  # tracker is non-critical
+
+
+def find_due_resurface(
+    workspace: Path,
+    state: dict,
+    excluded_paths: set[str],
+    candidates: list[Path],
+    pattern: re.Pattern,
+    today_iso: str,
+) -> tuple[Path, list[tuple[int, str, str]]] | None:
+    """Pick 1 file not seen in N days, with at least one matched line."""
+    now = time.time()
+    threshold = now - SRS_RESURFACE_DAYS * 86400
+    files_meta = state.get("files", {})
+    eligible: list[tuple[Path, float]] = []
+    for f in candidates:
+        try:
+            rel = str(f.relative_to(workspace))
+        except ValueError:
+            continue
+        if rel in excluded_paths:
+            continue
+        last_seen = files_meta.get(rel, {}).get("last_seen", 0)
+        if last_seen >= threshold:
+            continue
+        eligible.append((f, last_seen))
+    eligible.sort(key=lambda x: x[1])  # oldest first
+    for f, _last in eligible:
+        try:
+            text = f.read_text(errors="ignore")
+        except Exception:
+            continue
+        lines = text.splitlines()
+        matched: list[tuple[int, str, str]] = []
+        for idx, ln in enumerate(lines):
+            ln_stripped = ln.strip()
+            if not pattern.search(ln_stripped):
+                continue
+            if line_is_temporal_invalid(ln_stripped, today_iso):
+                continue
+            heading = find_heading(lines, idx)
+            matched.append((idx, heading, ln_stripped))
+            if len(matched) >= MAX_LINES_PER_FILE:
+                break
+        if matched:
+            return f, matched
+    return None
 
 
 def main() -> int:
@@ -114,8 +198,8 @@ def main() -> int:
         return 0
 
     pattern = re.compile("|".join(re.escape(k) for k in kws), re.IGNORECASE)
+    today_iso = date.today().isoformat()
 
-    # Collect all candidate hits with metadata for MMR scoring
     raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
     for f in candidates:
         try:
@@ -126,26 +210,27 @@ def main() -> int:
         matched: list[tuple[int, str, str]] = []
         for idx, ln in enumerate(lines):
             ln_stripped = ln.strip()
-            if pattern.search(ln_stripped):
-                heading = find_heading(lines, idx)
-                matched.append((idx, heading, ln_stripped))
+            if not pattern.search(ln_stripped):
+                continue
+            if line_is_temporal_invalid(ln_stripped, today_iso):
+                continue
+            heading = find_heading(lines, idx)
+            matched.append((idx, heading, ln_stripped))
         if matched:
             raw_hits.append((f, matched[:MAX_LINES_PER_FILE * 2], layer_score(workspace, f)))
 
     if not raw_hits:
         return 0
 
-    # MMR-style selection: pick highest-scored file first, then files with low
-    # word-overlap to already-selected files (diversity).
     raw_hits.sort(key=lambda h: -h[2])
     selected: list[tuple[Path, list[tuple[int, str, str]]]] = []
     selected_text: list[str] = []
-    for f, matches, score in raw_hits:
+    for f, matches, _score in raw_hits:
         joined = " ".join(m[2] for m in matches)
         if selected_text:
             max_overlap = max(jaccard_words(joined, s) for s in selected_text)
             if max_overlap > 0.6:
-                continue  # too redundant with already selected
+                continue
         selected.append((f, matches[:MAX_LINES_PER_FILE]))
         selected_text.append(joined)
         if len(selected) >= MAX_FILES:
@@ -154,13 +239,41 @@ def main() -> int:
     if not selected:
         return 0
 
-    parts = ["[openclaw-bridge:recall] Có thể relevant (contextual+MMR):"]
+    # SM-2-lite spaced resurfacing: with ~25% probability, append 1 stale file.
+    state = load_srs_state(workspace)
+    prob_seed = hashlib.sha1((today_iso + prompt).encode()).digest()[0]
+    resurfaced = None
+    if prob_seed % SRS_RESURFACE_PROB == 0:
+        excluded = {str(f.relative_to(workspace)) for f, _ in selected}
+        resurfaced = find_due_resurface(workspace, state, excluded, candidates, pattern, today_iso)
+
+    parts = ["[openclaw-bridge:recall] Có thể relevant (contextual+MMR+temporal):"]
     for f, matches in selected:
         rel = f.relative_to(workspace)
         parts.append(f"\n--- {rel} ---")
         for _idx, heading, line in matches:
             prefix = f"§ {heading} | " if heading else ""
             parts.append(f"{prefix}{line}")
+    if resurfaced:
+        rf, rmatches = resurfaced
+        rel = rf.relative_to(workspace)
+        parts.append(f"\n--- {rel} (resurfaced — chưa seen ≥{SRS_RESURFACE_DAYS}d) ---")
+        for _idx, heading, line in rmatches:
+            prefix = f"§ {heading} | " if heading else ""
+            parts.append(f"{prefix}{line}")
+
+    # Update SRS tracker for surfaced paths.
+    now = time.time()
+    files_meta = state.setdefault("files", {})
+    surfaced_paths = [str(f.relative_to(workspace)) for f, _ in selected]
+    if resurfaced:
+        surfaced_paths.append(str(resurfaced[0].relative_to(workspace)))
+    for rel in surfaced_paths:
+        rec = files_meta.setdefault(rel, {})
+        rec["last_seen"] = now
+        rec["count"] = rec.get("count", 0) + 1
+    save_srs_state(workspace, state)
+
     out = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
