@@ -2,140 +2,201 @@
 
 Operating rules — the rational layer. Hard constraints, workflow, must / never.
 
-## Identity & role
+## 1. Identity & role
 
-- (one line: who is this agent, what is its primary objective)
+- Long-term cross-project memory layer for Claude Code. Single global vault at `~/.gowth-mem/`, synced via private git remote.
+- Mỗi session làm việc trong **1 workspace** (devops / trade / personal / default). Knowledge updates ghi vào active workspace, không lan sang workspace khác.
+- Mode: tự đọc state, tự tra `shared/secrets.md` khi cần tài nguyên, tự ghi lại kinh nghiệm khi học được điều mới. Không hỏi lại thứ đã có trong docs.
 
-## Hard rules (non-negotiable)
+## 2. Active-workspace resolution (BẮT BUỘC mỗi session)
 
-- (rule 1)
-- (rule 2)
+Bootstrap hook resolve theo thứ tự (first match wins):
 
-## v2.0 layout: global ~/.gowth-mem/, organized by topic
+1. Env `GOWTH_WORKSPACE=<name>` (highest priority).
+2. Session-scoped `~/.gowth-mem/.session-workspace` (set by `/mem-workspace <name>`).
+3. Glob match `$PWD` trong `config.json.workspace_map`.
+4. `config.json.active_workspace` (default `"default"`).
+
+Switch trong session: `/mem-workspace <name>`.
+
+## 3. Bootstrap order
+
+1. **Global** (cross-workspace):
+   - `AGENTS.md` — rules (file này)
+   - `shared/files.md` — top-level tree
+   - `shared/secrets.md` — env-var POINTERS
+   - `shared/tools.md` — system-wide tool registry
+2. **Workspace** (active):
+   - `workspaces/<ws>/AGENTS.md` — optional override
+   - `workspaces/<ws>/_MAP.md` — root topic MOC
+   - `workspaces/<ws>/docs/handoff.md` — đang ở đâu
+   - `workspaces/<ws>/docs/{exp,ref,tools,files}.md` — workspace-scoped knowledge
+   - Top-3 topics theo `frontmatter.last_touched`
+   - `workspaces/<ws>/journal/{today,yesterday}.md`
+   - `workspaces/<ws>/skills/_index` (nếu có)
+
+Sau bootstrap → tóm tắt 3 dòng: **workspace=<ws> / đang làm gì / step kế / blocker**.
+
+## 4. v2.2 layout
 
 ```
 ~/.gowth-mem/
-├── AGENTS.md                  operating rules (this file, synced)
-├── settings.json              plugin behavior (synced)
-├── config.json                remote+token (gitignored, per-machine)
-├── state.json                 SRS data (gitignored, per-machine)
-├── index.db                   FTS5+vec search (gitignored, per-machine)
-├── .locks/                    flock files (gitignored)
-├── topics/                    ★ topic-organized knowledge
-│   ├── _index.md              topic registry
-│   └── <slug>.md              one file per topic
-├── docs/                      cross-topic registries
-│   ├── handoff.md             session state (host: prefix per line)
-│   ├── secrets.md             POINTER only (env-var names, never values)
-│   └── tools.md               cross-topic tool quirks
-├── journal/<date>.md          raw daily logs (synced)
-└── skills/<slug>.md           Voyager workflows (synced)
+├── AGENTS.md  settings.json  config.json  state.json  index.db  .locks/
+├── shared/                     ★ truly cross-workspace
+│   ├── _MAP.md  secrets.md  tools.md  files.md
+│   └── skills/<slug>.md        shared Voyager workflows
+└── workspaces/
+    ├── _MAP.md                 workspace registry
+    └── <ws>/                   default | devops | trade | …
+        ├── workspace.json      metadata
+        ├── AGENTS.md           (optional override)
+        ├── _MAP.md             root topic MOC
+        ├── docs/{handoff,exp,ref,tools,files}.md
+        ├── topics/             v2.1 hierarchical, ≤3 cấp
+        ├── journal/<date>.md
+        └── skills/<slug>.md    (optional override)
 ```
 
-## 7-type schema (line-level prefix inside topic files)
-
-```
-- [exp]         episodic experience (debug, fix, lesson)
-- [ref]         verified fact (Source: REQUIRED)
-- [tool]        tool quirk specific to this topic
-- [decision]    architectural choice + rationale
-- [reflection]  pattern / takeaway / cluster
-- [skill-ref]   pointer to skills/<slug>.md
-- [secret-ref]  pointer to docs/secrets.md (env-var name)
-```
-
-## Workflow
-
-1. **Bootstrap** (every session, automatic via SessionStart hook): read AGENTS.md + topics/_index.md + docs/handoff.md + docs/secrets.md + docs/tools.md + top-3 recently-touched topics + today/yesterday journal. Summarize 3 lines: **đang làm gì / step kế / blocker**.
-
-2. **Throughout session**: log raw observations to `journal/<today>.md` (`memj` or `/mem-journal`). Append-only, fast, no schema enforcement.
-
-3. **After repeating a workflow ≥2×**: `memk` / `/mem-skillify <name>` — extract reusable workflow into `skills/<name>.md` (Voyager pattern).
-
-4. **Before `/compact`** (handled by PreCompact hook + auto-sync commit-only):
-   - Distill journal/<today>.md into topic-bound entries (use `_topic.py route` to pick the slug).
-   - Apply mem0 ADD/UPDATE/DELETE/NOOP. Conflict with existing → DELETE old.
-
-5. **After `/compact`** (handled by PostCompact hook): auto-sync runs `pull-rebase-push` under `file_lock("sync")`. On conflict, writes `SYNC-CONFLICT.md` and the next prompt's UserPromptSubmit hook reminds you to run `/mem-sync-resolve`.
-
-6. **Weekly**: `memr` / `/mem-reflect` — generate 1-3 high-level reflections from recent entries; append as `[reflection]` in the relevant topic.
-
-7. **Research-first**: no evidence → no implementation. Save findings as `[ref]` in the matching topic, with a Source link. Conflict cũ → xóa.
-
-8. **Tools-first**: before writing scripts, check `docs/tools.md` and the relevant topic. Tool exists → use it.
-
-9. **Verify before claim**: no screenshot / log / test pass → no "done".
-
-## Topic routing
-
-Each `[exp]/[ref]/[tool]/[decision]/[reflection]` line goes into `topics/<slug>.md`. The router (`_topic.py`):
-
-1. Extracts ≥4-char keywords from the entry, drops stopwords.
-2. Counts overlap against each existing `topics/*.md`.
-3. If max overlap ≥ 3 → that slug.
-4. Else → new slug from top-2 distinctive keywords (kebab-case, ≤40 chars).
-5. Else → `misc` (default fallback, configurable in settings.json).
-
-Cross-topic registries (`docs/handoff.md`, `docs/secrets.md`, `docs/tools.md`) stay flat — they don't fit any single topic.
-
-When a topic exceeds 1500 lines, `/mem-promote` splits it into `topics/<slug>/{exp,ref,tools}.md`.
-
-## Cross-references
-
-- Inside a topic file, reference another topic with `[[other-slug]]`.
-- The recall hook follows one wikilink hop deep when a topic file is the top hit.
-- Provenance line for migrated entries: `Source: <ws-name>/<original-file>`.
-
-## Multi-session safety
-
-- `state.json` writes use `file_lock("state")` — parallel Claude sessions queue rather than corrupt the file.
-- Sync operations use `file_lock("sync")` — only one git op runs at a time across sessions.
-- All markdown writes are atomic (`_atomic.atomic_write` = tempfile + os.replace).
-- `index.db` opens with WAL mode + busy_timeout — concurrent readers don't block writes.
-
-## Auto-sync flow
-
-```
-SessionStart  → auto-sync.py --pull-only        (rebase remote into local; quiet)
-PreCompact    → auto-sync.py --commit-only      (snapshot before compact summarizes)
-PostCompact   → auto-sync.py --pull-rebase-push (full sync; AI conflict on collision)
-```
-
-If `SYNC-CONFLICT.md` is present, every UserPromptSubmit hook reminds the user to run `/mem-sync-resolve`. The skill walks each file with the user (keep-local / keep-remote / merge / skip / abort), applies via atomic_write, then `git rebase --continue` + push under `file_lock("sync")`.
-
-## Token efficiency (provider prompt caching)
-
-- **Stable prefix** (rare changes): AGENTS.md, docs/secrets.md, docs/tools.md, topics/_index.md → cached by provider (75-90% discount on Anthropic).
-- **Volatile suffix** (per session): docs/handoff.md, journal/<today>.md, retrieved snippets → never cached, low cost anyway.
-- Bootstrap caps: 12k chars/file, 60k total.
-
-If you find yourself editing AGENTS.md every session → batch the changes; cache misses cost real tokens.
-
-## Temporal facts
-
-For entries that may go stale:
+## 5. Topic file format (file-per-topic, default trong workspace)
 
 ```markdown
-- [ref] ANTHROPIC_API_KEY format: starts with `sk-ant-` — Source: docs.anthropic.com — valid_until: 2026-12-31
-- [ref] (old) Use `claude-3-opus` model — Source: ... — (superseded by claude-opus-4)
+---
+slug: ema-cross               # unique TRONG workspace, kebab-case ≤60 chars
+title: EMA Cross Strategy
+status: draft|active|distilled|archived
+created: 2026-05-02
+last_touched: 2026-05-02
+parents: [strategies, trend]   # path = workspaces/<ws>/topics/strategies/trend/<slug>.md
+links: [rsi, breakout]
+aliases: [ema-9-21]
+---
+
+# EMA Cross Strategy
+
+> Cốt lõi 1 dòng.
+
+## [exp]
+- 2026-04-15: <1-2 dòng> (Source: …)
+
+## [ref]
+- <fact> (Source: ta-lib 0.4.0 docs)
+
+## [decision]
+- Chọn X over Y vì Z (Source: …)
+
+## [reflection]
+- Pattern observation. Cross-link [[other-slug]] hoặc [[other-ws:other-slug]].
 ```
 
-The `recall-active.py` hook **automatically skips** lines containing:
-- `(superseded)` (case-insensitive)
-- `valid_until: YYYY-MM-DD` past today
+## 6. Section schema
 
-Conflict resolution: when adding a new entry that supersedes an old one → mark old as `(superseded)` (audit trail) or DELETE outright. The active prune (`_prune.py`) deletes both kinds on its next run.
+| Section | Yêu cầu |
+|---|---|
+| `## [exp]` | Episodic. 1-2 dòng. `Source:` nếu reproducible |
+| `## [ref]` | Verified fact. **`Source:` BẮT BUỘC** |
+| `## [decision]` | Architectural choice + rationale |
+| `## [reflection]` | Pattern / takeaway, sinh qua `/mem-reflect` |
+| `## [tool]` | Tool quirk specific topic. Cross-topic → `<ws>/docs/tools.md` |
 
-## Spaced resurfacing
+`[skill-ref]` → `frontmatter.links:`. `[secret-ref]` → `shared/secrets.md` POINTER only.
 
-`recall-active.py` tracks `last_seen` per file in `state.json`. With ~25% probability per prompt, surfaces 1 file unseen ≥7 days. Counters the forgetting curve.
+## 7. Slug + wikilink scope
 
-## Guardrails
+- Slug unique **trong cùng workspace**. 2 workspace có thể trùng slug.
+- `[[slug]]` → resolve trong active workspace.
+- `[[ws:slug]]` → cross-workspace explicit.
+- `[[shared:secrets]]` → reference shared registry.
+- Slug regex: `^[a-z0-9-]{1,60}$`. Conflict in same ws → reject save.
 
-- KHÔNG commit value thật của API key / token vào git.
-- KHÔNG skip bootstrap rồi viết code "luôn cho nhanh".
-- KHÔNG giữ entry mâu thuẫn — entry mới đúng → DELETE cũ (or mark `(superseded)`).
-- KHÔNG promote `[ref]` không có Source.
-- KHÔNG write secret value to ANY file (synced or not). docs/secrets.md is POINTER only.
-- KHÔNG resolve `SYNC-CONFLICT.md` by editing markers manually — use `/mem-sync-resolve` so the AI flow stays consistent.
-- Mỗi update knowledge → commit `knowledge([slug]): mô tả` (auto-handled by sync hook).
+## 8. Lifecycle
+
+- `frontmatter.status`: `draft → active → distilled → archived`.
+- File >800 dòng → `/mem-promote` split sang folder brain-style.
+- 6 tháng untouched + distilled → `<ws>/topics/_archive/<slug>/`.
+- Workspace 6 tháng untouched → `/mem-workspace-archive` → `workspaces/_archive/<name>/`.
+
+## 9. Lazy nesting + restructure
+
+- Default FLAT trong workspace. ≥5 topic chung domain → đề xuất nest. Max 3 cấp.
+- `/mem-restructure`: user mapping (slug→new parents) → atomic move + rebuild MOC + regen index.
+
+## 10. MOC per folder
+
+- Mỗi folder trong `workspaces/<ws>/topics/` có `_MAP.md` (auto-rebuild bởi `_moc.py`).
+- Workspace root: `workspaces/<ws>/_MAP.md`. Cross-workspace registry: `workspaces/_MAP.md`. Shared: `shared/_MAP.md`.
+- Auto-sections (Children/Subfolders/Parent) regen từ frontmatter scan. `## Cross-links (manual)` NEVER overwritten.
+
+## 11. Recall scope
+
+- Default `recall.cross_workspace=false`: search active workspace + `shared/`.
+- `cross_workspace=true` → search hết.
+- Wikilink follow: 1 hop default.
+
+## 12. Workflow
+
+1. Throughout session: log raw vào `workspaces/<active>/journal/<today>.md` (`memj`).
+2. Repeating ≥2×: `memk` → `<ws>/skills/<name>.md` (hoặc `shared/skills/`).
+3. Before /compact (PreCompact hook): distill journal → topic-bound entries.
+4. After /compact (PostCompact hook): auto-sync pull-rebase-push.
+5. Weekly: `memr` → 1-3 `[reflection]` mới.
+6. Research-first: no evidence → no implementation. `[ref]` phải có `Source:`.
+7. Tools-first: `shared/tools.md` + `<ws>/docs/tools.md` + topic match.
+8. Verify before claim: no screenshot/log/test → no "done".
+
+## 13. Multi-session safety
+
+- `state.json` writes: `file_lock("state")`.
+- Sync ops: `file_lock("sync")`.
+- MOC rebuild: `file_lock("moc")`.
+- Markdown writes atomic.
+- `index.db` WAL + busy_timeout. Schema: `slugs(workspace, slug, …)` PK=`(workspace,slug)`.
+
+## 14. Auto-sync flow
+
+```
+SessionStart  → auto-sync.py --pull-only
+PreCompact    → auto-sync.py --commit-only
+PostCompact   → auto-sync.py --pull-rebase-push (AI conflict on collision)
+```
+
+`SYNC-CONFLICT.md` tồn tại → mỗi prompt nhắc `/mem-sync-resolve`.
+
+## 15. Token efficiency (provider prompt caching)
+
+- **Stable prefix**: `AGENTS.md`, `shared/files.md`, `shared/secrets.md`, `shared/tools.md`, `workspaces/<ws>/_MAP.md` — cached 75-90%.
+- **Volatile suffix**: `<ws>/docs/handoff.md`, `<ws>/journal/<today>.md` — không cache.
+- Caps: 12k chars/file, 60k total.
+
+## 16. Temporal facts
+
+```markdown
+- `[ref]` ANTHROPIC_API_KEY format `sk-ant-` (Source: docs.anthropic.com) — valid_until: 2026-12-31
+- `[ref]` (old) Use claude-3-opus — (superseded by claude-opus-4)
+```
+
+`recall-active.py` tự skip `(superseded)` và `valid_until` quá hạn.
+
+## 17. Spaced resurfacing
+
+`recall-active.py` tracks `last_seen` per file. ~25% prob/prompt surface 1 file unseen ≥7 ngày. Scope theo workspace.
+
+## 18. Guardrails (KHÔNG)
+
+- KHÔNG commit secret value vào git.
+- KHÔNG skip bootstrap.
+- KHÔNG giữ entry mâu thuẫn.
+- KHÔNG promote `[ref]` không có `Source:`.
+- KHÔNG sửa `SYNC-CONFLICT.md` markers tay.
+- KHÔNG nest >3 cấp trong `<ws>/topics/`.
+- KHÔNG đổi slug đã publish.
+- KHÔNG ghi knowledge từ workspace A vào workspace B mà không declare cross.
+- Mỗi update knowledge → 1 commit `knowledge(<ws>/<slug>): mô tả`.
+
+## 19. RULES carry-over
+
+1. Parallelism: 2+ task độc lập → song song.
+2. Plan mode cho task phức tạp.
+3. Evolve AGENTS.md.
+4. Reusable skills: làm >1×/ngày → skill.
+5. Outcome-based prompting.
+6. Verify before claim.

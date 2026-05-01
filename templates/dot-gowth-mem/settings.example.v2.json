@@ -1,5 +1,5 @@
 {
-  "version": "2.0",
+  "version": "2.2",
   "language": "vi+en",
   "auto_sync": {
     "on_session_start": true,
@@ -7,10 +7,33 @@
     "on_post_compact": true,
     "on_stop_every_n_turns": 10
   },
+  "workspace": {
+    "default": "default",
+    "auto_detect_from_cwd": true,
+    "create_if_missing": false
+  },
+  "topic_layout": {
+    "mode": "file",
+    "promote_lines": 800,
+    "lazy_nest_threshold": 5,
+    "max_depth": 3,
+    "archive_threshold_days": 180,
+    "live_state_window_days": 14
+  },
   "topic_routing": {
     "min_keyword_overlap": 3,
     "auto_create_threshold": 5,
     "default_topic": "misc"
+  },
+  "slug": {
+    "regex": "^[a-z0-9-]{1,60}$",
+    "unique_scope": "workspace",
+    "index": true
+  },
+  "moc": {
+    "auto_rebuild": true,
+    "sections": ["children", "subfolders", "parent", "cross-links"],
+    "preserve_manual": "## Cross-links (manual)"
   },
   "embedding": {
     "provider": "openai",
@@ -23,22 +46,23 @@
     "mmr_lambda": 0.7,
     "srs_resurface_days": 7,
     "srs_resurface_prob": 4,
-    "wikilink_follow": true
+    "wikilink_follow": true,
+    "wikilink_hop_depth": 1,
+    "cross_workspace": false
   },
   "conflict_resolution": {
     "mode": "ai-mediated"
   },
   "_notes": {
-    "version": "schema version (2.0 = global ~/.gowth-mem with topics/)",
-    "auto_sync.on_session_start": "Pull-only at SessionStart. Adds 1-3s latency on cold cache.",
-    "auto_sync.on_pre_compact": "Commit-only before /compact summarizes — captures full context.",
-    "auto_sync.on_post_compact": "Full pull-rebase-push after /compact. Triggers AI conflict if remote diverged.",
-    "auto_sync.on_stop_every_n_turns": "Stop-hook auto-journal cycle. 0 = disable.",
-    "topic_routing.min_keyword_overlap": "Number of common ≥4-char keywords required to route to an existing topic.",
-    "topic_routing.auto_create_threshold": "Reserved for future: create new topic only after N unmatched entries on the same theme.",
-    "topic_routing.default_topic": "Slug used when no topic matches and no distinctive keywords found.",
-    "embedding.provider": "openai | voyage | gemini | none. Auto-detected from API keys.",
-    "recall.wikilink_follow": "If top hit is a topic file with [[other-slug]], also surface other-slug top match.",
-    "conflict_resolution.mode": "ai-mediated | manual | abort"
+    "version": "schema 2.2 = workspaces layer + active-ws switch + slug scope per-workspace",
+    "workspace.default": "Fallback workspace when no env/cwd-glob match.",
+    "workspace.auto_detect_from_cwd": "If true, SessionStart resolves active ws via config.json.workspace_map glob.",
+    "workspace.create_if_missing": "If true, switching to non-existent ws auto-scaffolds. Default false (fail-fast).",
+    "topic_layout.mode": "file (default) | folder (only via /mem-promote when file > promote_lines).",
+    "topic_layout.max_depth": "Hard cap on topics/<a>/<b>/<c>/. Deeper = anti-pattern.",
+    "slug.unique_scope": "workspace (default) | global. Per-workspace lets 2 workspaces use same slug.",
+    "moc.preserve_manual": "Block heading whose contents are NEVER auto-overwritten.",
+    "recall.cross_workspace": "false = scope to active workspace + shared/. true = search ALL workspaces.",
+    "recall.wikilink_hop_depth": "1 = sane default. >2 = noise."
   }
 }

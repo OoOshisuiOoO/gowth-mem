@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Stop hook (v2.0): auto-distill + auto-prune every N user turns.
+"""Stop hook (v2.2): auto-distill + auto-prune every N user turns, scoped to the
+active workspace.
 
 State lives in global ~/.gowth-mem/state.json (per-machine, gitignored).
 Updates are protected by file_lock("state") for multi-session safety.
@@ -14,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
-from _home import gowth_home, state_path  # type: ignore
+from _home import active_workspace, gowth_home, state_path  # type: ignore
 from _lock import file_lock  # type: ignore
 
 AUTO_DISTILL_EVERY = 10
@@ -56,7 +57,6 @@ def main() -> int:
             turn = sess["turn_count"]
             _save_state(state)
     except TimeoutError:
-        # Another session contended; skip this turn.
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
@@ -72,7 +72,6 @@ def main() -> int:
     except TimeoutError:
         pass
 
-    # Run active prune synchronously (best-effort).
     prune_summary = ""
     prune_script = Path(__file__).parent / "_prune.py"
     if prune_script.is_file():
@@ -86,30 +85,37 @@ def main() -> int:
         except Exception:
             pass
 
-    reason = f"""[gowth-mem:auto-journal] {AUTO_DISTILL_EVERY} turns elapsed.
+    ws = active_workspace()
+    reason = f"""[gowth-mem:auto-journal ws={ws}] {AUTO_DISTILL_EVERY} turns elapsed.
 
 Pre-block prune ran: {prune_summary or '(no prune output)'}
+
+Active workspace: {ws}
+All writes below MUST land under workspaces/{ws}/ unless explicitly cross-workspace.
 
 Now do this WITHOUT user prompting before yielding control:
 
 1. Scan the last {AUTO_DISTILL_EVERY} user turns and your replies.
 2. For each high-signal item, classify into ONE of these types and prepend the prefix:
-   [decision]    choice + rationale          → topics/<slug>.md
-   [exp]         debug / fix / lesson         → topics/<slug>.md
-   [reflection]  pattern / takeaway           → topics/<slug>.md
-   [ref]         verified external fact       → topics/<slug>.md (Source REQUIRED)
-   [tool]        topic-specific gotcha        → topics/<slug>.md OR docs/tools.md (cross-topic)
-   [secret-ref]  env-var POINTER              → docs/secrets.md (NEVER value)
-3. Topic routing: pick existing topics/<slug>.md if keywords overlap (≥3 common words);
-   otherwise create new topics/<new-slug>.md from top-2 distinctive keywords.
+   [decision]    choice + rationale          → workspaces/{ws}/topics/<slug>.md  (## [decision])
+   [exp]         debug / fix / lesson         → workspaces/{ws}/topics/<slug>.md  (## [exp])
+   [reflection]  pattern / takeaway           → workspaces/{ws}/topics/<slug>.md  (## [exp])
+   [ref]         verified external fact       → workspaces/{ws}/topics/<slug>.md  (## [ref], Source REQUIRED)
+   [tool]        topic-specific gotcha        → workspaces/{ws}/topics/<slug>.md  OR  workspaces/{ws}/docs/tools.md
+   [secret-ref]  env-var POINTER              → shared/secrets.md  (NEVER value)
+3. Topic routing: pick existing workspaces/{ws}/topics/**/<slug>.md if keywords overlap (≥3 common words);
+   otherwise create new workspaces/{ws}/topics/<new-slug>.md (file-per-topic, with v2.2 frontmatter:
+   slug/title/status:draft/created/last_touched/parents:[]/links:[]/aliases:[]).
 4. Apply quality gates — DROP if:
    - Entry < 20 chars
    - Code-only (no prose)
    - [ref] without Source
    - Vague / hedged ("maybe", "I think") without backing
 5. Apply mem0 ADD / UPDATE / DELETE / NOOP against existing target file content.
-6. Update docs/handoff.md (prefix host:<machine>) with new task / next / blocker.
-7. Confirm in 1 line: "auto-journal: kept N, dropped M, promoted K, conflicts resolved J".
+   Update frontmatter.last_touched on every write.
+6. Update workspaces/{ws}/docs/handoff.md (prefix host:<machine>) with new task / next / blocker.
+7. After writes, run `_moc.py --ws {ws}` to refresh the workspace MOC and topic index.
+8. Confirm in 1 line: "auto-journal: ws={ws}, kept N, dropped M, promoted K, conflicts resolved J".
 
 Don't write the user a long message about this — just do the work silently and continue.
 This is automation, not a conversation step."""

@@ -1,25 +1,38 @@
-"""Topic router: pick or create the topics/<slug>.md file for a memory entry.
+"""Topic router (v2.2): pick or create the workspaces/<ws>/topics/<slug>.md
+file for a memory entry, route to the correct in-file section.
 
-Algorithm:
-  1. Extract keywords from content (\\b\\w{4,}\\b, lowercased, deduped, drop stopwords).
-  2. For each existing topics/*.md, count keyword overlap with file content.
-  3. If max_overlap >= settings.topic_routing.min_keyword_overlap → that slug.
-  4. Else create a new topic from top-2 most-distinctive keywords.
-  5. Else fall back to settings.topic_routing.default_topic ('misc').
+Algorithm (route):
+  1. Determine active workspace.
+  2. Extract keywords from content (≥4 chars, dropping stopwords).
+  3. For each existing workspaces/<ws>/topics/**/<slug>.md, count overlap.
+  4. If max overlap >= settings.topic_routing.min_keyword_overlap → that slug.
+  5. Else create a new topic from top-2 distinctive keywords.
+  6. Else fall back to settings.topic_routing.default_topic ('misc').
 
-Slug generation:
-  - lowercased, hyphen-separated, alphanum only, max 40 chars
-  - never contains stopwords
+Section mapping (from line prefix):
+  [exp]/[reflection] → "## [exp]"
+  [ref]/[tool]       → "## [ref]"
+  [decision]         → "## [decision]"
+  [skill-ref]        → frontmatter.links append (no body section)
+  [secret-ref]       → caller routes to shared/secrets.md
 """
 from __future__ import annotations
 
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import gowth_home, settings_path, topics_dir  # type: ignore
+from _atomic import atomic_write  # type: ignore
+from _frontmatter import parse_file  # type: ignore
+from _home import (  # type: ignore
+    active_workspace,
+    settings_path,
+    topics_dir,
+    workspace_dir,
+)
 
 STOPWORDS = {
     "this", "that", "with", "from", "have", "been", "were", "they", "them",
@@ -28,6 +41,14 @@ STOPWORDS = {
     "just", "only", "your", "you", "for", "the", "and", "but", "not", "all",
     "any", "are", "was", "has", "had", "its", "out", "via", "use", "uses",
     "used", "using",
+}
+
+SECTION_FOR_PREFIX = {
+    "exp": "## [exp]",
+    "reflection": "## [exp]",  # reflections live in exp section per AGENTS.md
+    "ref": "## [ref]",
+    "tool": "## [ref]",
+    "decision": "## [decision]",
 }
 
 
@@ -40,7 +61,7 @@ def _slugify(words: list[str]) -> str:
     s = "-".join(words)
     s = re.sub(r"[^a-z0-9-]+", "-", s.lower())
     s = re.sub(r"-+", "-", s).strip("-")
-    return s[:40] or "misc"
+    return s[:60] or "misc"
 
 
 def _load_settings() -> dict:
@@ -53,28 +74,45 @@ def _load_settings() -> dict:
         return {}
 
 
-def route(content: str, settings: dict | None = None) -> str:
-    """Return topic slug for the given memory entry."""
+def _walk_topics(ws: str | None) -> list[Path]:
+    td = topics_dir(ws)
+    if not td.is_dir():
+        return []
+    return [p for p in td.rglob("*.md") if p.name != "_MAP.md" and p.name != "_index.md"]
+
+
+def detect_section(line: str) -> str | None:
+    """Match `[exp]`/`[ref]`/`[decision]`/... at start (after optional `- ` bullet)."""
+    m = re.match(r"^\s*[-*]?\s*\[(?P<tag>[a-z-]+)\]", line)
+    if not m:
+        return None
+    tag = m.group("tag")
+    return SECTION_FOR_PREFIX.get(tag)
+
+
+def route(content: str, ws: str | None = None, settings: dict | None = None) -> tuple[str, Path, str | None]:
+    """Return (slug, file_path, section_hint) for the entry.
+
+    `ws` defaults to active workspace. `section_hint` is the markdown heading
+    where the line should go (e.g. "## [exp]"); None means caller decides.
+    """
     s = settings or _load_settings()
     routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
     min_overlap = int(routing.get("min_keyword_overlap", 3))
     default_topic = routing.get("default_topic", "misc")
+    ws = ws or active_workspace()
+
+    section_hint = detect_section(content.splitlines()[0] if content else "")
 
     kws = _extract_keywords(content)
     if not kws:
-        return default_topic
+        return default_topic, _path_for(ws, default_topic), section_hint
 
-    td = topics_dir()
-    if not td.is_dir():
-        # Suggest a new topic from the top keywords.
-        top = sorted(kws, key=len, reverse=True)[:2]
-        return _slugify(top) or default_topic
-
+    candidates = _walk_topics(ws)
     best_slug = default_topic
     best_overlap = 0
-    for f in sorted(td.glob("*.md")):
-        if f.name == "_index.md":
-            continue
+    best_path: Path | None = None
+    for f in candidates:
         try:
             text = f.read_text(errors="ignore")
         except Exception:
@@ -84,92 +122,91 @@ def route(content: str, settings: dict | None = None) -> str:
         if overlap > best_overlap:
             best_overlap = overlap
             best_slug = f.stem
+            best_path = f
 
-    if best_overlap >= min_overlap:
-        return best_slug
+    if best_overlap >= min_overlap and best_path is not None:
+        return best_slug, best_path, section_hint
 
-    # Create new topic name from top-2 distinctive keywords (those not in any
-    # existing topic).
     distinctive = sorted(kws, key=len, reverse=True)[:2]
-    new_slug = _slugify(distinctive)
-    return new_slug or default_topic
+    new_slug = _slugify(distinctive) or default_topic
+    return new_slug, _path_for(ws, new_slug), section_hint
 
 
-def ensure_topic(slug: str, title: str | None = None) -> Path:
-    """Create topics/<slug>.md if missing. Return path."""
-    from datetime import date
-    td = topics_dir()
-    td.mkdir(parents=True, exist_ok=True)
-    p = td / f"{slug}.md"
+def _path_for(ws: str, slug: str) -> Path:
+    """Default flat path for a new topic. Existing nested topics take precedence
+    via _walk_topics in route(); this only fires for genuinely new slugs."""
+    return topics_dir(ws) / f"{slug}.md"
+
+
+def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, parents: list[str] | None = None) -> Path:
+    """Create workspaces/<ws>/topics/<parents>/<slug>.md with v2.2 frontmatter if missing."""
+    ws = ws or active_workspace()
+    parents = parents or []
+    path = topics_dir(ws)
+    for p in parents:
+        path = path / p
+    path.mkdir(parents=True, exist_ok=True)
+    p = path / f"{slug}.md"
     if p.is_file():
         return p
     today = date.today().isoformat()
     nice_title = title or slug.replace("-", " ").title()
-    p.write_text(
-        f"---\nslug: {slug}\ntitle: {nice_title}\ncreated: {today}\nlast_touch: {today}\n---\n\n"
+    body = (
+        f"---\n"
+        f"slug: {slug}\n"
+        f"title: {nice_title}\n"
+        f"status: draft\n"
+        f"created: {today}\n"
+        f"last_touched: {today}\n"
+        f"parents: [{', '.join(parents)}]\n"
+        f"links: []\n"
+        f"aliases: []\n"
+        f"---\n\n"
         f"# {nice_title}\n\n"
+        f"> Cốt lõi 1 dòng (TODO).\n\n"
+        f"## [exp]\n(empty)\n\n"
+        f"## [ref]\n(empty)\n\n"
+        f"## [decision]\n(empty)\n\n"
+        f"## [reflection]\n(empty)\n"
     )
+    atomic_write(p, body)
     return p
 
 
-def list_topics() -> list[tuple[str, str, float]]:
-    """Return [(slug, title, mtime)] sorted by mtime desc."""
-    td = topics_dir()
-    if not td.is_dir():
-        return []
-    out: list[tuple[str, str, float]] = []
-    for f in td.glob("*.md"):
-        if f.name == "_index.md":
-            continue
-        title = f.stem.replace("-", " ").title()
-        try:
-            head = f.read_text(errors="ignore").splitlines()[:10]
-            for line in head:
-                m = re.match(r"^title:\s*(.+)$", line.strip())
-                if m:
-                    title = m.group(1).strip()
-                    break
-        except Exception:
-            pass
-        out.append((f.stem, title, f.stat().st_mtime))
-    out.sort(key=lambda t: t[2], reverse=True)
+def list_topics(ws: str | None = None) -> list[dict]:
+    """Return [{slug, title, status, last_touched, parents, path}] sorted by last_touched desc."""
+    ws = ws or active_workspace()
+    out: list[dict] = []
+    for f in _walk_topics(ws):
+        fm, _ = parse_file(f)
+        out.append({
+            "slug": fm.get("slug") or f.stem,
+            "title": fm.get("title") or f.stem.replace("-", " ").title(),
+            "status": fm.get("status") or "",
+            "last_touched": fm.get("last_touched") or "",
+            "parents": fm.get("parents") or [],
+            "path": f,
+        })
+    out.sort(key=lambda d: d.get("last_touched") or "", reverse=True)
     return out
-
-
-def regenerate_index() -> None:
-    """Rewrite topics/_index.md from current topic files."""
-    from datetime import datetime
-    td = topics_dir()
-    if not td.is_dir():
-        return
-    rows = list_topics()
-    lines = ["# Topic Index\n"]
-    for slug, title, mtime in rows:
-        ts = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
-        lines.append(f"- [[{slug}]] — {title} (touched {ts})")
-    sys.path.insert(0, str(Path(__file__).parent))
-    from _atomic import atomic_write  # type: ignore
-    atomic_write(td / "_index.md", "\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--route", help="Route content to a topic slug")
-    ap.add_argument("--list", action="store_true", help="List topics")
-    ap.add_argument("--regen-index", action="store_true", help="Regenerate _index.md")
-    ap.add_argument("--ensure", help="Ensure topic exists (slug)")
+    ap.add_argument("--route")
+    ap.add_argument("--ws")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--ensure")
     args = ap.parse_args()
     if args.route:
-        print(route(args.route))
+        slug, path, section = route(args.route, ws=args.ws)
+        print(f"{slug}\t{path}\t{section or ''}")
     elif args.list:
-        for slug, title, mtime in list_topics():
-            print(f"{slug}\t{title}")
-    elif args.regen_index:
-        regenerate_index()
-        print(f"regenerated {topics_dir() / '_index.md'}")
+        for t in list_topics(args.ws):
+            print(f"{t['slug']:30s} {t['status']:10s} {t['last_touched']:10s} {t['title']}")
     elif args.ensure:
-        p = ensure_topic(args.ensure)
+        p = ensure_topic(args.ensure, ws=args.ws)
         print(p)
     else:
         ap.print_help()

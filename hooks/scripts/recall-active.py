@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook (v2.0): hybrid recall over global ~/.gowth-mem/.
+"""UserPromptSubmit hook (v2.2): hybrid recall scoped to the active workspace.
 
-Sources: topics/**/*.md + docs/*.md (and skills/*.md). Skips journal/.
-Wikilink follow: when a topic file is the top hit, optionally follow one
-[[other-slug]] hop and surface its top match too.
+Sources: workspaces/<active>/{topics,docs}/**/*.md + shared/*.md
+  (excludes journal/, _MAP.md, and shared/skills/ from primary recall)
+
+Honors `recall.cross_workspace`: when true, search every workspace.
 
 Decision tree per prompt:
   1. Try vector hybrid (sqlite-vec + embedding) → if works, use it
-  2. Try FTS5-only on existing index → if index has BM25, use it
-  3. Fall back to grep walk over topics/** and docs/*.md
+  2. Try FTS5-only on existing index → use BM25
+  3. Fall back to grep walk over candidates
   All paths apply temporal filter, MMR diversity, tier scoring, SRS bump.
-
-State.json updates use file_lock("state") for multi-session safety.
 """
 from __future__ import annotations
 
@@ -41,13 +40,19 @@ except ImportError:
     HAS_EMBED = False
 from _atomic import atomic_write  # type: ignore
 from _home import (  # type: ignore
+    active_workspace,
     docs_dir,
     gowth_home,
     index_db,
+    list_workspaces,
+    settings_path,
+    shared_dir,
     state_path,
     topics_dir,
+    workspace_dir,
 )
 from _lock import file_lock  # type: ignore
+from _wikilink import resolve as wikilink_resolve  # type: ignore
 
 MAX_KEYWORDS = 8
 MAX_FILES = 3
@@ -62,17 +67,47 @@ INDEX_TOP_K = 30
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 SUPERSEDED_RE = re.compile(r"\(superseded\b", re.IGNORECASE)
 VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
-WIKILINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]{0,40})\]\]")
+WIKILINK_RE = re.compile(r"\[\[([^\[\]\|#]+)(#[^\[\]\|]+)?(\|[^\[\]]+)?\]\]")
 
 
-def collect_candidates() -> list[Path]:
+def _load_settings() -> dict:
+    p = settings_path()
+    if not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def _allowed_workspaces(settings: dict) -> list[str] | None:
+    """Return None to mean "all", else list of allowed ws names (active + shared virtual)."""
+    cross = settings.get("recall", {}).get("cross_workspace", False)
+    if cross:
+        return None  # no scoping
+    return [active_workspace()]
+
+
+def collect_candidates(allowed_ws: list[str] | None) -> list[Path]:
+    """Walk the candidate corpus, scoped if `allowed_ws` is given."""
     out: list[Path] = []
-    td = topics_dir()
-    if td.is_dir():
-        out.extend(p for p in td.rglob("*.md") if p.is_file() and p.name != "_index.md")
-    dd = docs_dir()
-    if dd.is_dir():
-        out.extend(p for p in dd.glob("*.md") if p.is_file())
+    sd = shared_dir()
+    if sd.is_dir():
+        # Top-level shared files only — skip subfolders like skills/
+        out.extend(p for p in sd.glob("*.md") if p.is_file())
+
+    targets = list_workspaces() if allowed_ws is None else allowed_ws
+    for ws in targets:
+        td = topics_dir(ws)
+        if td.is_dir():
+            out.extend(
+                p for p in td.rglob("*.md")
+                if p.is_file() and p.name not in ("_MAP.md", "_index.md")
+            )
+        dd = docs_dir(ws)
+        if dd.is_dir():
+            out.extend(p for p in dd.glob("*.md") if p.is_file() and p.name != "_MAP.md")
+
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)[:MAX_CANDIDATE_FILES]
 
 
@@ -94,7 +129,7 @@ def line_is_temporal_invalid(line: str, today_iso: str) -> bool:
 
 
 def layer_score(p: Path) -> int:
-    """Tier score by location relative to ~/.gowth-mem/."""
+    """Tier score by path layout (v2.2)."""
     gh = gowth_home()
     try:
         rel = p.relative_to(gh)
@@ -103,22 +138,26 @@ def layer_score(p: Path) -> int:
     parts = rel.parts
     if not parts:
         return 10
-    if parts[0] == "topics":
-        # Recent topic > older; rough proxy: rely on mtime sort. Flat 80.
-        return 80
-    if parts[0] == "docs":
-        # handoff/secrets/tools cross-topic registries
-        return 60
-    if parts[0] == "skills":
-        return 40
-    if parts[0] == "journal":
-        today = date.today().isoformat()
-        yday = (date.today() - timedelta(days=1)).isoformat()
-        if today in p.name:
-            return 100
-        if yday in p.name:
-            return 70
-        return 30
+    if parts[0] == "shared":
+        if len(parts) > 1 and parts[1] == "skills":
+            return 40
+        return 60  # secrets/tools/files
+    if parts[0] == "workspaces" and len(parts) >= 3:
+        sub = parts[2]
+        if sub == "topics":
+            return 80
+        if sub == "docs":
+            return 60
+        if sub == "skills":
+            return 40
+        if sub == "journal":
+            today = date.today().isoformat()
+            yday = (date.today() - timedelta(days=1)).isoformat()
+            if today in p.name:
+                return 100
+            if yday in p.name:
+                return 70
+            return 30
     return 10
 
 
@@ -154,8 +193,21 @@ def serialize_vec(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
-def index_recall(prompt: str, kws: list[str]) -> Optional[list[tuple[str, str, str]]]:
-    """Try SQLite FTS5 + (optional) vector hybrid. Return None if index missing."""
+def _path_in_scope(rel: str, allowed_ws: list[str] | None) -> bool:
+    if allowed_ws is None:
+        return True
+    if rel.startswith("shared/"):
+        return True
+    if not rel.startswith("workspaces/"):
+        return False
+    parts = rel.split("/")
+    if len(parts) < 2:
+        return False
+    return parts[1] in allowed_ws
+
+
+def index_recall(prompt: str, kws: list[str], allowed_ws: list[str] | None
+                 ) -> Optional[list[tuple[str, str, str]]]:
     db_path = index_db()
     if not db_path.is_file():
         return None
@@ -200,13 +252,17 @@ def index_recall(prompt: str, kws: list[str]) -> Optional[list[tuple[str, str, s
         scores: dict[int, float] = {}
         meta: dict[int, tuple[str, str, str]] = {}
         for rank, row in enumerate(bm25_rows):
-            cid = row[0]
+            cid, path = row[0], row[1]
+            if not _path_in_scope(path, allowed_ws):
+                continue
             scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
-            meta[cid] = (row[1], row[2] or "", row[3])
+            meta[cid] = (path, row[2] or "", row[3])
         for rank, row in enumerate(vec_rows):
-            cid = row[0]
+            cid, path = row[0], row[1]
+            if not _path_in_scope(path, allowed_ws):
+                continue
             scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
-            meta[cid] = (row[1], row[2] or "", row[3])
+            meta[cid] = (path, row[2] or "", row[3])
 
         if not scores:
             return []
@@ -280,11 +336,9 @@ def find_due_resurface(state, excluded_paths, candidates, pattern, today_iso):
     return None
 
 
-def follow_wikilinks(top_file: Path, pattern: re.Pattern, today_iso: str
+def follow_wikilinks(top_file: Path, current_ws: str, pattern: re.Pattern, today_iso: str
                      ) -> Optional[tuple[Path, list[tuple[int, str, str]]]]:
-    """If top hit is a topic, follow first [[wikilink]] one hop deep."""
-    if "topics" not in top_file.parts:
-        return None
+    """Follow first wikilink on the top hit (one hop). Cross-ws OK if explicit."""
     try:
         text = top_file.read_text(errors="ignore")
     except Exception:
@@ -292,8 +346,8 @@ def follow_wikilinks(top_file: Path, pattern: re.Pattern, today_iso: str
     m = WIKILINK_RE.search(text)
     if not m:
         return None
-    target = topics_dir() / f"{m.group(1)}.md"
-    if not target.is_file() or target == top_file:
+    target = wikilink_resolve(m.group(1), current_ws=current_ws)
+    if target is None or target == top_file or not target.is_file():
         return None
     try:
         ttext = target.read_text(errors="ignore")
@@ -325,7 +379,11 @@ def main() -> int:
     if not prompt.strip():
         return 0
 
-    candidates = collect_candidates()
+    settings = _load_settings()
+    allowed_ws = _allowed_workspaces(settings)
+    current_ws = active_workspace()
+
+    candidates = collect_candidates(allowed_ws)
     if not candidates:
         return 0
 
@@ -346,7 +404,7 @@ def main() -> int:
     today_iso = date.today().isoformat()
     gh = gowth_home()
 
-    index_results = index_recall(prompt, kws)
+    index_results = index_recall(prompt, kws, allowed_ws)
     backend_label = "grep"
     raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
 
@@ -366,8 +424,6 @@ def main() -> int:
         for path, matches in per_file.items():
             full = gh / path
             if not full.is_file():
-                # Index might have been built relative to a workspace-rooted layout;
-                # try absolute path.
                 full = Path(path)
                 if not full.is_file():
                     continue
@@ -397,12 +453,10 @@ def main() -> int:
     if not selected:
         return 0
 
-    # Wikilink follow on the top hit
     wikilink_extra: Optional[tuple[Path, list[tuple[int, str, str]]]] = None
-    if selected:
-        wikilink_extra = follow_wikilinks(selected[0][0], pattern, today_iso)
+    if settings.get("recall", {}).get("wikilink_follow", True) and selected:
+        wikilink_extra = follow_wikilinks(selected[0][0], current_ws, pattern, today_iso)
 
-    # SRS — protected by file_lock
     state = load_srs_state()
     prob_seed = hashlib.sha1((today_iso + prompt).encode()).digest()[0]
     resurfaced = None
@@ -415,7 +469,7 @@ def main() -> int:
                 pass
         resurfaced = find_due_resurface(state, excluded, candidates, pattern, today_iso)
 
-    parts = [f"[gowth-mem:recall:{backend_label}] Có thể relevant:"]
+    parts = [f"[gowth-mem:recall:{backend_label} ws={current_ws}] Có thể relevant:"]
     for f, matches in selected:
         try:
             rel = f.relative_to(gh)
@@ -449,10 +503,9 @@ def main() -> int:
             prefix = f"§ {heading} | " if heading else ""
             parts.append(f"{prefix}{line}")
 
-    # Update SRS under lock
     try:
         with file_lock("state", timeout=5.0):
-            state = load_srs_state()  # re-read to get latest
+            state = load_srs_state()
             now = time.time()
             files_meta = state.setdefault("files", {})
             surfaced_paths = []
@@ -472,7 +525,7 @@ def main() -> int:
                 rec["count"] = rec.get("count", 0) + 1
             save_srs_state(state)
     except TimeoutError:
-        pass  # don't block recall on contention
+        pass
 
     out = {
         "hookSpecificOutput": {

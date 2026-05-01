@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Build SQLite FTS5 + (optional) sqlite-vec index over global ~/.gowth-mem/.
 
-Storage: ~/.gowth-mem/index.db (per-machine, gitignored).
+v2.2 storage: ~/.gowth-mem/index.db (per-machine, gitignored).
 
-Schema:
+Tables:
   chunks(id PK, path, heading, content, mtime, hash)
-  chunks_fts (FTS5 virtual over chunks.content)
-  chunks_vec (sqlite-vec virtual; only if sqlite-vec installed AND embedding key)
+  chunks_fts (FTS5 virtual)
+  chunks_vec (sqlite-vec virtual; only when sqlite-vec installed AND embedding key)
+  slugs(workspace, slug, path, title, parents, status, last_touched, aliases)
+    PRIMARY KEY (workspace, slug)
 
-Sources: topics/, docs/, journal/, skills/  (all under ~/.gowth-mem/)
+Sources:
+  shared/                                 (workspace = "shared")
+  workspaces/<ws>/{docs,topics,journal,skills}/  (workspace = <ws>)
+
 Stored paths are relative to ~/.gowth-mem/.
-
-Concurrency: WAL + busy_timeout so concurrent readers don't block writes.
+WAL + busy_timeout so concurrent readers don't block writes.
 
 Usage:
   python3 _index.py [--full]
@@ -38,13 +42,13 @@ try:
     HAS_EMBED_MODULE = True
 except ImportError:
     HAS_EMBED_MODULE = False
+from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
-    docs_dir,
     gowth_home,
     index_db,
-    journal_dir,
-    skills_dir,
-    topics_dir,
+    list_workspaces,
+    shared_dir,
+    workspace_dir,
 )
 
 CHUNK_SIZE = 1500
@@ -81,6 +85,103 @@ def serialize_vec(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
 
+def _collect_sources() -> list[tuple[str, Path]]:
+    """Return [(workspace_label, path)] for every indexable .md file.
+
+    workspace_label: "shared" for files under shared/, else the workspace name.
+    """
+    out: list[tuple[str, Path]] = []
+    sd = shared_dir()
+    if sd.is_dir():
+        for p in sd.rglob("*.md"):
+            if p.is_file():
+                out.append(("shared", p))
+    for ws in list_workspaces():
+        wd = workspace_dir(ws)
+        for sub in ("docs", "topics", "journal", "skills"):
+            d = wd / sub
+            if not d.is_dir():
+                continue
+            for p in d.rglob("*.md"):
+                if p.is_file():
+                    out.append((ws, p))
+    return out
+
+
+def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> None:
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS chunks (
+        id INTEGER PRIMARY KEY,
+        path TEXT NOT NULL,
+        heading TEXT,
+        content TEXT NOT NULL,
+        mtime REAL NOT NULL,
+        hash TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
+
+    CREATE TABLE IF NOT EXISTS slugs (
+        workspace TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        path TEXT NOT NULL,
+        title TEXT,
+        parents TEXT,
+        status TEXT,
+        last_touched TEXT,
+        aliases TEXT,
+        PRIMARY KEY (workspace, slug)
+    );
+    CREATE INDEX IF NOT EXISTS idx_slugs_path ON slugs(path);
+    CREATE INDEX IF NOT EXISTS idx_slugs_status ON slugs(workspace, status);
+    """)
+    db.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+        "content, content='chunks', content_rowid='id', tokenize='unicode61')"
+    )
+    if use_vec:
+        sqlite_vec.load(db)  # type: ignore
+        db.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
+            f"id INTEGER PRIMARY KEY, embedding FLOAT[{sample_dim}])"
+        )
+
+
+def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: bool) -> int:
+    """Refresh `slugs` from frontmatter scan. Returns count written."""
+    if full:
+        db.execute("DELETE FROM slugs")
+    written = 0
+    seen: set[tuple[str, str]] = set()
+    for ws, path in sources:
+        # Skip MOC files and registries.
+        if path.name in {"_MAP.md", "_index.md", "files.md", "secrets.md", "tools.md"}:
+            continue
+        # Only frontmatter'd topic files contribute to slugs.
+        fm, _ = parse_file(path)
+        slug = fm.get("slug")
+        if not slug:
+            continue
+        rel = str(path.relative_to(gowth_home()))
+        title = str(fm.get("title") or "")
+        status = str(fm.get("status") or "")
+        last = str(fm.get("last_touched") or "")
+        parents = fm.get("parents") or []
+        aliases = fm.get("aliases") or []
+        parents_s = ",".join(parents) if isinstance(parents, list) else str(parents)
+        aliases_s = ",".join(aliases) if isinstance(aliases, list) else str(aliases)
+        key = (ws, slug)
+        if key in seen:
+            continue
+        seen.add(key)
+        db.execute(
+            "INSERT OR REPLACE INTO slugs (workspace, slug, path, title, parents, status, last_touched, aliases) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (ws, slug, rel, title, parents_s, status, last, aliases_s),
+        )
+        written += 1
+    return written
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true")
@@ -90,7 +191,6 @@ def main() -> int:
     gh.mkdir(parents=True, exist_ok=True)
     db_path = index_db()
     db = sqlite3.connect(db_path)
-    # Concurrency-safe pragmas
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
     db.execute("PRAGMA busy_timeout=5000")
@@ -114,28 +214,7 @@ def main() -> int:
                 sample_dim = len(sample)
                 use_vec = True
 
-    db.executescript("""
-    CREATE TABLE IF NOT EXISTS chunks (
-        id INTEGER PRIMARY KEY,
-        path TEXT NOT NULL,
-        heading TEXT,
-        content TEXT NOT NULL,
-        mtime REAL NOT NULL,
-        hash TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
-    """)
-    db.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-        "content, content='chunks', content_rowid='id', tokenize='unicode61')"
-    )
-
-    if use_vec:
-        sqlite_vec.load(db)  # type: ignore
-        db.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
-            f"id INTEGER PRIMARY KEY, embedding FLOAT[{sample_dim}])"
-        )
+    _ensure_schema(db, sample_dim, use_vec)
 
     if args.full:
         db.execute("DELETE FROM chunks_fts")
@@ -144,15 +223,12 @@ def main() -> int:
             db.execute("DELETE FROM chunks_vec")
         db.commit()
 
-    sources: list[Path] = []
-    for d in (topics_dir(), docs_dir(), journal_dir(), skills_dir()):
-        if d.is_dir():
-            sources.extend(p for p in d.rglob("*.md") if p.is_file())
+    sources = _collect_sources()
 
     indexed_files = 0
     indexed_chunks = 0
     embed_calls = 0
-    for f in sources:
+    for ws, f in sources:
         rel = str(f.relative_to(gh))
         mtime = f.stat().st_mtime
         cur = db.execute("SELECT mtime FROM chunks WHERE path=? LIMIT 1", (rel,))
@@ -186,10 +262,13 @@ def main() -> int:
                     embed_calls += 1
             indexed_chunks += 1
         indexed_files += 1
+
+    slug_count = _index_slugs(db, sources, args.full)
     db.commit()
     db.close()
 
     print(f"indexed: {indexed_files} files, {indexed_chunks} chunks at ~/.gowth-mem/index.db")
+    print(f"slugs: {slug_count} rows across {len({ws for ws, _ in sources})} sources")
     if use_vec:
         print(f"vector: {embed_calls} embeddings via {provider_info[0]} (dim={sample_dim})")
     else:
