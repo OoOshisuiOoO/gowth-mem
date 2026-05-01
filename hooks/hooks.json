@@ -6,6 +6,10 @@
         {
           "type": "command",
           "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bootstrap-load.py\""
+        },
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/system-augment.py\""
         }
       ]
     }
@@ -28,6 +32,10 @@
         {
           "type": "command",
           "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/recall-active.py\""
+        },
+        {
+          "type": "command",
+          "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/user-augment.py\""
         }
       ]
     }

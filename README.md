@@ -13,10 +13,15 @@ What you get:
 - **SessionStart hook** — assembles `AGENTS.md` + `SOUL.md` + `TOOLS.md` + `USER.md` + `MEMORY.md` + `memory/<today>.md` + `memory/<yesterday>.md` into one block, capped at 12 000 chars per file and 60 000 chars total, with truncation markers.
 - **PreCompact hook** — injects a reminder to flush critical info to memory files before the model summarizes context.
 - **UserPromptSubmit hook** — runs a quick grep over `memory/*.md` and surfaces up to 3 matching files as additional context (proactive recall, not on demand).
-- **/claw-init command** — scaffolds the role files + `memory/` directory in the current workspace from templates.
-- **/claw-flush command** — manual trigger for the flush reminder.
-- **claw-memory-save skill** — instructions for Claude on how to format daily entries.
-- **memory-recaller subagent** — invokable for deeper, deliberate memory search.
+- **/mem-init command** — scaffolds the role files + `memory/` directory in the current workspace from templates.
+- **/mem-flush command** — manual trigger for the flush reminder.
+- **mem-save skill** — instructions for Claude on how to format daily entries.
+- **mem-recaller subagent** — invokable for deeper, deliberate memory search.
+
+Plus two prompt-augmentation hooks (added separately because Claude Code hooks cannot rewrite the user prompt or system prompt directly — they can only inject `additionalContext`):
+
+- **system-augment.py** (SessionStart) — injects dynamic runtime: workspace path, git branch + dirty state, host, OS, current date / time / timezone, and the contents of `.claude/directives.md` if present. Augments the system-prompt-equivalent context.
+- **user-augment.py** (UserPromptSubmit) — expands shortcuts in the user prompt (`@today`, `@yesterday`, `@ws`, `@user`) and detects intent prefixes (`review:`, `fix:`, `save:`, `research:`, `plan:`) to nudge Claude into the right mode. Augments the user-prompt-equivalent context.
 
 Inspired by [openclaw/openclaw](https://github.com/openclaw/openclaw)'s bootstrap files (`AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`), active memory plugin, and pre-compaction flush.
 
@@ -41,7 +46,7 @@ If your Claude Code build supports plugin discovery from `~/.claude/plugins/`, r
 In the project directory where you'd normally put `CLAUDE.md`:
 
 ```
-/claw-init
+/mem-init
 ```
 
 Creates:
@@ -83,7 +88,7 @@ This plugin is a Claude-Code-native distillation of OpenClaw concepts:
 - **Pre-compaction memory flush** → `precompact-flush.py`
 - **Active memory blocking sub-agent** (lite version, grep-based) → `recall-active.py` + `memory-recaller` agent
 - **Daily episodic file convention** (`memory/YYYY-MM-DD.md`) → templates + skill
-- **Role separation** (`AGENTS.md` / `SOUL.md` / `TOOLS.md` / `USER.md` / `MEMORY.md`) → templates + `/claw-init`
+- **Role separation** (`AGENTS.md` / `SOUL.md` / `TOOLS.md` / `USER.md` / `MEMORY.md`) → templates + `/mem-init`
 
 ## License
 

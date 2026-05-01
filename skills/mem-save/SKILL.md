@@ -1,9 +1,9 @@
 ---
-name: claw-memory-save
+name: mem-save
 description: Use when the user says "save this", "remember this", "note this", or after a debug session ends, to format and append a memory entry into memory/<today>.md or MEMORY.md following the openclaw-bridge convention.
 ---
 
-# claw-memory-save
+# mem-save
 
 Save a memory entry into the right file with the right structure.
 
