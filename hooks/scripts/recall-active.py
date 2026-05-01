@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: grep-based active memory recall.
 
-Lite version of OpenClaw's active-memory blocking sub-agent. Extracts ≥5-char
-alphanumeric keywords from the prompt, greps docs/*.md (newest mtime first)
-and wiki/**/*.md if a claude-obsidian vault exists. Returns up to 3 matching
-files (top 3 lines each) as additional context. Silent if nothing matches.
+Scans across all 4 memory layers (newest mtime wins):
+  - docs/journal/*.md   — raw daily journal (layer 1)
+  - docs/*.md            — curated working memory (layer 2)
+  - wiki/topics/*.md     — topic deep dive (layer 3, claude-obsidian)
+  - wiki/concepts/*.md   — atomic concepts (layer 4, claude-obsidian)
+  - wiki/**/*.md         — anything else in the vault
+
+Returns up to 3 matching files (top 3 lines each) as additional context.
+Silent if nothing matches.
 """
 from __future__ import annotations
 
@@ -18,14 +23,14 @@ MAX_KEYWORDS = 8
 MAX_FILES = 3
 MAX_LINES_PER_FILE = 3
 MAX_PROMPT_CHARS = 1500
-MAX_CANDIDATE_FILES = 50
+MAX_CANDIDATE_FILES = 80
 
 
 def collect_candidates(workspace: Path) -> list[Path]:
     out: list[Path] = []
     docs_dir = workspace / "docs"
     if docs_dir.is_dir():
-        out.extend(p for p in docs_dir.glob("*.md") if p.is_file())
+        out.extend(p for p in docs_dir.rglob("*.md") if p.is_file())
     wiki_dir = workspace / "wiki"
     if wiki_dir.is_dir():
         out.extend(p for p in wiki_dir.rglob("*.md") if p.is_file())

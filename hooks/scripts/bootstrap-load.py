@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""SessionStart hook: assemble AGENTS.md + docs/ working memory.
+"""SessionStart hook: assemble AGENTS.md + docs/ working memory + recent journal.
 
-Loads AGENTS.md (operating rules) + 6 docs/ files in AI-trade bootstrap order:
-handoff.md, exp.md, ref.md, tools.md, secrets.md, files.md. Capped per file
-(12k char) and total (60k char). Skips blanks, marks truncations.
+Loads in this order (matches AI-trade bootstrap rule + adds journal layer):
+  1. AGENTS.md            — operating rules
+  2. docs/handoff.md      — session state
+  3. docs/exp.md          — episodic curated
+  4. docs/ref.md          — verified facts
+  5. docs/tools.md        — tool registry
+  6. docs/secrets.md      — resource pointers
+  7. docs/files.md        — project structure
+  8. docs/journal/<today>.md      — raw daily journal (layer 1)
+  9. docs/journal/<yesterday>.md  — raw journal one day back
 
-For long-term knowledge (wiki/), claude-obsidian's own SessionStart hook
-loads wiki/hot.md — this hook does NOT touch wiki/ to avoid duplication.
+Caps: 12k char/file, 60k total. Skips blanks, marks truncations.
 
-Output: JSON to stdout in the SessionStart hookSpecificOutput shape.
+Long-term knowledge (wiki/topics/, wiki/concepts/) is loaded by claude-obsidian's
+own SessionStart hook (which reads wiki/hot.md). This hook does not touch wiki/.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 MAX_PER_FILE = 12_000
@@ -23,6 +31,8 @@ MAX_TOTAL = 60_000
 
 def main() -> int:
     workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    today = date.today()
+    yesterday = today - timedelta(days=1)
 
     candidates = [
         workspace / "AGENTS.md",
@@ -32,6 +42,8 @@ def main() -> int:
         workspace / "docs" / "tools.md",
         workspace / "docs" / "secrets.md",
         workspace / "docs" / "files.md",
+        workspace / "docs" / "journal" / f"{today.isoformat()}.md",
+        workspace / "docs" / "journal" / f"{yesterday.isoformat()}.md",
     ]
 
     parts: list[str] = []

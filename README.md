@@ -1,52 +1,71 @@
 # openclaw-bridge / gowth-mem
 
-OpenClaw-inspired **working-memory layer** for Claude Code. Pairs with [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) (knowledge base) for a 2-layer memory architecture.
+OpenClaw-inspired **4-layer memory pipeline** for Claude Code that mirrors human cognition. Pairs with [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) for layers 3 & 4.
 
 ## Why
 
-Claude Code's `CLAUDE.md` tends to grow into one large file mixing operational rules, voice, user profile, and tool guidance. OpenClaw splits these into role files. This plugin distills the pattern into **6 working-memory files** under `docs/` matching the AI-trade taxonomy, plus 5 hooks for bootstrap injection / pre-compaction flush / active recall / runtime context / shortcut expansion.
+Claude Code's `CLAUDE.md` jams operating rules, voice, and memory into one file. OpenClaw splits role files. But role-based isn't enough — humans organize knowledge **by topic** with cross-references, and they **distill** raw observations into structured memory over time.
 
-## Architecture — 2 layers
+This plugin gives Claude Code that pipeline.
+
+## 4-layer architecture
 
 ```
-docs/   (this plugin)              wiki/  (claude-obsidian)
-─────────────────────────          ─────────────────────────
-Working memory                     Knowledge base
-6 fixed files, plain text          N pages, Obsidian wikilinks
-Bootstrap auto-load every session  wiki/hot.md auto-load
-Recent / volatile                  Durable / cross-session
+Layer 1 — Raw daily journal           docs/journal/<YYYY-MM-DD>.md
+   ↓  /mem-distill   (chắt lọc, drop noise)
+Layer 2 — Curated working memory       docs/exp.md  docs/ref.md  docs/tools.md
+   ↓  /mem-promote <topic>   (gom theo chủ đề)
+Layer 3 — Topic deep dive              wiki/topics/<Topic>.md   (claude-obsidian)
+   ↓  /save   (claude-obsidian, when stable)
+Layer 4 — Atomic concepts              wiki/concepts/<atom>.md  (claude-obsidian)
+
+Always-on (state/config, not pipeline):
+   docs/handoff.md   docs/secrets.md   docs/files.md
 ```
 
-**Promotion path**: `docs/exp.md` (recent debug) → `docs/ref.md` (verified) → `wiki/concepts/<topic>.md` (durable, cross-session) via claude-obsidian's `/save`.
+| Layer | Role | Owner | When read |
+|---|---|---|---|
+| 1 | Raw daily journal | gowth-mem | bootstrap (today + yesterday) |
+| 2 | Curated working memory | gowth-mem | bootstrap (always) |
+| 3 | Topic deep dive (with `[[wikilinks]]`) | claude-obsidian | on demand via `/wiki-query` |
+| 4 | Atomic concepts | claude-obsidian | on demand via `/wiki-query` |
+
+**How it mirrors human memory**:
+- Layer 1 = sensory / working memory (today's everything)
+- Layer 2 = short-term memory (this week's distilled lessons)
+- Layer 3 = topic-organized long-term memory (how X relates to Y)
+- Layer 4 = crystallized concepts (atomic facts that don't change)
+
+Each layer **filters noise upward** — pure chatter dies in layer 1; unverified claims stay in layer 2; only stabilized topics reach layer 3.
 
 ## What you get
 
-**Hooks** (5 total, registered in `hooks/hooks.json`):
+**Hooks** (5 in `hooks/hooks.json`):
 
-- **SessionStart × 2**:
-  - `bootstrap-load.py` — assembles `AGENTS.md` + `docs/handoff.md` + `docs/exp.md` + `docs/ref.md` + `docs/tools.md` + `docs/secrets.md` + `docs/files.md`. Caps: 12k char/file, 60k total. Skips blanks, marks truncations.
-  - `system-augment.py` — injects runtime context: workspace path, git branch + dirty state, host, OS, current date / time / timezone, and `.claude/directives.md` if present.
-
-- **PreCompact**:
-  - `precompact-flush.py` — reminds Claude to flush critical info to the right `docs/*` file before context is compacted.
-
-- **UserPromptSubmit × 2**:
-  - `recall-active.py` — extracts ≥5-char keywords, greps `docs/*.md` and `wiki/**/*.md` (if vault exists), surfaces up to 3 matching files.
-  - `user-augment.py` — expands shortcuts (`@today`, `@yesterday`, `@ws`, `@user`, `@hot`) and detects intent prefixes (review / fix / save / research / plan; English + Vietnamese).
+- **SessionStart × 2** — bootstrap-load (AGENTS.md + 6 docs/* + 2 recent journal files), system-augment (cwd, git, OS, datetime, `.claude/directives.md`).
+- **PreCompact** — precompact-flush (route reminder by type into right `docs/*`).
+- **UserPromptSubmit × 2** — recall-active (grep `docs/**/*.md` and `wiki/**/*.md`, surface 3 matches), user-augment (`@today`, `@yesterday`, `@ws`, `@user`, `@hot` + intent prefix EN/VN).
 
 **Slash commands**:
 
-- `/mem-init` — scaffold `AGENTS.md` + 6 `docs/*.md` from templates.
-- `/mem-flush` — manually trigger the PreCompact reminder.
-- `/mem-bootstrap` — read the 6 docs/* and emit a 3-line summary: **đang làm gì / step kế / blocker**.
+| Command | Purpose | Layer |
+|---|---|---|
+| `/mem-init` | Scaffold AGENTS.md + 6 docs/* + docs/journal/ + today's journal | setup |
+| `/mem-journal` | Open today's journal (creates from template if missing) | 1 |
+| `/mem-distill` | Promote signal entries from journal → exp / ref / tools | 1 → 2 |
+| `/mem-promote <topic>` | Aggregate accumulated entries → `wiki/topics/<Topic>.md` | 2 → 3 |
+| `/mem-bootstrap` | Read all bootstrap files, emit 3-line summary (đang làm gì / step kế / blocker) | summary |
+| `/mem-flush` | Manually trigger PreCompact reminder | utility |
 
-**Skill**:
+**Skills**:
 
-- `mem-save` — route a memory entry to the correct `docs/*.md` file by type.
+- `mem-save` — route a single entry to the correct `docs/*.md` by type
+- `mem-distill` — chắt lọc journal → curated layer 2
+- `mem-promote` — gom layer 2 entries → layer 3 topic page with `[[wikilinks]]`
 
 **Subagent**:
 
-- `mem-recaller` (haiku) — deliberate memory recall across `docs/` and `wiki/`.
+- `mem-recaller` (haiku) — deliberate recall across all 4 layers
 
 ## Install
 
@@ -64,11 +83,9 @@ If your Claude Code build supports plugin discovery from `~/.claude/plugins/`, r
 }
 ```
 
-**Recommended companion**: install [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) for the long-term knowledge layer. The two plugins cooperate — claude-obsidian's SessionStart hook auto-loads `wiki/hot.md`; this plugin's SessionStart hook auto-loads `docs/*`. No conflict.
+**Recommended companion**: install [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) for layers 3 + 4. The two plugins cooperate — claude-obsidian's SessionStart hook auto-loads `wiki/hot.md`; this plugin's SessionStart hook auto-loads `docs/*` + recent journal. No conflict.
 
 ## Bootstrap your workspace
-
-In the project directory where you'd put `CLAUDE.md`:
 
 ```
 /mem-init
@@ -78,40 +95,48 @@ Creates:
 
 ```
 .
-├── AGENTS.md          # operating rules
+├── AGENTS.md              # operating rules + 4-layer pipeline doc
 └── docs/
-    ├── handoff.md     # session state
-    ├── exp.md         # episodic experience
-    ├── ref.md         # verified facts (with Source links)
-    ├── tools.md       # tool registry
-    ├── secrets.md     # resource pointers (env-var names; never values)
-    └── files.md       # project structure map
+    ├── handoff.md         # session state (always-on)
+    ├── exp.md             # curated episodic (layer 2)
+    ├── ref.md             # verified facts (layer 2)
+    ├── tools.md           # tool registry (layer 2)
+    ├── secrets.md         # resource pointers (always-on, env-var names only)
+    ├── files.md           # project structure (always-on)
+    └── journal/
+        └── 2026-05-02.md  # today's raw journal (layer 1)
 ```
 
-For long-term knowledge:
+For layers 3 + 4:
 
 ```
-/wiki    (from claude-obsidian)
+/wiki   (from claude-obsidian)
 ```
 
-## How the hooks work
+## Daily workflow
 
-| Hook | When | Effect |
-|------|------|--------|
-| `SessionStart` (bootstrap-load) | session begins / resumes | Concatenates AGENTS.md + 6 docs/* under a 60 000-char total cap. |
-| `SessionStart` (system-augment) | session begins / resumes | Injects runtime: cwd, git branch + dirty, host, OS, datetime, `.claude/directives.md`. |
-| `PreCompact` | before context compaction | Reminder to save critical info into the right `docs/*`. |
-| `UserPromptSubmit` (recall-active) | every user prompt | Greps `docs/*.md` and `wiki/**/*.md` for keyword matches; surfaces up to 3 files. |
-| `UserPromptSubmit` (user-augment) | every user prompt | Expands `@today` / `@yesterday` / `@ws` / `@user` / `@hot`; detects intent prefix (English + Vietnamese). |
+```
+1. Throughout the day:
+   /mem-journal               → append raw observations to docs/journal/<today>.md
 
-All hooks fail silently — if the workspace has no `docs/` or `wiki/`, hooks return nothing rather than erroring.
+2. End of session OR before /compact:
+   /mem-distill               → chắt lọc journal entries to docs/exp.md / ref.md / tools.md
+                                (drops pure chatter; keeps signal)
+
+3. When a topic accumulates (3+ entries about same subject):
+   /mem-promote "EMA Cross"   → creates wiki/topics/EMA Cross.md
+                                with [[wikilinks]] to related topics/concepts
+
+4. When a topic stabilizes:
+   /save (claude-obsidian)    → promote to wiki/concepts/ (atomic, canonical)
+```
 
 ## What this is not
 
 - Not a SQLite or vector index. Active recall is grep-only by design.
-- Not a knowledge base — that's claude-obsidian's job (`wiki/`, wikilinks, queries, canvas).
+- Not a knowledge graph engine — that's Obsidian's job (wikilinks, graph view, queries).
 - Not a sandbox. Claude Code's host-trust model is unchanged.
-- Not a system-prompt rewriter. Claude Code hooks cannot rewrite system / user prompt text directly; the closest mechanism is `additionalContext`.
+- Not a system-prompt rewriter. Claude Code hooks cannot rewrite system / user prompt text directly — closest mechanism is `additionalContext`.
 
 ## License
 
