@@ -4,14 +4,11 @@
   "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, hybrid FTS5+vector recall, SM-2 spaced resurfacing, mem0 ADD/UPDATE/DELETE/NOOP write semantics.",
   "author": {
     "name": "duynguyen",
-    "email": "claude.fgt-system@firegroup.io"
+    "url": "https://github.com/OoOshisuiOoO"
   },
   "license": "MIT",
   "homepage": "https://github.com/OoOshisuiOoO/gowth-mem",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/OoOshisuiOoO/gowth-mem.git"
-  },
+  "repository": "https://github.com/OoOshisuiOoO/gowth-mem",
   "keywords": [
     "memory",
     "topic",
