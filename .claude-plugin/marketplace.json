@@ -12,10 +12,7 @@
   "plugins": [
     {
       "name": "gowth-mem",
-      "source": {
-        "source": "github",
-        "repo": "OoOshisuiOoO/gowth-mem"
-      },
+      "source": "./",
       "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, hybrid FTS5+vector recall.",
       "version": "2.0.0",
       "author": {
