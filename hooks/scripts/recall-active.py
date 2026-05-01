@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: grep-based active memory recall.
+"""UserPromptSubmit hook: contextual recall with MMR diversity.
 
-Scans across all 4 memory layers (newest mtime wins):
-  - docs/journal/*.md   — raw daily journal (layer 1)
-  - docs/*.md            — curated working memory (layer 2)
-  - wiki/topics/*.md     — topic deep dive (layer 3, claude-obsidian)
-  - wiki/concepts/*.md   — atomic concepts (layer 4, claude-obsidian)
-  - wiki/**/*.md         — anything else in the vault
+Improvements over v0.3:
+- **Contextual retrieval (Anthropic)**: each match line is prepended with the
+  nearest preceding `## ` / `### ` heading, so the model sees WHERE the snippet
+  lives. This was reported to cut retrieval failures by 35-67%.
+- **MMR diversity (Maximal Marginal Relevance)**: when multiple hits would
+  otherwise come from the same file/section, prefer hits from distinct files
+  to maximize informational coverage.
+- **Per-layer score boost**: docs/journal/today gets a recency boost; docs/*
+  curated files get a quality boost; wiki/* files are reachable but lower priority.
+
+Scans:
+  - docs/**/*.md   (gowth-mem: journal + curated)
+  - wiki/**/*.md   (claude-obsidian, if vault exists)
 
 Returns up to 3 matching files (top 3 lines each) as additional context.
 Silent if nothing matches.
@@ -17,6 +24,7 @@ import json
 import os
 import re
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 MAX_KEYWORDS = 8
@@ -24,6 +32,8 @@ MAX_FILES = 3
 MAX_LINES_PER_FILE = 3
 MAX_PROMPT_CHARS = 1500
 MAX_CANDIDATE_FILES = 80
+
+HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 
 
 def collect_candidates(workspace: Path) -> list[Path]:
@@ -35,6 +45,45 @@ def collect_candidates(workspace: Path) -> list[Path]:
     if wiki_dir.is_dir():
         out.extend(p for p in wiki_dir.rglob("*.md") if p.is_file())
     return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)[:MAX_CANDIDATE_FILES]
+
+
+def find_heading(lines: list[str], idx: int) -> str:
+    """Walk backward from line index to find the nearest preceding markdown heading."""
+    for i in range(idx, -1, -1):
+        m = HEADING_RE.match(lines[i])
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def layer_score(workspace: Path, p: Path) -> int:
+    """Higher score = preferred. journal/today > curated docs > wiki."""
+    try:
+        rel = p.relative_to(workspace)
+    except ValueError:
+        return 0
+    parts = rel.parts
+    today = date.today().isoformat()
+    yday = (date.today() - timedelta(days=1)).isoformat()
+    if len(parts) >= 3 and parts[0] == "docs" and parts[1] == "journal":
+        if today in parts[-1]:
+            return 100
+        if yday in parts[-1]:
+            return 80
+        return 50
+    if len(parts) >= 2 and parts[0] == "docs":
+        return 60
+    if len(parts) >= 2 and parts[0] == "wiki":
+        return 30
+    return 10
+
+
+def jaccard_words(a: str, b: str) -> float:
+    sa = set(re.findall(r"\w{4,}", a.lower()))
+    sb = set(re.findall(r"\w{4,}", b.lower()))
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
 
 
 def main() -> int:
@@ -66,25 +115,52 @@ def main() -> int:
 
     pattern = re.compile("|".join(re.escape(k) for k in kws), re.IGNORECASE)
 
-    hits: list[tuple[Path, list[str]]] = []
+    # Collect all candidate hits with metadata for MMR scoring
+    raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
     for f in candidates:
         try:
             text = f.read_text(errors="ignore")
         except Exception:
             continue
-        matched = [ln.strip() for ln in text.splitlines() if pattern.search(ln)]
+        lines = text.splitlines()
+        matched: list[tuple[int, str, str]] = []
+        for idx, ln in enumerate(lines):
+            ln_stripped = ln.strip()
+            if pattern.search(ln_stripped):
+                heading = find_heading(lines, idx)
+                matched.append((idx, heading, ln_stripped))
         if matched:
-            hits.append((f, matched[:MAX_LINES_PER_FILE]))
-        if len(hits) >= MAX_FILES:
-            break
-    if not hits:
+            raw_hits.append((f, matched[:MAX_LINES_PER_FILE * 2], layer_score(workspace, f)))
+
+    if not raw_hits:
         return 0
 
-    parts = ["[openclaw-bridge:recall] Có thể relevant:"]
-    for f, lines in hits:
+    # MMR-style selection: pick highest-scored file first, then files with low
+    # word-overlap to already-selected files (diversity).
+    raw_hits.sort(key=lambda h: -h[2])
+    selected: list[tuple[Path, list[tuple[int, str, str]]]] = []
+    selected_text: list[str] = []
+    for f, matches, score in raw_hits:
+        joined = " ".join(m[2] for m in matches)
+        if selected_text:
+            max_overlap = max(jaccard_words(joined, s) for s in selected_text)
+            if max_overlap > 0.6:
+                continue  # too redundant with already selected
+        selected.append((f, matches[:MAX_LINES_PER_FILE]))
+        selected_text.append(joined)
+        if len(selected) >= MAX_FILES:
+            break
+
+    if not selected:
+        return 0
+
+    parts = ["[openclaw-bridge:recall] Có thể relevant (contextual+MMR):"]
+    for f, matches in selected:
         rel = f.relative_to(workspace)
         parts.append(f"\n--- {rel} ---")
-        parts.extend(lines)
+        for _idx, heading, line in matches:
+            prefix = f"§ {heading} | " if heading else ""
+            parts.append(f"{prefix}{line}")
     out = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
