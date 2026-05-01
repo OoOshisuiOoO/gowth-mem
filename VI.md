@@ -63,7 +63,7 @@ Trong topic file dùng `[[other-slug]]`. Hook recall sẽ follow 1 hop khi top h
 ## Cài đặt
 
 ```bash
-git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/openclaw-bridge
+git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem
 ```
 
 Restart Claude Code. Nếu build của bạn không tự discover plugin, thêm vào `~/.claude/settings.json`:
@@ -71,7 +71,7 @@ Restart Claude Code. Nếu build của bạn không tự discover plugin, thêm 
 ```json
 {
   "plugins": {
-    "openclaw-bridge": { "enabled": true }
+    "gowth-mem": { "enabled": true }
   }
 }
 ```
@@ -127,7 +127,7 @@ memx                    # build local index
 | UserPromptSubmit | `user-augment.py` | **Inject `<Rules>...AGENTS.md...</Rules>` mỗi prompt** + shortcut keywords + intent match |
 | Stop | `auto-journal.py` | Mỗi 10 turn: BLOCK với hướng dẫn auto-distill + chạy active prune |
 
-Tắt hook nào quá ồn: edit `~/.claude/plugins/openclaw-bridge/hooks/hooks.json`.
+Tắt hook nào quá ồn: edit `~/.claude/plugins/gowth-mem/hooks/hooks.json`.
 
 ## Slash commands & shortcut keywords
 
@@ -388,7 +388,7 @@ Bạn quên chạy `/mem-sync-resolve`. Conflict-detect hook sẽ nhắc ở m�
 
 State `ultrawork-state.json` còn sót. Chạy:
 ```bash
-rm -rf ~/.claude/plugins/openclaw-bridge/.omc 2>/dev/null
+rm -rf ~/.claude/plugins/gowth-mem/.omc 2>/dev/null
 ```
 Hoặc set `OMC_SKIP_HOOKS=ultrawork` trong shell rc.
 

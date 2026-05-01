@@ -47,7 +47,7 @@ v2.0 = single global memory at `~/.gowth-mem/`, organized by **topic**, safe und
 ## Install
 
 ```bash
-git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/openclaw-bridge
+git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem
 ```
 
 Restart Claude Code. If your build doesn't auto-discover plugins, add to `~/.claude/settings.json`:
@@ -55,7 +55,7 @@ Restart Claude Code. If your build doesn't auto-discover plugins, add to `~/.cla
 ```json
 {
   "plugins": {
-    "openclaw-bridge": { "enabled": true }
+    "gowth-mem": { "enabled": true }
   }
 }
 ```
@@ -90,7 +90,7 @@ memx                  build the search index (FTS5 + optional sqlite-vec)
 | UserPromptSubmit | `user-augment.py` | Keyword shortcuts (`mems`, `memb`, `memT`, `memI`, `memC`, …) + intent matching |
 | Stop | `auto-journal.py` | Every 10 turns: BLOCK with auto-distill instructions + active prune |
 
-Disable any of them by editing `~/.claude/plugins/openclaw-bridge/hooks/hooks.json`.
+Disable any of them by editing `~/.claude/plugins/gowth-mem/hooks/hooks.json`.
 
 ## Slash commands & shortcuts
 

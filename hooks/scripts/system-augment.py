@@ -58,7 +58,7 @@ def main() -> int:
     if branch:
         info.append(f"- git: {branch}")
 
-    parts = ["[openclaw-bridge:system-augment] runtime:"] + info
+    parts = ["[gowth-mem:system-augment] runtime:"] + info
 
     directives = workspace / ".claude" / "directives.md"
     if directives.is_file():

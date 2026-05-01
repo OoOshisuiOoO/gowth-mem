@@ -1,8 +1,8 @@
 ---
-description: Manually trigger the openclaw-bridge pre-compaction flush reminder. Use before /compact when context is heavy.
+description: Manually trigger the gowth-mem pre-compaction flush reminder. Use before /compact when context is heavy.
 ---
 
-Manually print the openclaw-bridge flush reminder and act on it before context is compacted.
+Manually print the gowth-mem flush reminder and act on it before context is compacted.
 
 Run with the Bash tool:
 
