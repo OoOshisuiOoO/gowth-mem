@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""SessionStart hook: assemble role files + recent daily memory.
+"""SessionStart hook: assemble AGENTS.md + docs/ working memory.
 
-OpenClaw-inspired bootstrap injection: AGENTS.md / SOUL.md / TOOLS.md / USER.md /
-MEMORY.md + memory/<today>.md + memory/<yesterday>.md, capped per file (12k char)
-and total (60k char). Skips blanks, marks truncations.
+Loads AGENTS.md (operating rules) + 6 docs/ files in AI-trade bootstrap order:
+handoff.md, exp.md, ref.md, tools.md, secrets.md, files.md. Capped per file
+(12k char) and total (60k char). Skips blanks, marks truncations.
+
+For long-term knowledge (wiki/), claude-obsidian's own SessionStart hook
+loads wiki/hot.md — this hook does NOT touch wiki/ to avoid duplication.
 
 Output: JSON to stdout in the SessionStart hookSpecificOutput shape.
 """
@@ -12,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date, timedelta
 from pathlib import Path
 
 MAX_PER_FILE = 12_000
@@ -21,17 +23,15 @@ MAX_TOTAL = 60_000
 
 def main() -> int:
     workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    today = date.today()
-    yesterday = today - timedelta(days=1)
 
     candidates = [
         workspace / "AGENTS.md",
-        workspace / "SOUL.md",
-        workspace / "TOOLS.md",
-        workspace / "USER.md",
-        workspace / "MEMORY.md",
-        workspace / "memory" / f"{today.isoformat()}.md",
-        workspace / "memory" / f"{yesterday.isoformat()}.md",
+        workspace / "docs" / "handoff.md",
+        workspace / "docs" / "exp.md",
+        workspace / "docs" / "ref.md",
+        workspace / "docs" / "tools.md",
+        workspace / "docs" / "secrets.md",
+        workspace / "docs" / "files.md",
     ]
 
     parts: list[str] = []

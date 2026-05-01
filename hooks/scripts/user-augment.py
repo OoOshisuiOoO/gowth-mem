@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: shortcut expansion + intent hint (user-prompt augmentation).
 
-Detects shortcuts in the prompt (@today, @yesterday, @ws, @user) and tells
+Detects shortcuts in the prompt (@today, @yesterday, @ws, @user, @hot) and tells
 Claude how to expand them. Detects intent prefixes (review:, fix:, save:,
-research:, plan:) and injects a role-specific reminder.
+research:, plan:; English + Vietnamese) and injects a role-specific reminder.
 
 Claude Code hooks cannot rewrite the user's text directly. This hook operates
 through `hookSpecificOutput.additionalContext`, which appears as a system
 reminder alongside the prompt.
+
+@hot points to claude-obsidian's wiki/hot.md if the vault exists.
 """
 from __future__ import annotations
 
@@ -24,9 +26,9 @@ INTENT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*(fix|debug|repair|sửa)\b", re.I),
      "intent=fix: root-cause first, minimal diff, verify before claiming done."),
     (re.compile(r"^\s*(save|remember|note|nhớ|lưu|ghi)\b", re.I),
-     "intent=save: invoke the mem-save skill to persist the entry."),
+     "intent=save: invoke the mem-save skill to route the entry to the right docs/* file."),
     (re.compile(r"^\s*(research|find|investigate|explain|tìm|nghiên cứu)\b", re.I),
-     "intent=research: read first, no edits, cite sources, save findings."),
+     "intent=research: read first, no edits, cite sources, save findings to docs/ref.md."),
     (re.compile(r"^\s*(plan|design|architect|kế hoạch)\b", re.I),
      "intent=plan: produce structure, list steps, do not implement yet."),
 ]
@@ -55,6 +57,12 @@ def main() -> int:
         expansions["@ws / @workspace"] = str(workspace)
     if re.search(r"@user\b", prompt):
         expansions["@user"] = user
+    if re.search(r"@hot\b", prompt):
+        hot = workspace / "wiki" / "hot.md"
+        if hot.is_file():
+            expansions["@hot"] = f"read {hot.relative_to(workspace)} (claude-obsidian hot cache)"
+        else:
+            expansions["@hot"] = "wiki/hot.md not found (claude-obsidian vault not initialized)"
 
     intent_msg: str | None = None
     for pattern, msg in INTENT_PATTERNS:

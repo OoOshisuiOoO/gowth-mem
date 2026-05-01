@@ -2,9 +2,9 @@
 """UserPromptSubmit hook: grep-based active memory recall.
 
 Lite version of OpenClaw's active-memory blocking sub-agent. Extracts ≥5-char
-alphanumeric keywords from the prompt, greps memory/*.md (newest first),
-returns up to 3 matching files (top 3 lines each) as additional context.
-Silent if nothing matches or no memory dir exists.
+alphanumeric keywords from the prompt, greps docs/*.md (newest mtime first)
+and wiki/**/*.md if a claude-obsidian vault exists. Returns up to 3 matching
+files (top 3 lines each) as additional context. Silent if nothing matches.
 """
 from __future__ import annotations
 
@@ -21,6 +21,17 @@ MAX_PROMPT_CHARS = 1500
 MAX_CANDIDATE_FILES = 50
 
 
+def collect_candidates(workspace: Path) -> list[Path]:
+    out: list[Path] = []
+    docs_dir = workspace / "docs"
+    if docs_dir.is_dir():
+        out.extend(p for p in docs_dir.glob("*.md") if p.is_file())
+    wiki_dir = workspace / "wiki"
+    if wiki_dir.is_dir():
+        out.extend(p for p in wiki_dir.rglob("*.md") if p.is_file())
+    return sorted(out, key=lambda p: p.stat().st_mtime, reverse=True)[:MAX_CANDIDATE_FILES]
+
+
 def main() -> int:
     try:
         data = json.load(sys.stdin)
@@ -31,8 +42,8 @@ def main() -> int:
         return 0
 
     workspace = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    mem_dir = workspace / "memory"
-    if not mem_dir.is_dir():
+    candidates = collect_candidates(workspace)
+    if not candidates:
         return 0
 
     words = re.findall(r"\b\w{5,}\b", prompt.lower())
@@ -49,12 +60,6 @@ def main() -> int:
         return 0
 
     pattern = re.compile("|".join(re.escape(k) for k in kws), re.IGNORECASE)
-
-    candidates = sorted(
-        (p for p in mem_dir.glob("*.md") if p.is_file()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )[:MAX_CANDIDATE_FILES]
 
     hits: list[tuple[Path, list[str]]] = []
     for f in candidates:

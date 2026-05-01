@@ -3,21 +3,26 @@
 
 OpenClaw-inspired pre-compaction memory flush. Prints a reminder via
 PreCompact hookSpecificOutput so the agent has one final chance to persist
-decisions, lessons, and verified facts before the older turns get summarized.
+decisions, lessons, and verified facts before older turns get summarized.
+
+Wording matches the AI-trade taxonomy convention: route info to the right
+docs/* file by type (exp / ref / tools / secrets / handoff).
 """
 from __future__ import annotations
 
 import json
 import sys
-from datetime import date
 
 
-REMINDER_TEMPLATE = """[openclaw-bridge:precompact-flush]
-Sắp compact context. Trước khi tóm tắt, lưu critical info xuống file:
+REMINDER = """[openclaw-bridge:precompact-flush]
+Sắp compact context. Trước khi tóm tắt, lưu critical info xuống đúng file:
 
-- Decisions / lessons / surprises -> memory/{today}.md hoặc MEMORY.md
-- Verified facts (with Source link) -> docs/ref.md (nếu có)
-- Episodic experiences (debug / fix) -> docs/exp.md (nếu có)
+- Episodic experiences (debug / fix / lesson / surprise) -> docs/exp.md
+- Verified facts (with Source link) -> docs/ref.md
+- Tool notes (cú pháp đã work, gotcha, version) -> docs/tools.md
+- Secret pointers (env-var name only, KHÔNG value) -> docs/secrets.md
+- Session state (đang làm / next / blocker / open threads) -> docs/handoff.md
+- Long-term knowledge (concepts, methods cross-session) -> /save vào wiki/ qua claude-obsidian
 
 Quy tắc: cốt lõi 1-2 dòng / entry, không noise, có Source để verify lại.
 Conflict cũ -> xóa cũ, không giữ song song.
@@ -25,11 +30,10 @@ Conflict cũ -> xóa cũ, không giữ song song.
 
 
 def main() -> int:
-    msg = REMINDER_TEMPLATE.format(today=date.today().isoformat())
     out = {
         "hookSpecificOutput": {
             "hookEventName": "PreCompact",
-            "additionalContext": msg,
+            "additionalContext": REMINDER,
         }
     }
     print(json.dumps(out))
