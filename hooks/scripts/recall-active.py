@@ -45,6 +45,7 @@ from _home import (  # type: ignore
     gowth_home,
     index_db,
     list_workspaces,
+    read_settings,
     settings_path,
     shared_dir,
     state_path,
@@ -68,12 +69,6 @@ HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 SUPERSEDED_RE = re.compile(r"\(superseded\b", re.IGNORECASE)
 VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 WIKILINK_RE = re.compile(r"\[\[([^\[\]\|#]+)(#[^\[\]\|]+)?(\|[^\[\]]+)?\]\]")
-
-
-def _load_settings() -> dict:
-    """Backward-compat alias — prefer _home.read_settings in new code."""
-    from _home import read_settings  # type: ignore
-    return read_settings()
 
 
 def _allowed_workspaces(settings: dict) -> list[str] | None:
@@ -375,7 +370,7 @@ def main() -> int:
     if not prompt.strip():
         return 0
 
-    settings = _load_settings()
+    settings = read_settings()
     allowed_ws = _allowed_workspaces(settings)
     current_ws = active_workspace()
 

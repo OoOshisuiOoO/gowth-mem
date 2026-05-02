@@ -62,11 +62,6 @@ def read_settings() -> dict:
     return _read_json(gowth_home() / "settings.json")
 
 
-# Internal aliases for backward compat with v2.2 callers
-_read_config = read_config
-_read_settings = read_settings
-
-
 # ─── active-workspace resolution ────────────────────────────────────────
 
 def _read_session_workspace() -> str | None:
@@ -128,8 +123,8 @@ def active_workspace(cwd: Path | None = None) -> str:
     sess = _read_session_workspace()
     if sess:
         return sess
-    cfg = _read_config()
-    settings = _read_settings()
+    cfg = read_config()
+    settings = read_settings()
     if settings.get("workspace", {}).get("auto_detect_from_cwd", True):
         cwd_str = str((cwd or Path.cwd()).resolve())
         ws_map = cfg.get("workspace_map", {}) or {}

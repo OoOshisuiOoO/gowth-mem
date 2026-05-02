@@ -29,6 +29,7 @@ from _atomic import atomic_write  # type: ignore
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
     active_workspace,
+    read_settings,
     settings_path,
     topics_dir,
     workspace_dir,
@@ -75,12 +76,6 @@ def _slugify(words: list[str]) -> str:
     return s[:60] or "misc"
 
 
-def _load_settings() -> dict:
-    """Backward-compat alias — prefer _home.read_settings in new code."""
-    from _home import read_settings  # type: ignore
-    return read_settings()
-
-
 def _walk_topics(ws: str | None) -> list[Path]:
     td = topics_dir(ws)
     if not td.is_dir():
@@ -103,7 +98,7 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
     `ws` defaults to active workspace. `section_hint` is the markdown heading
     where the line should go (e.g. "## [exp]"); None means caller decides.
     """
-    s = settings or _load_settings()
+    s = settings or read_settings()
     routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
     min_overlap = int(routing.get("min_keyword_overlap", 3))
     default_topic = routing.get("default_topic", "misc")
