@@ -51,6 +51,17 @@ SECTION_FOR_PREFIX = {
     "decision": "## [decision]",
 }
 
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}$")
+
+
+def _validate_slug(slug: str) -> str:
+    """Reject path-traversal and non-conforming slugs. Returns the slug if valid."""
+    if not SLUG_RE.match(slug):
+        raise ValueError(
+            f"invalid slug: {slug!r} (must match {SLUG_RE.pattern})"
+        )
+    return slug
+
 
 def _extract_keywords(text: str, min_len: int = 4) -> set[str]:
     words = re.findall(rf"\b\w{{{min_len},}}\b", text.lower())
@@ -65,13 +76,9 @@ def _slugify(words: list[str]) -> str:
 
 
 def _load_settings() -> dict:
-    p = settings_path()
-    if not p.is_file():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return {}
+    """Backward-compat alias — prefer _home.read_settings in new code."""
+    from _home import read_settings  # type: ignore
+    return read_settings()
 
 
 def _walk_topics(ws: str | None) -> list[Path]:
@@ -109,6 +116,8 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
         return default_topic, _path_for(ws, default_topic), section_hint
 
     candidates = _walk_topics(ws)
+    # Build slug→path map once: prefer frontmatter slug over filename stem.
+    slug_index: dict[str, Path] = {}
     best_slug = default_topic
     best_overlap = 0
     best_path: Path | None = None
@@ -117,11 +126,15 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
             text = f.read_text(errors="ignore")
         except Exception:
             continue
+        fm, _ = parse_file(f)
+        slug = fm.get("slug") or f.stem
+        if SLUG_RE.match(slug) and slug not in slug_index:
+            slug_index[slug] = f
         file_kws = _extract_keywords(text)
         overlap = len(kws & file_kws)
         if overlap > best_overlap:
             best_overlap = overlap
-            best_slug = f.stem
+            best_slug = slug
             best_path = f
 
     if best_overlap >= min_overlap and best_path is not None:
@@ -129,6 +142,11 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
 
     distinctive = sorted(kws, key=len, reverse=True)[:2]
     new_slug = _slugify(distinctive) or default_topic
+    # P0-3: if a topic with this slug already exists (possibly nested via /mem-restructure),
+    # route to it instead of creating a flat duplicate that would silently shadow the original.
+    existing = slug_index.get(new_slug)
+    if existing is not None:
+        return new_slug, existing, section_hint
     return new_slug, _path_for(ws, new_slug), section_hint
 
 
@@ -139,14 +157,27 @@ def _path_for(ws: str, slug: str) -> Path:
 
 
 def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, parents: list[str] | None = None) -> Path:
-    """Create workspaces/<ws>/topics/<parents>/<slug>.md with v2.2 frontmatter if missing."""
+    """Create workspaces/<ws>/topics/<parents>/<slug>.md with v2.2 frontmatter if missing.
+
+    Slug must match SLUG_RE; each parent must too. Path is resolved and asserted to live
+    inside topics_dir(ws) to defend against any mis-routing or symlink games.
+    """
+    _validate_slug(slug)
     ws = ws or active_workspace()
     parents = parents or []
-    path = topics_dir(ws)
-    for p in parents:
-        path = path / p
+    for parent in parents:
+        if not SLUG_RE.match(parent):
+            raise ValueError(f"invalid parent segment: {parent!r}")
+    base = topics_dir(ws).resolve()
+    path = base
+    for parent in parents:
+        path = path / parent
     path.mkdir(parents=True, exist_ok=True)
-    p = path / f"{slug}.md"
+    p = (path / f"{slug}.md").resolve()
+    try:
+        p.relative_to(base)
+    except ValueError:
+        raise ValueError(f"resolved path {p} escapes topics root {base}")
     if p.is_file():
         return p
     today = date.today().isoformat()
@@ -179,12 +210,15 @@ def list_topics(ws: str | None = None) -> list[dict]:
     out: list[dict] = []
     for f in _walk_topics(ws):
         fm, _ = parse_file(f)
+        parents = fm.get("parents") or []
+        if not isinstance(parents, list):  # P1-3: malformed scalar coerced to []
+            parents = []
         out.append({
             "slug": fm.get("slug") or f.stem,
             "title": fm.get("title") or f.stem.replace("-", " ").title(),
             "status": fm.get("status") or "",
             "last_touched": fm.get("last_touched") or "",
-            "parents": fm.get("parents") or [],
+            "parents": parents,
             "path": f,
         })
     out.sort(key=lambda d: d.get("last_touched") or "", reverse=True)

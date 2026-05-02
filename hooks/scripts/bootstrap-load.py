@@ -152,18 +152,19 @@ def main() -> int:
         parts.append(f"\n=== {label} ===\n{chunk}{marker}")
         total += len(chunk)
 
-    # Skills indexes (shared first, then workspace override)
-    for label, idx_dir in (
-        ("shared/skills/", shared_skills_dir()),
-        (f"workspaces/{ws}/skills/", skills_dir(ws)),
-    ):
-        text = _build_skills_index(idx_dir)
-        if not text:
-            continue
-        if total + len(text) + 100 >= MAX_TOTAL:
-            break
-        parts.append(f"\n=== ~/.gowth-mem/{label} (index) ===\n{text}")
-        total += len(text)
+    # Skills indexes (shared first, then workspace override) — honor cap from prior loop
+    if not stop:
+        for label, idx_dir in (
+            ("shared/skills/", shared_skills_dir()),
+            (f"workspaces/{ws}/skills/", skills_dir(ws)),
+        ):
+            text = _build_skills_index(idx_dir)
+            if not text:
+                continue
+            if total + len(text) + 100 >= MAX_TOTAL:
+                break
+            parts.append(f"\n=== ~/.gowth-mem/{label} (index) ===\n{text}")
+            total += len(text)
 
     if not parts:
         return 0

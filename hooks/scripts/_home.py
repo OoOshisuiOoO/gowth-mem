@@ -52,12 +52,19 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def _read_config() -> dict:
+def read_config() -> dict:
+    """Public reader for ~/.gowth-mem/config.json (returns {} on missing/invalid)."""
     return _read_json(gowth_home() / "config.json")
 
 
-def _read_settings() -> dict:
+def read_settings() -> dict:
+    """Public reader for ~/.gowth-mem/settings.json (returns {} on missing/invalid)."""
     return _read_json(gowth_home() / "settings.json")
+
+
+# Internal aliases for backward compat with v2.2 callers
+_read_config = read_config
+_read_settings = read_settings
 
 
 # ─── active-workspace resolution ────────────────────────────────────────

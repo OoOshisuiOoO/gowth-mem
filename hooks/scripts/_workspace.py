@@ -7,6 +7,7 @@ The active workspace at session-time scopes recall and writes.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 from datetime import date
@@ -222,10 +223,28 @@ workspaces/{name}/
 """
 
 
+_WS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
+
+
+def _validate_name(name: str) -> None:
+    """Reject path-traversal, hidden, reserved, and non-conforming workspace names."""
+    if (
+        not name
+        or name in {".", "..", "_archive"}
+        or "/" in name
+        or "\\" in name
+        or name.startswith((".", "_"))
+        or not _WS_NAME_RE.match(name)
+    ):
+        raise ValueError(
+            f"invalid workspace name: {name!r} "
+            f"(must match {_WS_NAME_RE.pattern}, not '.', '..', '_archive', or start with '.' / '_')"
+        )
+
+
 def scaffold(name: str, title: str = "", description: str = "", tags: list[str] | None = None) -> Path:
     """Create workspaces/<name>/ with full skeleton. Idempotent: skips files that exist."""
-    if not name or "/" in name or name.startswith("_"):
-        raise ValueError(f"invalid workspace name: {name!r}")
+    _validate_name(name)
     today = date.today().isoformat()
     ws_path = workspace_dir(name)
     if ws_path.exists() and (ws_path / "workspace.json").is_file():

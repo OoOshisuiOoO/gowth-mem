@@ -168,7 +168,13 @@ def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: 
         parents = fm.get("parents") or []
         aliases = fm.get("aliases") or []
         parents_s = ",".join(parents) if isinstance(parents, list) else str(parents)
-        aliases_s = ",".join(aliases) if isinstance(aliases, list) else str(aliases)
+        # P0-4: wrap aliases with sentinel commas so LIKE '%,slug,%' is exact-token match.
+        if isinstance(aliases, list) and aliases:
+            aliases_s = "," + ",".join(aliases) + ","
+        elif isinstance(aliases, str) and aliases:
+            aliases_s = "," + aliases + ","
+        else:
+            aliases_s = ""
         key = (ws, slug)
         if key in seen:
             continue

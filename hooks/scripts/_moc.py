@@ -82,6 +82,8 @@ def rebuild_workspace_moc(ws: str) -> Path:
     children: list[str] = []
     subfolders: list[str] = []
 
+    # Children/subfolders LISTING only — recursive rebuild owned by rebuild_topics_root
+    # so rebuild_all does not double-walk the topic tree.
     if topics_root.is_dir():
         for entry in sorted(topics_root.iterdir()):
             if entry.name.startswith("_") or entry.name.startswith("."):
@@ -91,10 +93,7 @@ def rebuild_workspace_moc(ws: str) -> Path:
                 slug = fm.get("slug") or entry.stem
                 children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
             elif entry.is_dir():
-                sub_moc = entry / "_MAP.md"
                 subfolders.append(f"- [[topics/{entry.name}/_MAP|{entry.name}]]")
-                # Best-effort rebuild of nested folder MOC too:
-                rebuild_topic_folder_moc(ws, entry)
 
     if not children:
         children.append("(no topics yet — sẽ tạo qua `mems` / `/mem-save`)")

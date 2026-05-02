@@ -71,13 +71,9 @@ WIKILINK_RE = re.compile(r"\[\[([^\[\]\|#]+)(#[^\[\]\|]+)?(\|[^\[\]]+)?\]\]")
 
 
 def _load_settings() -> dict:
-    p = settings_path()
-    if not p.is_file():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return {}
+    """Backward-compat alias — prefer _home.read_settings in new code."""
+    from _home import read_settings  # type: ignore
+    return read_settings()
 
 
 def _allowed_workspaces(settings: dict) -> list[str] | None:

@@ -13,6 +13,50 @@ from typing import Any
 _FRONT_RE = re.compile(r"^---\s*\n(?P<body>.*?)\n---\s*\n?", re.DOTALL)
 
 
+def _split_csv_quoted(s: str) -> list[str]:
+    """Split a YAML-ish flow list on commas while respecting quoted strings.
+
+    Handles single and double quotes, including escaped quote pairs ('' or "")
+    that YAML uses for embedded quotes.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quote: str | None = None
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if in_quote:
+            buf.append(ch)
+            if ch == in_quote:
+                # YAML doubled-quote escape
+                if i + 1 < n and s[i + 1] == in_quote:
+                    buf.append(s[i + 1])
+                    i += 2
+                    continue
+                in_quote = None
+        elif ch in ('"', "'"):
+            in_quote = ch
+            buf.append(ch)
+        elif ch == ",":
+            parts.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    if buf:
+        parts.append("".join(buf).strip())
+    cleaned: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if (p[0] == '"' and p[-1] == '"') or (p[0] == "'" and p[-1] == "'"):
+            p = p[1:-1]
+        cleaned.append(p)
+    return cleaned
+
+
 def _parse_value(raw: str) -> Any:
     raw = raw.strip()
     if not raw:
@@ -21,7 +65,7 @@ def _parse_value(raw: str) -> Any:
         inner = raw[1:-1].strip()
         if not inner:
             return []
-        return [s.strip().strip("\"'") for s in inner.split(",") if s.strip()]
+        return _split_csv_quoted(inner)
     if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
         return raw[1:-1]
     return raw

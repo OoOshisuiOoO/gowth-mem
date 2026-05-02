@@ -76,10 +76,10 @@ def _query_db(ws: str, slug: str) -> Path | None:
         row = cur.fetchone()
         if row:
             return Path(row[0])
-        # alias fallback
+        # alias fallback — sentinel-wrapped exact-token match (P0-4 fix)
         cur = db.execute(
             "SELECT path FROM slugs WHERE workspace=? AND aliases LIKE ? LIMIT 1",
-            (ws, f"%{slug}%"),
+            (ws, f"%,{slug},%"),
         )
         row = cur.fetchone()
         if row:
