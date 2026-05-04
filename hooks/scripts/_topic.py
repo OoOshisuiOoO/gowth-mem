@@ -171,13 +171,20 @@ def _path_for(ws: str, slug: str) -> Path:
     return workspace_dir(ws) / slug / f"{slug}.md"
 
 
-def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, parents: list[str] | None = None) -> Path:
-    """v2.4: Create workspaces/<ws>/<parents>/<slug>/<slug>.md with frontmatter if missing.
+def ensure_topic(slug: str, ws: str | None = None, title: str | None = None,
+                 parents: list[str] | None = None, topic_type: str = "misc",
+                 summary: str = "") -> Path:
+    """v2.8: Create workspaces/<ws>/<parents>/<slug>/<slug>.md with type-specific template.
 
     Topic = FOLDER named <slug> containing landing file <slug>.md (Obsidian folder note).
     Slug must match SLUG_RE and not be reserved; each parent must too. Path is resolved
     and asserted to live inside workspace_dir(ws) and not under any reserved subdir.
+
+    `topic_type` selects the body template (see _topic_templates.TYPES); defaults to
+    "misc" (legacy [exp]/[ref]/[decision]/[reflection] skeleton). Unknown types fall
+    back to misc. Frontmatter always carries `type: <topic_type>`.
     """
+    from _topic_templates import render as _render_template  # type: ignore
     _validate_slug(slug)
     if is_reserved(slug) or is_reserved(f"{slug}.md"):
         raise ValueError(f"slug {slug!r} collides with reserved name (docs/journal/skills/_MAP/AGENTS/workspace.json)")
@@ -203,24 +210,7 @@ def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, par
         return p
     today = date.today().isoformat()
     nice_title = title or slug.replace("-", " ").title()
-    body = (
-        f"---\n"
-        f"slug: {slug}\n"
-        f"title: {nice_title}\n"
-        f"status: draft\n"
-        f"created: {today}\n"
-        f"last_touched: {today}\n"
-        f"parents: [{', '.join(parents)}]\n"
-        f"links: []\n"
-        f"aliases: []\n"
-        f"---\n\n"
-        f"# {nice_title}\n\n"
-        f"> Cốt lõi 1 dòng (TODO).\n\n"
-        f"## [exp]\n(empty)\n\n"
-        f"## [ref]\n(empty)\n\n"
-        f"## [decision]\n(empty)\n\n"
-        f"## [reflection]\n(empty)\n"
-    )
+    body = _render_template(topic_type, slug, nice_title, today, parents, summary)
     atomic_write(p, body)
     return p
 
@@ -253,6 +243,11 @@ if __name__ == "__main__":
     ap.add_argument("--ws")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--ensure")
+    ap.add_argument("--type", default="misc",
+                    help="topic type for --ensure (runbook/incident/reference/research/strategy/how-to/concept/decision/tool/misc)")
+    ap.add_argument("--title", default=None, help="title for --ensure (default: derived from slug)")
+    ap.add_argument("--parents", default="", help="comma-separated parent segments for --ensure")
+    ap.add_argument("--summary", default="", help="cốt lõi 1-line summary for --ensure")
     args = ap.parse_args()
     if args.route:
         slug, path, section = route(args.route, ws=args.ws)
@@ -261,7 +256,9 @@ if __name__ == "__main__":
         for t in list_topics(args.ws):
             print(f"{t['slug']:30s} {t['status']:10s} {t['last_touched']:10s} {t['title']}")
     elif args.ensure:
-        p = ensure_topic(args.ensure, ws=args.ws)
+        parents = [p for p in args.parents.split(",") if p.strip()]
+        p = ensure_topic(args.ensure, ws=args.ws, title=args.title,
+                         parents=parents, topic_type=args.type, summary=args.summary)
         print(p)
     else:
         ap.print_help()

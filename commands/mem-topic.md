@@ -23,9 +23,18 @@ Subcommands (mutually exclusive):
   python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --regen-index
   ```
 
-- **ensure `<slug>`**: create `topics/<slug>.md` if missing (with frontmatter). Use when manually starting a new topic:
+- **ensure `<slug>`**: create `workspaces/<ws>/<slug>/<slug>.md` if missing, with a type-specific template (frontmatter + prescribed sections). Use when manually starting a new topic:
   ```bash
+  # Generic (misc skeleton):
   python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --ensure "<slug>"
+
+  # Typed scaffold (recommended) — picks the right template:
+  python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --ensure "<slug>" \
+      --type runbook --title "StarRocks FE OOM" --parents starrocks \
+      --summary "FE JVM heap exhausted → metadata write fail"
   ```
+
+  Available `--type`: `runbook | incident | reference | research | strategy | how-to | concept | decision | tool | misc`.
+  Each prescribes WHAT to record (e.g. runbook = Triggers/Symptoms/Diagnostics/Resolution/Rollback/Escalation; strategy = Thesis/Setup/Entry/Exit/Risk/Backtest). Unknown type falls back to `misc`.
 
 The router uses keyword overlap (≥3 common words) against existing topic files. New slugs come from the top-2 distinctive keywords. Default fallback is `misc` (configurable in `settings.json` → `topic_routing.default_topic`).

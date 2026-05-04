@@ -9,7 +9,7 @@ The skill will:
 1. Resolve the active workspace via `_workspace.py active`.
 2. Classify the entry by type (episodic / verified fact / tool quirk / decision / lesson / pointer / session-state / reusable workflow).
 3. Route to the destination per the v2.6 routing table:
-   - Topic content → `workspaces/<ws>/<slug>.md` under the matching `## [exp] | [ref] | [decision] | [reflection]` heading.
+   - Topic content → `workspaces/<ws>/<slug>/<slug>.md` under the matching section. New topics scaffold from a type-specific template (`type: <runbook|incident|reference|research|strategy|how-to|concept|decision|tool|misc>` in frontmatter — see `/mem-topic --ensure --type=<type>`). For existing topics, write under the matching heading from that template; for legacy `misc` skeletons, use `[exp] | [ref] | [decision] | [reflection]`.
    - Lesson (Symptom + Tried + Root + Fix [+ Source]) → `workspaces/<ws>/<topic>/lessons.md` (use `memL` for the dedicated 5-field path).
    - Cross-topic tool quirk → `workspaces/<ws>/docs/tools.md`.
    - Workspace overflow → `workspaces/<ws>/docs/{exp,ref}.md`.
