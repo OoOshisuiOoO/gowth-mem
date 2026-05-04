@@ -19,6 +19,7 @@ Shortcuts (must appear at start of prompt):
   memT   →  mem-topic            (list / inspect topics)
   memI   →  mem-install          (first-time setup wizard)
   memC   →  mem-sync-resolve     (AI conflict resolution)
+  memL   →  mem-lesson           (capture experience: symptom -- tried -- root -- fix [-- source])
 
 @-shortcuts: @today @yesterday @user
 """
@@ -208,6 +209,45 @@ If ~/.gowth-mem/ already exists and has AGENTS.md, refuse and suggest /mem-confi
 5. Run /mem-sync --init to push initial state to remote.
 6. Suggest next: memx (build search index)."""
 
+INLINE_MEM_LESSON = """[auto-skill: mem-lesson] Intent = capture experience entry. Execute inline (no /mem-lesson needed):
+
+5-field schema (cited canonical sources — NASA LLIS / Army AAR / AWS EKS / Stripe / 5 Whys):
+  Symptom    — observable error / behavior (becomes H2 heading for FTS5 prefix match)
+  Tried      — what was attempted, in order
+  Root cause — 1 line (optional 5-Whys chain)
+  Fix        — working command/patch/config
+  Source     — commit | file:line | URL (optional)
+
+Two modes:
+
+A. ONE-LINER (fast path) — split on ' -- ' (space-dash-dash-space):
+   memL <symptom> -- <tried> -- <root cause> -- <fix>
+   memL <symptom> -- <tried> -- <root cause> -- <fix> -- <source>
+
+B. INTERACTIVE — prompt user for 5 fields sequentially.
+
+Steps:
+1. Detect mode by checking for ' -- ' in the prompt after `memL `.
+2. If one-liner: parse via _lesson.parse_oneliner; reject if not 4-5 fields.
+3. If interactive: ask user for Symptom?/Tried?/Root cause?/Fix?/Source? sequentially.
+4. Call _lesson.append_lesson(symptom, tried, root_cause, fix, source, ws=active).
+5. Auto-route via _topic.route(symptom + tried) — picks the matching topic file in active workspace.
+6. Lesson written to <ws>/<topic-folder>/lessons.md (folder-level ledger; one per topic, NOT per sub-aspect).
+7. Post-hook: refresh MOC + index (`_moc.py --ws <ws>` + `_index.py`).
+8. Confirm: "lesson saved: <path>".
+
+Equivalent CLI:
+  python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_lesson.py \\
+      --symptom "..." --tried "..." --root "..." --fix "..." [--source "..."] [--topic <slug>]
+
+Hard rules:
+- 4 fields min (symptom/tried/root/fix), source optional.
+- No secrets in any field.
+- Lessons.md is per topic FOLDER (not per sub-aspect file).
+- Atomic write; newest entry appended at TOP under '## Entries'.
+- After ≥7 days stable → distill to <ws>/docs/ref.md (manual via /mem-distill)."""
+
+
 INLINE_MEM_SYNC_RESOLVE = """[auto-skill: mem-sync-resolve] Intent = AI-mediated conflict resolution. Execute inline:
 
 1. Read ~/.gowth-mem/SYNC-CONFLICT.md. If missing, say "no conflict pending" and exit.
@@ -241,12 +281,13 @@ SHORTCUT_KEYWORDS: dict[str, str] = {
     "memT": INLINE_MEM_TOPIC,
     "memI": INLINE_MEM_INSTALL,
     "memC": INLINE_MEM_SYNC_RESOLVE,
+    "memL": INLINE_MEM_LESSON,
 }
 
-# memT/memI/memC are case-sensitive (capital T/I/C) to avoid false matches with memt/memi/memc;
-# the regex below uses re.IGNORECASE for lowercase ones but special-cases the capitals.
+# Capital-suffix shortcuts (memT/memI/memC/memL) are case-sensitive to avoid false matches with
+# their lowercase variants (memt/memi/memc/meml).
 SHORTCUT_RE = re.compile(
-    r"^\s*(mems|memd|memr|memk|memb|memh|memj|memx|memc|memp|memy|memg|memm|memT|memI|memC)\b"
+    r"^\s*(mems|memd|memr|memk|memb|memh|memj|memx|memc|memp|memy|memg|memm|memT|memI|memC|memL)\b"
 )
 
 
