@@ -100,9 +100,9 @@ INLINE_MEM_HYDE = """[auto-skill: mem-hyde-recall] Intent = HyDE recall (concept
 1. Draft a 1-2 paragraph hypothetical answer (just for retrieval).
 2. If ~/.gowth-mem/index.db + sqlite-vec + embedding key all available:
    embed the hypothetical, vector top-K, RRF-merge with FTS5 BM25 over the original prompt.
-3. Else: extract ≥5-char keywords from the hypothetical and grep topics/**/*.md and docs/*.md.
+3. Else: extract ≥5-char keywords from the hypothetical and grep workspaces/<active>/**/*.md (excl reserved) + <ws>/docs/*.md + shared/*.md.
 4. Filter temporal-invalid lines (`(superseded)`, expired `valid_until:`).
-5. Synthesize against the original question, citing each chunk like `topics/python-venv.md § Lessons`.
+5. Synthesize against the original question, citing each chunk like `workspaces/personal/python-venv.md § Lessons`.
 6. If no useful match: suggest /mem-reindex."""
 
 INLINE_MEM_JOURNAL = """[auto-skill: mem-journal] Intent = open today's journal. Execute inline:
@@ -117,13 +117,14 @@ INLINE_MEM_REINDEX = """[auto-skill: mem-reindex] Intent = rebuild search index.
 Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py
 - Default: incremental (only re-indexes changed mtimes).
 - Pass --full to drop and rebuild.
-Indexes ~/.gowth-mem/{topics,docs,journal,skills}/**/*.md into ~/.gowth-mem/index.db.
+Indexes ~/.gowth-mem/shared/*.md + workspaces/<ws>/{docs,journal,skills}/**/*.md + workspaces/<ws>/**/*.md (topic root, excl reserved) into ~/.gowth-mem/index.db.
 Report files / chunks indexed and which fallback (FTS5-only vs vector hybrid)."""
 
 INLINE_MEM_COST = """[auto-skill: mem-cost] Intent = estimate bootstrap token footprint. Execute inline:
 
-Sum char count of: AGENTS.md + topics/_index.md + docs/handoff.md + docs/secrets.md + docs/tools.md +
-top-3 most-recent workspace topic files + journal/<today>.md + journal/<yesterday>.md.
+Sum char count of: AGENTS.md + shared/{files,secrets,tools}.md + workspaces/<active>/_MAP.md +
+<ws>/docs/{handoff,exp,ref,tools,files}.md + top-3 most-recent <ws>/**/*.md (topics) +
+<ws>/journal/<today>.md + <yesterday>.md.
 Estimate tokens = chars / 4. Print per-file breakdown + total.
 Cap = 60,000 chars (~15,000 tokens). Warn if >40k or >60k."""
 
@@ -137,7 +138,7 @@ Deletion rules (in order):
 2. Entry with `(superseded)` / `(deprecated)` / `(obsolete)` → DELETE
 3. Within-file Jaccard ≥ 0.85 duplicate → DELETE the SHORTER
 
-Walks ~/.gowth-mem/topics/**/*.md and docs/*.md. Skips journal/. Report: deleted N, kept K."""
+Walks ~/.gowth-mem/workspaces/<ws>/**/*.md (excl reserved) + <ws>/docs/*.md + shared/*.md. Skips journal/. Report: deleted N, kept K."""
 
 INLINE_MEM_SYNC = """[auto-skill: mem-sync] Intent = sync ~/.gowth-mem/ via git remote. Execute inline:
 
@@ -146,7 +147,7 @@ Pre-req: ~/.gowth-mem/config.json with `remote`+`branch` (use /mem-config). Toke
 Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py
 Flags: --init (first-time) | --pull-only | --push-only
 
-What syncs: AGENTS.md, settings.json, topics/*, docs/*, journal/*, skills/*.
+What syncs: AGENTS.md, settings.json, shared/*, workspaces/<ws>/{_MAP, workspace.json, docs, journal, skills, <slug>.md, <domain>/}.
 Gitignored (per-machine): config.json, state.json, index.db, .locks/.
 
 On conflict: writes ~/.gowth-mem/SYNC-CONFLICT.md and exits 2.
@@ -192,12 +193,13 @@ INLINE_MEM_INSTALL = """[auto-skill: mem-install] Intent = first-time setup wiza
 
 If ~/.gowth-mem/ already exists and has AGENTS.md, refuse and suggest /mem-config or /mem-sync.
 
-1. mkdir -p ~/.gowth-mem/{topics,docs,journal,skills}
+1. mkdir -p ~/.gowth-mem/shared/skills (v2.3 layout: shared + workspaces)
 2. Copy templates from ${CLAUDE_PLUGIN_ROOT}/templates/:
    - AGENTS.md → ~/.gowth-mem/AGENTS.md
-   - dot-gowth-mem/settings.example.v2.json → ~/.gowth-mem/settings.json (rewrite version=2.0)
-   - topics/_index.md, topics/misc.md → ~/.gowth-mem/topics/
-   - docs/{handoff,secrets,tools}.md → ~/.gowth-mem/docs/
+   - dot-gowth-mem/settings.example.v2.json → ~/.gowth-mem/settings.json (rewrite version=2.3)
+   - docs/secrets.md → ~/.gowth-mem/shared/secrets.md
+   - docs/tools.md → ~/.gowth-mem/shared/tools.md
+   Then scaffold default workspace: python3 _workspace.py create default --title "Default Fallback"
 3. Ask user 3 questions:
    a. Git remote URL (HTTPS preferred for token-based auth)
    b. Branch (default: main)
@@ -262,7 +264,7 @@ NL_PATTERNS: list[tuple[re.Pattern[str], str, bool]] = [
     (re.compile(r"^\s*(fix|debug|repair)\b", re.I),
      "intent=fix: root-cause first, minimal diff, verify before claiming done.", False),
     (re.compile(r"^\s*(research|find|investigate|explain)\b", re.I),
-     "intent=research: read first, no edits, cite sources, save findings under topics/.", False),
+     "intent=research: read first, no edits, cite sources, save findings under workspaces/<ws>/<slug>.md.", False),
     (re.compile(r"^\s*(plan|design|architect)\b", re.I),
      "intent=plan: produce structure, list steps, do not implement yet.", False),
 ]
