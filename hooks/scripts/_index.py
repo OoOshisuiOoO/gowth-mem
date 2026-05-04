@@ -179,7 +179,15 @@ def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: 
         fm, _ = parse_file(path)
         slug = fm.get("slug")
         if not slug:
-            continue
+            # v2.4: fall back to derived slug (parent folder name for landing files)
+            from _home import slug_for_path, workspace_dir  # type: ignore
+            try:
+                ws_root = workspace_dir(ws).resolve()
+                slug = slug_for_path(path, ws_root)
+            except Exception:
+                continue
+            if not slug:
+                continue
         rel = str(path.relative_to(gowth_home()))
         title = str(fm.get("title") or "")
         status = str(fm.get("status") or "")

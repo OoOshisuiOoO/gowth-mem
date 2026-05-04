@@ -92,12 +92,17 @@ def _query_db(ws: str, slug: str) -> Path | None:
 
 
 def _fs_fallback(ws: str, slug: str) -> Path | None:
+    """v2.4: prefer Obsidian folder-note landing `<slug>/<slug>.md`, then any flat `<slug>.md`."""
     if ws == "shared":
         cand = shared_dir() / f"{slug}.md"
         return cand if cand.is_file() else None
     base = topics_dir(ws)
     if not base.is_dir():
         return None
+    # Prefer folder-note landing
+    for f in base.rglob(f"{slug}/{slug}.md"):
+        return f
+    # Fall back to any matching flat file (legacy v2.3)
     for f in base.rglob(f"{slug}.md"):
         return f
     return None

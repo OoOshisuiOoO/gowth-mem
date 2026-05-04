@@ -209,14 +209,47 @@ def topics_dir(ws: Path | str | None = None) -> Path:
     return workspace_dir(ws)
 
 
-def iter_topic_files(ws: str | None = None) -> list[Path]:
-    """Yield every topic .md file under workspace root, skipping reserved subdirs and MOC files."""
+def is_topic_folder(p: Path) -> bool:
+    """v2.4 Obsidian folder-note convention: a folder IS a topic if it contains
+    a markdown file with the same name as the folder (e.g. `bitcoin/bitcoin.md`).
+    Otherwise the folder is a DOMAIN (holds nested topic folders / sub-domains)."""
+    return p.is_dir() and (p / f"{p.name}.md").is_file()
+
+
+def topic_landing(folder: Path) -> Path:
+    """Return the folder-note landing path: `<folder>/<folder.name>.md`."""
+    return folder / f"{folder.name}.md"
+
+
+def iter_topic_landings(ws: str | None = None) -> list[Path]:
+    """v2.4: yield every topic-folder landing under workspace root (skipping reserved)."""
     root = topics_dir(ws)
     if not root.is_dir():
         return []
     out: list[Path] = []
     for p in root.rglob("*.md"):
-        # Skip files inside reserved subdirs
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] in RESERVED_SUBDIRS:
+            continue
+        # Landing iff filename stem == parent folder name AND it's not at workspace root
+        if p.parent != root and p.stem == p.parent.name:
+            out.append(p)
+    return out
+
+
+def iter_topic_files(ws: str | None = None) -> list[Path]:
+    """v2.4: yield every topic .md file (landing + sub-aspect files inside topic folders)
+    plus orphan flat .md files at workspace root (backward-compat).
+
+    Skips reserved subdirs (docs/journal/skills) and reserved file names (_MAP.md etc.)."""
+    root = topics_dir(ws)
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in root.rglob("*.md"):
         try:
             rel = p.relative_to(root)
         except ValueError:
@@ -227,6 +260,19 @@ def iter_topic_files(ws: str | None = None) -> list[Path]:
             continue
         out.append(p)
     return out
+
+
+def slug_for_path(p: Path, ws_root: Path) -> str:
+    """v2.4: derive the canonical slug for a topic file path.
+
+    Rules:
+      - Landing file `<dir>/<dir>.md` → slug = parent folder name (stem == parent name).
+      - Sub-aspect file `<dir>/<other>.md` → slug = `<other>` (the sub-aspect filename stem).
+      - Flat orphan `<root>/<name>.md` → slug = name (legacy v2.3 layout).
+    """
+    if p.parent != ws_root and p.stem == p.parent.name:
+        return p.parent.name  # landing
+    return p.stem
 
 
 def docs_dir(ws: Path | str | None = None) -> Path:

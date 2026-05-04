@@ -1,15 +1,22 @@
-"""Topic router (v2.3): pick or create the workspaces/<ws>/<slug>.md file for a
+"""Topic router (v2.4): pick or create workspaces/<ws>/<slug>/<slug>.md for a
 memory entry, route to the correct in-file section.
 
-v2.3 layout: workspace root IS the topic tree root (no `topics/` wrapper).
-Reserved subdirs at workspace root are NEVER scanned: docs, journal, skills.
+v2.4 layout — Obsidian folder-note convention:
+  - Topic = FOLDER named `<slug>` containing landing file `<slug>.md` (same name).
+  - Optional sibling files inside topic folder: free-form `<aspect>.md` (e.g. `ref.md`,
+    `exp.md`, `live-state-2026-05-04.md`, `compaction-tuning.md`).
+  - Folder WITHOUT same-name `.md` = DOMAIN (holds nested topic folders / sub-domains).
+  - Reserved subdirs at workspace root (NEVER topic): docs, journal, skills.
+  - Reserved files at any level: _MAP.md, AGENTS.md, workspace.json.
+
+Wikilink `[[slug]]` resolves natively via Obsidian filename match → `<somewhere>/<slug>/<slug>.md`.
 
 Algorithm (route):
   1. Determine active workspace.
   2. Extract keywords from content (≥4 chars, dropping stopwords).
-  3. For each existing workspaces/<ws>/**/<slug>.md (excluding reserved), count overlap.
-  4. If max overlap >= settings.topic_routing.min_keyword_overlap → that slug.
-  5. Else create a new topic from top-2 distinctive keywords.
+  3. For each existing topic file (landing + sub-aspects), count keyword overlap.
+  4. If max overlap >= settings.topic_routing.min_keyword_overlap → existing topic landing.
+  5. Else create new topic folder from top-2 distinctive keywords → `<slug>/<slug>.md`.
   6. Else fall back to settings.topic_routing.default_topic ('misc').
 
 Section mapping (from line prefix):
@@ -35,9 +42,13 @@ from _home import (  # type: ignore
     RESERVED_SUBDIRS,
     active_workspace,
     is_reserved,
+    is_topic_folder,
     iter_topic_files,
+    iter_topic_landings,
     read_settings,
     settings_path,
+    slug_for_path,
+    topic_landing,
     topics_dir,
     workspace_dir,
 )
@@ -115,8 +126,10 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
     if not kws:
         return default_topic, _path_for(ws, default_topic), section_hint
 
+    ws_root = workspace_dir(ws).resolve()
     candidates = _walk_topics(ws)
-    # Build slug→path map once: prefer frontmatter slug over filename stem.
+    # Build slug→landing map once: prefer frontmatter slug; otherwise derive via slug_for_path
+    # (landing files map to parent folder name; sub-aspect files map to file stem).
     slug_index: dict[str, Path] = {}
     best_slug = default_topic
     best_overlap = 0
@@ -127,9 +140,14 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
         except Exception:
             continue
         fm, _ = parse_file(f)
-        slug = fm.get("slug") or f.stem
+        slug = fm.get("slug") or slug_for_path(f, ws_root)
         if SLUG_RE.match(slug) and slug not in slug_index:
-            slug_index[slug] = f
+            # For sub-aspect files, prefer the topic landing (parent folder's <name>.md)
+            if f.parent != ws_root and f.stem != f.parent.name:
+                landing = topic_landing(f.parent)
+                slug_index[slug] = landing if landing.is_file() else f
+            else:
+                slug_index[slug] = f
         file_kws = _extract_keywords(text)
         overlap = len(kws & file_kws)
         if overlap > best_overlap:
@@ -138,12 +156,17 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
             best_path = f
 
     if best_overlap >= min_overlap and best_path is not None:
+        # Route to landing if best_path is a sub-aspect file
+        if best_path.parent != ws_root and best_path.stem != best_path.parent.name:
+            landing = topic_landing(best_path.parent)
+            if landing.is_file():
+                return best_slug, landing, section_hint
         return best_slug, best_path, section_hint
 
     distinctive = sorted(kws, key=len, reverse=True)[:2]
     new_slug = _slugify(distinctive) or default_topic
     # P0-3: if a topic with this slug already exists (possibly nested via /mem-restructure),
-    # route to it instead of creating a flat duplicate that would silently shadow the original.
+    # route to it instead of creating a duplicate that would silently shadow the original.
     existing = slug_index.get(new_slug)
     if existing is not None:
         return new_slug, existing, section_hint
@@ -151,14 +174,15 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
 
 
 def _path_for(ws: str, slug: str) -> Path:
-    """v2.3: default flat path = workspace root / <slug>.md (no topics/ wrapper).
+    """v2.4: default landing path = workspace_root/<slug>/<slug>.md (Obsidian folder note).
     Existing nested topics take precedence via _walk_topics; this only fires for new slugs."""
-    return workspace_dir(ws) / f"{slug}.md"
+    return workspace_dir(ws) / slug / f"{slug}.md"
 
 
 def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, parents: list[str] | None = None) -> Path:
-    """v2.3: Create workspaces/<ws>/<parents>/<slug>.md with frontmatter if missing.
+    """v2.4: Create workspaces/<ws>/<parents>/<slug>/<slug>.md with frontmatter if missing.
 
+    Topic = FOLDER named <slug> containing landing file <slug>.md (Obsidian folder note).
     Slug must match SLUG_RE and not be reserved; each parent must too. Path is resolved
     and asserted to live inside workspace_dir(ws) and not under any reserved subdir.
     """
@@ -173,11 +197,12 @@ def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, par
         if parent in RESERVED_SUBDIRS:
             raise ValueError(f"parent {parent!r} is a reserved subdir (docs/journal/skills)")
     base = workspace_dir(ws).resolve()
-    path = base
+    folder = base
     for parent in parents:
-        path = path / parent
-    path.mkdir(parents=True, exist_ok=True)
-    p = (path / f"{slug}.md").resolve()
+        folder = folder / parent
+    folder = folder / slug  # v2.4: topic folder
+    folder.mkdir(parents=True, exist_ok=True)
+    p = (folder / f"{slug}.md").resolve()
     try:
         p.relative_to(base)
     except ValueError:

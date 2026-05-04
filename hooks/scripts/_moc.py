@@ -76,12 +76,15 @@ def _summary_line(fm: dict, fallback: str) -> str:
 # ─── per-workspace MOCs ──────────────────────────────────────────────────
 
 def rebuild_workspace_moc(ws: str) -> Path:
-    """v2.3: Regenerate workspaces/<ws>/_MAP.md — workspace root IS the topic tree root.
+    """v2.4: Regenerate workspaces/<ws>/_MAP.md — workspace = topic tree root.
 
-    Children = top-level *.md files (excluding RESERVED_FILES).
-    Subfolders = direct subdirs (excluding RESERVED_SUBDIRS).
-    Recursive rebuild of nested folder MOCs is owned by rebuild_all.
+    Children: direct topic FOLDERS (Obsidian folder notes — `<slug>/<slug>.md` exists)
+              + legacy flat .md files at root (v2.3 backward-compat).
+    Subfolders: direct DOMAIN dirs (no `<dir>/<dir>.md` — they hold nested topics).
+    Reserved subdirs (docs/journal/skills) and reserved files always skipped.
     """
+    from _home import is_topic_folder, topic_landing  # type: ignore
+
     ws_path = workspace_dir(ws)
     moc_path = ws_path / "_MAP.md"
     today = date.today().isoformat()
@@ -94,11 +97,18 @@ def rebuild_workspace_moc(ws: str) -> Path:
             if entry.name.startswith(".") or is_reserved(entry.name):
                 continue
             if entry.is_file() and entry.suffix == ".md":
+                # Legacy flat topic file (v2.3) — still valid; encourage migration.
                 fm, _ = parse_file(entry)
                 slug = fm.get("slug") or entry.stem
-                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
+                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())} _(legacy flat)_")
             elif entry.is_dir():
-                subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
+                if is_topic_folder(entry):
+                    landing = topic_landing(entry)
+                    fm, _ = parse_file(landing)
+                    slug = fm.get("slug") or entry.name
+                    children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
+                else:
+                    subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
 
     if not children:
         children.append("(no topics yet — sẽ tạo qua `mems` / `/mem-save`)")
@@ -129,11 +139,16 @@ def rebuild_workspace_moc(ws: str) -> Path:
 
 
 def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
-    """v2.3: Regenerate _MAP.md inside a domain subfolder under workspace root.
+    """v2.4: Regenerate _MAP.md inside a folder under workspace root.
 
-    `folder` is relative to workspace_dir(ws) (e.g. starrocks, monitoring/grafana).
-    Reserved subdirs (docs/journal/skills) are NOT MOC'd by this function — caller skips.
+    `folder` may be:
+      - A DOMAIN folder (no `<name>/<name>.md`) → MOC lists child topic folders + sub-domains.
+      - A TOPIC folder (`<name>/<name>.md` exists) → MOC lists sub-aspect .md files inside.
+        (rare — domain MOC is the typical case; topic landing is what wikilinks resolve to.)
+    Reserved files always skipped.
     """
+    from _home import is_topic_folder, topic_landing  # type: ignore
+
     moc_path = folder / "_MAP.md"
     today = date.today().isoformat()
     ws_root = workspace_dir(ws)
@@ -141,16 +156,28 @@ def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
     children: list[str] = []
     subfolders: list[str] = []
 
+    landing = folder / f"{folder.name}.md"
+    is_topic = landing.is_file()
+
     for entry in sorted(folder.iterdir()):
         if entry.name.startswith(".") or is_reserved(entry.name):
+            continue
+        # Skip the landing file itself in a topic folder — it IS the topic, not a child.
+        if is_topic and entry == landing:
             continue
         if entry.is_file() and entry.suffix == ".md":
             fm, _ = parse_file(entry)
             slug = fm.get("slug") or entry.stem
             children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
         elif entry.is_dir():
-            subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
-            rebuild_topic_folder_moc(ws, entry)
+            if is_topic_folder(entry):
+                el = topic_landing(entry)
+                fm, _ = parse_file(el)
+                slug = fm.get("slug") or entry.name
+                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
+            else:
+                subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
+                rebuild_topic_folder_moc(ws, entry)
 
     if not children:
         children.append("(empty)")
@@ -207,18 +234,16 @@ def rebuild_workspaces_registry() -> Path:
             meta = json.loads(meta_path.read_text())
         except Exception:
             pass
-        topics_root = workspace_dir(name) / "topics"
+        # v2.4: count workspace topic files (root, excluding reserved)
+        from _home import iter_topic_files  # type: ignore
         topic_count = 0
         last_mtime = 0.0
-        if topics_root.is_dir():
-            for p in topics_root.rglob("*.md"):
-                if p.name == "_MAP.md":
-                    continue
-                topic_count += 1
-                try:
-                    last_mtime = max(last_mtime, p.stat().st_mtime)
-                except Exception:
-                    pass
+        for p in iter_topic_files(name):
+            topic_count += 1
+            try:
+                last_mtime = max(last_mtime, p.stat().st_mtime)
+            except Exception:
+                pass
         last = date.fromtimestamp(last_mtime).isoformat() if last_mtime else "-"
         rows.append(
             f"| [[{name}/_MAP\\|{name}]] | {meta.get('title', name)} | {meta.get('created', '-')} | {topic_count} | {last} |"

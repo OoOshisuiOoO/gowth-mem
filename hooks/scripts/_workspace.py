@@ -275,9 +275,11 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
 
     fmt = {"name": name, "title": meta["title"], "today": today}
 
+    # v2.4: misc topic = folder `misc/` containing `misc.md` (Obsidian folder note)
+    (ws_path / "misc").mkdir(parents=True, exist_ok=True)
     pairs = [
         (ws_path / "_MAP.md", _WS_MAP),
-        (ws_path / "misc.md", _TOPIC_MISC),
+        (ws_path / "misc" / "misc.md", _TOPIC_MISC),
         (ws_path / "docs" / "handoff.md", _HANDOFF),
         (ws_path / "docs" / "exp.md", _DOCS_EXP),
         (ws_path / "docs" / "ref.md", _DOCS_REF),
