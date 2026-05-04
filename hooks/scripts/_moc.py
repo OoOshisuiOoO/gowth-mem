@@ -30,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
+    RESERVED_FILES,
+    RESERVED_SUBDIRS,
+    is_reserved,
     list_workspaces,
     shared_dir,
     shared_moc,
@@ -73,27 +76,29 @@ def _summary_line(fm: dict, fallback: str) -> str:
 # ─── per-workspace MOCs ──────────────────────────────────────────────────
 
 def rebuild_workspace_moc(ws: str) -> Path:
-    """Regenerate workspaces/<ws>/_MAP.md."""
+    """v2.3: Regenerate workspaces/<ws>/_MAP.md — workspace root IS the topic tree root.
+
+    Children = top-level *.md files (excluding RESERVED_FILES).
+    Subfolders = direct subdirs (excluding RESERVED_SUBDIRS).
+    Recursive rebuild of nested folder MOCs is owned by rebuild_all.
+    """
     ws_path = workspace_dir(ws)
     moc_path = ws_path / "_MAP.md"
     today = date.today().isoformat()
 
-    topics_root = ws_path / "topics"
     children: list[str] = []
     subfolders: list[str] = []
 
-    # Children/subfolders LISTING only — recursive rebuild owned by rebuild_topics_root
-    # so rebuild_all does not double-walk the topic tree.
-    if topics_root.is_dir():
-        for entry in sorted(topics_root.iterdir()):
-            if entry.name.startswith("_") or entry.name.startswith("."):
+    if ws_path.is_dir():
+        for entry in sorted(ws_path.iterdir()):
+            if entry.name.startswith(".") or is_reserved(entry.name):
                 continue
             if entry.is_file() and entry.suffix == ".md":
                 fm, _ = parse_file(entry)
                 slug = fm.get("slug") or entry.stem
                 children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
             elif entry.is_dir():
-                subfolders.append(f"- [[topics/{entry.name}/_MAP|{entry.name}]]")
+                subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
 
     if not children:
         children.append("(no topics yet — sẽ tạo qua `mems` / `/mem-save`)")
@@ -104,7 +109,6 @@ def rebuild_workspace_moc(ws: str) -> Path:
         f"{MANUAL_HEADING}\n\n"
         f"- [[../../shared/_MAP|shared]] — cross-workspace registries\n"
         f"- [[docs/handoff|handoff]] — session state THIS workspace\n"
-        f"- [[topics/_MAP|topics]] — root topic MOC\n"
     )
 
     body = (
@@ -125,16 +129,20 @@ def rebuild_workspace_moc(ws: str) -> Path:
 
 
 def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
-    """Regenerate workspaces/<ws>/topics/.../<folder>/_MAP.md."""
+    """v2.3: Regenerate _MAP.md inside a domain subfolder under workspace root.
+
+    `folder` is relative to workspace_dir(ws) (e.g. starrocks, monitoring/grafana).
+    Reserved subdirs (docs/journal/skills) are NOT MOC'd by this function — caller skips.
+    """
     moc_path = folder / "_MAP.md"
     today = date.today().isoformat()
-    ws_topics = topics_dir(ws)
-    rel = folder.relative_to(ws_topics)
+    ws_root = workspace_dir(ws)
+    rel = folder.relative_to(ws_root)
     children: list[str] = []
     subfolders: list[str] = []
 
     for entry in sorted(folder.iterdir()):
-        if entry.name.startswith("_") or entry.name.startswith("."):
+        if entry.name.startswith(".") or is_reserved(entry.name):
             continue
         if entry.is_file() and entry.suffix == ".md":
             fm, _ = parse_file(entry)
@@ -153,16 +161,16 @@ def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
         f"{MANUAL_HEADING}\n\n(curate sibling MOCs here)\n"
     )
 
-    parent_link = "../_MAP|topics" if str(rel) == rel.name else "../_MAP|" + rel.parent.name
+    parent_link = f"../_MAP|{rel.parent.name if rel.parent.name else ws}"
 
     body = (
         f"---\n"
         f"type: MOC\n"
-        f"folder: workspaces/{ws}/topics/{rel.as_posix()}\n"
+        f"folder: workspaces/{ws}/{rel.as_posix()}\n"
         f"workspace: {ws}\n"
         f"last_rebuilt: {today}\n"
         f"---\n\n"
-        f"# topics/{rel.as_posix()}\n\n"
+        f"# {rel.as_posix()}\n\n"
         f"## Children (auto)\n\n" + "\n".join(children) + "\n\n"
         f"## Subfolders (auto)\n\n" + "\n".join(subfolders) + "\n\n"
         f"## Parent (auto)\n\n- [[{parent_link}]]\n\n"
@@ -172,10 +180,18 @@ def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
     return moc_path
 
 
-def rebuild_topics_root_moc(ws: str) -> Path:
-    """Rebuild workspaces/<ws>/topics/_MAP.md (the root of the topic tree, distinct
-    from the workspace MOC at workspaces/<ws>/_MAP.md)."""
-    return rebuild_topic_folder_moc(ws, topics_dir(ws))
+def rebuild_topic_subfolders(ws: str) -> list[Path]:
+    """v2.3: rebuild _MAP.md for every non-reserved direct subfolder under workspace root.
+    Returns list of MOC paths written. Recurses into nested subfolders."""
+    out: list[Path] = []
+    ws_root = workspace_dir(ws)
+    if not ws_root.is_dir():
+        return out
+    for entry in sorted(ws_root.iterdir()):
+        if not entry.is_dir() or entry.name.startswith(".") or is_reserved(entry.name):
+            continue
+        out.append(rebuild_topic_folder_moc(ws, entry))
+    return out
 
 
 # ─── workspace registry ──────────────────────────────────────────────────
@@ -287,20 +303,17 @@ def rebuild_shared_moc() -> Path:
 # ─── orchestrator ────────────────────────────────────────────────────────
 
 def rebuild_all(ws: str | None = None) -> dict:
-    """Rebuild MOCs that may be affected by a write.
-    If `ws` given: per-ws MOC + workspaces registry. Always: shared MOC.
-    """
+    """v2.3: rebuild shared + workspace registry + per-ws workspace MOC + nested folder MOCs.
+    Workspace MOC IS the topic-root MOC (no separate topics/_MAP)."""
     written: dict[str, str] = {}
     with file_lock("moc"):
         written["shared"] = str(rebuild_shared_moc())
         written["registry"] = str(rebuild_workspaces_registry())
-        if ws is not None:
-            written[f"ws:{ws}"] = str(rebuild_workspace_moc(ws))
-            written[f"topics:{ws}"] = str(rebuild_topics_root_moc(ws))
-        else:
-            for w in list_workspaces():
-                written[f"ws:{w}"] = str(rebuild_workspace_moc(w))
-                written[f"topics:{w}"] = str(rebuild_topics_root_moc(w))
+        targets = [ws] if ws is not None else list_workspaces()
+        for w in targets:
+            written[f"ws:{w}"] = str(rebuild_workspace_moc(w))
+            for sub in rebuild_topic_subfolders(w):
+                written[f"sub:{w}:{sub.parent.name}"] = str(sub)
     return written
 
 

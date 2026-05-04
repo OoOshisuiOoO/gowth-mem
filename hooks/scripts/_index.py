@@ -96,9 +96,28 @@ def _collect_sources() -> list[tuple[str, Path]]:
         for p in sd.rglob("*.md"):
             if p.is_file():
                 out.append(("shared", p))
+    from _home import RESERVED_FILES, RESERVED_SUBDIRS  # type: ignore
     for ws in list_workspaces():
         wd = workspace_dir(ws)
-        for sub in ("docs", "topics", "journal", "skills"):
+        if not wd.is_dir():
+            continue
+        # Topic files at workspace root + nested non-reserved subdirs
+        for p in wd.rglob("*.md"):
+            if not p.is_file():
+                continue
+            try:
+                rel = p.relative_to(wd)
+            except ValueError:
+                continue
+            if rel.parts and rel.parts[0] in ("docs", "skills"):
+                # docs/skills indexed via separate sub paths below
+                continue
+            if rel.parts and rel.parts[0] == "journal":
+                # journal indexed as journal layer
+                continue
+            out.append((ws, p))
+        # Reserved subdirs as separate layers (docs/journal/skills)
+        for sub in ("docs", "journal", "skills"):
             d = wd / sub
             if not d.is_dir():
                 continue

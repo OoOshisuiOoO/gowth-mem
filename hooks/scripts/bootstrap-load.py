@@ -80,10 +80,8 @@ def _build_skills_index(d: Path) -> str:
 
 
 def _recent_topic_files(ws: str) -> list[Path]:
-    td = topics_dir(ws)
-    if not td.is_dir():
-        return []
-    files = [p for p in td.rglob("*.md") if p.name not in ("_MAP.md", "_index.md")]
+    from _home import iter_topic_files  # type: ignore
+    files = iter_topic_files(ws)
 
     def sort_key(p: Path):
         fm, _ = parse_file(p)

@@ -28,7 +28,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
+    RESERVED_FILES,
+    RESERVED_SUBDIRS,
     active_workspace,
+    is_reserved,
+    iter_topic_files,
     read_settings,
     settings_path,
     topics_dir,
@@ -77,10 +81,8 @@ def _slugify(words: list[str]) -> str:
 
 
 def _walk_topics(ws: str | None) -> list[Path]:
-    td = topics_dir(ws)
-    if not td.is_dir():
-        return []
-    return [p for p in td.rglob("*.md") if p.name != "_MAP.md" and p.name != "_index.md"]
+    """v2.3: walks workspace root, skipping reserved subdirs (docs/journal/skills) and MOC files."""
+    return iter_topic_files(ws)
 
 
 def detect_section(line: str) -> str | None:
@@ -146,24 +148,28 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
 
 
 def _path_for(ws: str, slug: str) -> Path:
-    """Default flat path for a new topic. Existing nested topics take precedence
-    via _walk_topics in route(); this only fires for genuinely new slugs."""
-    return topics_dir(ws) / f"{slug}.md"
+    """v2.3: default flat path = workspace root / <slug>.md (no topics/ wrapper).
+    Existing nested topics take precedence via _walk_topics; this only fires for new slugs."""
+    return workspace_dir(ws) / f"{slug}.md"
 
 
 def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, parents: list[str] | None = None) -> Path:
-    """Create workspaces/<ws>/topics/<parents>/<slug>.md with v2.2 frontmatter if missing.
+    """v2.3: Create workspaces/<ws>/<parents>/<slug>.md with frontmatter if missing.
 
-    Slug must match SLUG_RE; each parent must too. Path is resolved and asserted to live
-    inside topics_dir(ws) to defend against any mis-routing or symlink games.
+    Slug must match SLUG_RE and not be reserved; each parent must too. Path is resolved
+    and asserted to live inside workspace_dir(ws) and not under any reserved subdir.
     """
     _validate_slug(slug)
+    if is_reserved(slug) or is_reserved(f"{slug}.md"):
+        raise ValueError(f"slug {slug!r} collides with reserved name (docs/journal/skills/_MAP/AGENTS/workspace.json)")
     ws = ws or active_workspace()
     parents = parents or []
     for parent in parents:
         if not SLUG_RE.match(parent):
             raise ValueError(f"invalid parent segment: {parent!r}")
-    base = topics_dir(ws).resolve()
+        if parent in RESERVED_SUBDIRS:
+            raise ValueError(f"parent {parent!r} is a reserved subdir (docs/journal/skills)")
+    base = workspace_dir(ws).resolve()
     path = base
     for parent in parents:
         path = path / parent
@@ -172,7 +178,7 @@ def ensure_topic(slug: str, ws: str | None = None, title: str | None = None, par
     try:
         p.relative_to(base)
     except ValueError:
-        raise ValueError(f"resolved path {p} escapes topics root {base}")
+        raise ValueError(f"resolved path {p} escapes workspace root {base}")
     if p.is_file():
         return p
     today = date.today().isoformat()

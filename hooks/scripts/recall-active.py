@@ -87,14 +87,12 @@ def collect_candidates(allowed_ws: list[str] | None) -> list[Path]:
         # Top-level shared files only — skip subfolders like skills/
         out.extend(p for p in sd.glob("*.md") if p.is_file())
 
+    from _home import iter_topic_files  # type: ignore
     targets = list_workspaces() if allowed_ws is None else allowed_ws
     for ws in targets:
-        td = topics_dir(ws)
-        if td.is_dir():
-            out.extend(
-                p for p in td.rglob("*.md")
-                if p.is_file() and p.name not in ("_MAP.md", "_index.md")
-            )
+        # Topic files (workspace root + non-reserved subdirs)
+        out.extend(iter_topic_files(ws))
+        # Cross-cutting docs (handoff/exp/ref/tools/files)
         dd = docs_dir(ws)
         if dd.is_dir():
             out.extend(p for p in dd.glob("*.md") if p.is_file() and p.name != "_MAP.md")

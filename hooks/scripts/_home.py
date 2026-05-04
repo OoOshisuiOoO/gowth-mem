@@ -186,11 +186,45 @@ def workspace_moc(ws: str | None = None) -> Path:
     return workspace_dir(ws) / "_MAP.md"
 
 
+# Reserved names under a workspace dir — NOT topics, NOT scannable as topic content
+RESERVED_SUBDIRS = frozenset({"docs", "journal", "skills"})
+RESERVED_FILES = frozenset({"_MAP.md", "AGENTS.md", "workspace.json"})
+
+
+def is_reserved(name: str) -> bool:
+    """True if name is a reserved subdir or file at the workspace root."""
+    return name in RESERVED_SUBDIRS or name in RESERVED_FILES
+
+
 def topics_dir(ws: Path | str | None = None) -> Path:
-    """Workspace topics dir. v2.0 callers passing a `Path` (legacy workspace) get the active ws."""
+    """v2.3: workspace root IS the topic tree root.
+
+    Callers must filter RESERVED_SUBDIRS when walking. v2.0/v2.2 callers passing
+    a `Path` legacy workspace are normalized to active workspace.
+    """
     if isinstance(ws, Path):
-        ws = None  # ignore legacy arg
-    return workspace_dir(ws) / "topics"
+        ws = None
+    return workspace_dir(ws)
+
+
+def iter_topic_files(ws: str | None = None) -> list[Path]:
+    """Yield every topic .md file under workspace root, skipping reserved subdirs and MOC files."""
+    root = topics_dir(ws)
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in root.rglob("*.md"):
+        # Skip files inside reserved subdirs
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts and rel.parts[0] in RESERVED_SUBDIRS:
+            continue
+        if p.name in RESERVED_FILES:
+            continue
+        out.append(p)
+    return out
 
 
 def docs_dir(ws: Path | str | None = None) -> Path:

@@ -133,7 +133,6 @@ last_rebuilt: {today}
 
 - [[../../shared/_MAP|shared]] — cross-workspace registries
 - [[docs/handoff|handoff]] — session state THIS workspace
-- [[topics/_MAP|topics]] — root topic MOC
 """
 
 _TOPICS_MAP = """---
@@ -251,7 +250,6 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
         return ws_path
 
     (ws_path / "docs").mkdir(parents=True, exist_ok=True)
-    (ws_path / "topics").mkdir(parents=True, exist_ok=True)
     (ws_path / "journal").mkdir(parents=True, exist_ok=True)
     (ws_path / "skills").mkdir(parents=True, exist_ok=True)
 
@@ -272,8 +270,7 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
 
     pairs = [
         (ws_path / "_MAP.md", _WS_MAP),
-        (ws_path / "topics" / "_MAP.md", _TOPICS_MAP),
-        (ws_path / "topics" / "misc.md", _TOPIC_MISC),
+        (ws_path / "misc.md", _TOPIC_MISC),
         (ws_path / "docs" / "handoff.md", _HANDOFF),
         (ws_path / "docs" / "exp.md", _DOCS_EXP),
         (ws_path / "docs" / "ref.md", _DOCS_REF),
