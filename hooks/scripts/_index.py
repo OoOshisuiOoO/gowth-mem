@@ -175,6 +175,11 @@ def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: 
         # Skip MOC files and registries.
         if path.name in {"_MAP.md", "_index.md", "files.md", "secrets.md", "tools.md"}:
             continue
+        # Skip per-folder lessons.md ledgers — they share the name across topic
+        # folders and would collide on PK (workspace, slug). Lessons remain
+        # FTS5-searchable via chunks_fts; only the slugs table excludes them.
+        if path.name == "lessons.md":
+            continue
         # Only frontmatter'd topic files contribute to slugs.
         fm, _ = parse_file(path)
         slug = fm.get("slug")

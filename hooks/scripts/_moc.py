@@ -168,7 +168,12 @@ def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
         if entry.is_file() and entry.suffix == ".md":
             fm, _ = parse_file(entry)
             slug = fm.get("slug") or entry.stem
-            children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
+            # lessons.md is per-topic-folder ledger; many topics share the name.
+            # Emit a path-qualified wikilink so it resolves unambiguously.
+            if entry.name == "lessons.md" and is_topic:
+                children.append(f"- [[{folder.name}/lessons|lessons]] — folder ledger ({_summary_line(fm, 'lessons')})")
+            else:
+                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
         elif entry.is_dir():
             if is_topic_folder(entry):
                 el = topic_landing(entry)
