@@ -33,9 +33,9 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import agents_md  # type: ignore
+from _home import active_workspace, agents_md, workspace_agents_md  # type: ignore
 
-RULES_MAX_CHARS = 12_000
+RULES_MAX_CHARS = 12_000  # cap PER file (shared + ws each get their own budget)
 
 
 INLINE_MEM_SAVE = """[auto-skill: mem-save] Intent = save. Execute inline (no /mem-save needed):
@@ -317,8 +317,9 @@ def main() -> int:
     except Exception:
         return 0
     prompt = (data.get("prompt") or "").strip()
-    if not prompt:
-        return 0
+    # NOTE: do NOT early-return on empty prompt — Rules must inject every turn
+    # (cache-friendly stable prefix). Downstream gate at the bottom returns 0
+    # if literally nothing to emit (no rules + no shortcuts + no nudge).
 
     today = date.today()
     yesterday = today - timedelta(days=1)
@@ -348,17 +349,35 @@ def main() -> int:
                 break
 
     # Always include AGENTS.md as <Rules>...</Rules> so the operating rules
-    # are present on every turn (cache-friendly: rules rarely change).
-    rules_block = ""
-    am = agents_md()
-    if am.is_file():
+    # are present on every turn. v2.7: load BOTH shared/AGENTS.md (stable
+    # cache prefix, all workspaces) AND workspaces/<active>/AGENTS.md
+    # (workspace-specific overrides). Shared first → preserves cache hit
+    # when workspace switches but shared content doesn't.
+    def _read_capped(p: Path) -> str:
+        if not p.is_file():
+            return ""
         try:
-            rules_text = am.read_text(errors="ignore")
-            if len(rules_text) > RULES_MAX_CHARS:
-                rules_text = rules_text[:RULES_MAX_CHARS] + "\n[truncated]"
-            rules_block = f"<Rules>\n{rules_text}\n</Rules>"
+            t = p.read_text(errors="ignore")
         except Exception:
-            pass
+            return ""
+        if len(t) > RULES_MAX_CHARS:
+            t = t[:RULES_MAX_CHARS] + "\n[truncated]"
+        return t
+
+    shared_text = _read_capped(agents_md())
+    ws_name = active_workspace()
+    ws_text = _read_capped(workspace_agents_md(ws_name))
+
+    rules_block = ""
+    if shared_text or ws_text:
+        sections: list[str] = []
+        if shared_text:
+            sections.append(f"# === shared/AGENTS.md (cross-workspace) ===\n{shared_text}")
+        if ws_text:
+            sections.append(
+                f"# === workspaces/{ws_name}/AGENTS.md (workspace-specific) ===\n{ws_text}"
+            )
+        rules_block = "<Rules>\n" + "\n\n".join(sections) + "\n</Rules>"
 
     if not rules_block and not expansions and triggered_block is None and nudge is None:
         return 0

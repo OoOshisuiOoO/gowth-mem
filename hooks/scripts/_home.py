@@ -22,7 +22,6 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
-import sys
 from pathlib import Path
 
 SESSION_WS_FILE = ".session-workspace"
@@ -31,12 +30,8 @@ DEFAULT_WORKSPACE = "default"
 
 # ─── root ───────────────────────────────────────────────────────────────
 
-def gowth_home(workspace: Path | str | None = None) -> Path:
-    """Return the gowth-mem root directory.
-
-    The `workspace` parameter is accepted for backward compatibility with
-    v1.0/v2.0 call sites and is ignored in v2.2 (no per-workspace fallback).
-    """
+def gowth_home() -> Path:
+    """Return the gowth-mem root directory ($GOWTH_MEM_HOME or ~/.gowth-mem)."""
     explicit = os.environ.get("GOWTH_MEM_HOME")
     if explicit:
         return Path(explicit).expanduser()
@@ -198,14 +193,8 @@ def is_reserved(name: str) -> bool:
     return name in RESERVED_SUBDIRS or name in RESERVED_FILES
 
 
-def topics_dir(ws: Path | str | None = None) -> Path:
-    """v2.3: workspace root IS the topic tree root.
-
-    Callers must filter RESERVED_SUBDIRS when walking. v2.0/v2.2 callers passing
-    a `Path` legacy workspace are normalized to active workspace.
-    """
-    if isinstance(ws, Path):
-        ws = None
+def topics_dir(ws: str | None = None) -> Path:
+    """v2.3+: workspace root IS the topic tree root. Callers must filter RESERVED_SUBDIRS."""
     return workspace_dir(ws)
 
 
@@ -275,23 +264,17 @@ def slug_for_path(p: Path, ws_root: Path) -> str:
     return p.stem
 
 
-def docs_dir(ws: Path | str | None = None) -> Path:
-    if isinstance(ws, Path):
-        ws = None
+def docs_dir(ws: str | None = None) -> Path:
     return workspace_dir(ws) / "docs"
 
 
-def journal_dir(ws: Path | str | None = None) -> Path:
-    if isinstance(ws, Path):
-        ws = None
+def journal_dir(ws: str | None = None) -> Path:
     return workspace_dir(ws) / "journal"
 
 
-def skills_dir(ws: Path | str | None = None, shared: bool = False) -> Path:
+def skills_dir(ws: str | None = None, shared: bool = False) -> Path:
     if shared:
         return shared_skills_dir()
-    if isinstance(ws, Path):
-        ws = None
     return workspace_dir(ws) / "skills"
 
 
@@ -319,32 +302,36 @@ def workspace_files_md(ws: str | None = None) -> Path:
 
 # ─── global files ───────────────────────────────────────────────────────
 
-def agents_md(workspace: Path | str | None = None) -> Path:
-    """Global AGENTS.md. Backward-compat: ignores legacy workspace arg."""
-    return gowth_home() / "AGENTS.md"
+def shared_agents_md() -> Path:
+    """v2.7: Shared (cross-workspace) AGENTS.md — true global rules."""
+    return shared_dir() / "AGENTS.md"
 
 
-def settings_path(workspace: Path | str | None = None) -> Path:
+# Alias kept so external imports / docs that still say `agents_md` keep working.
+agents_md = shared_agents_md
+
+
+def settings_path() -> Path:
     return gowth_home() / "settings.json"
 
 
-def config_path(workspace: Path | str | None = None) -> Path:
+def config_path() -> Path:
     return gowth_home() / "config.json"
 
 
-def state_path(workspace: Path | str | None = None) -> Path:
+def state_path() -> Path:
     return gowth_home() / "state.json"
 
 
-def index_db(workspace: Path | str | None = None) -> Path:
+def index_db() -> Path:
     return gowth_home() / "index.db"
 
 
-def conflict_md(workspace: Path | str | None = None) -> Path:
+def conflict_md() -> Path:
     return gowth_home() / "SYNC-CONFLICT.md"
 
 
-def locks_dir(workspace: Path | str | None = None) -> Path:
+def locks_dir() -> Path:
     return gowth_home() / ".locks"
 
 

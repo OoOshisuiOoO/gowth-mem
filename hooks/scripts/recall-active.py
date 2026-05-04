@@ -24,7 +24,6 @@ import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
 
 try:
     import sqlite_vec  # type: ignore
@@ -40,17 +39,16 @@ except ImportError:
     HAS_EMBED = False
 from _atomic import atomic_write  # type: ignore
 from _home import (  # type: ignore
+    RESERVED_SUBDIRS,
     active_workspace,
     docs_dir,
     gowth_home,
     index_db,
+    iter_topic_files,
     list_workspaces,
     read_settings,
-    settings_path,
     shared_dir,
     state_path,
-    topics_dir,
-    workspace_dir,
 )
 from _lock import file_lock  # type: ignore
 from _wikilink import resolve as wikilink_resolve  # type: ignore
@@ -87,7 +85,6 @@ def collect_candidates(allowed_ws: list[str] | None) -> list[Path]:
         # Top-level shared files only — skip subfolders like skills/
         out.extend(p for p in sd.glob("*.md") if p.is_file())
 
-    from _home import iter_topic_files  # type: ignore
     targets = list_workspaces() if allowed_ws is None else allowed_ws
     for ws in targets:
         # Topic files (workspace root + non-reserved subdirs)
@@ -133,8 +130,6 @@ def layer_score(p: Path) -> int:
         return 60  # secrets/tools/files
     if parts[0] == "workspaces" and len(parts) >= 3:
         sub = parts[2]
-        if sub == "topics":
-            return 80
         if sub == "docs":
             return 60
         if sub == "skills":
@@ -147,6 +142,10 @@ def layer_score(p: Path) -> int:
             if yday in p.name:
                 return 70
             return 30
+        # v2.4+: workspace root IS the topic tree. Anything not a reserved
+        # subdir is a topic file (landing, sub-aspect, lessons.md, or domain MOC).
+        if sub not in RESERVED_SUBDIRS:
+            return 80
     return 10
 
 
@@ -196,7 +195,7 @@ def _path_in_scope(rel: str, allowed_ws: list[str] | None) -> bool:
 
 
 def index_recall(prompt: str, kws: list[str], allowed_ws: list[str] | None
-                 ) -> Optional[list[tuple[str, str, str]]]:
+                 ) -> list[tuple[str, str, str]] | None:
     db_path = index_db()
     if not db_path.is_file():
         return None
@@ -326,7 +325,7 @@ def find_due_resurface(state, excluded_paths, candidates, pattern, today_iso):
 
 
 def follow_wikilinks(top_file: Path, current_ws: str, pattern: re.Pattern, today_iso: str
-                     ) -> Optional[tuple[Path, list[tuple[int, str, str]]]]:
+                     ) -> tuple[Path, list[tuple[int, str, str]]] | None:
     """Follow first wikilink on the top hit (one hop). Cross-ws OK if explicit."""
     try:
         text = top_file.read_text(errors="ignore")
@@ -442,7 +441,7 @@ def main() -> int:
     if not selected:
         return 0
 
-    wikilink_extra: Optional[tuple[Path, list[tuple[int, str, str]]]] = None
+    wikilink_extra: tuple[Path, list[tuple[int, str, str]]] | None = None
     if settings.get("recall", {}).get("wikilink_follow", True) and selected:
         wikilink_extra = follow_wikilinks(selected[0][0], current_ws, pattern, today_iso)
 

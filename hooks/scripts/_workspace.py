@@ -16,10 +16,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _home import (  # type: ignore
-    DEFAULT_WORKSPACE,
     active_workspace,
     clear_session_workspace,
     gowth_home,
+    iter_topic_files,
     list_workspaces,
     workspace_dir,
     workspace_meta,
@@ -36,8 +36,7 @@ def resolve_active() -> str:
 def list_all() -> list[dict]:
     """Return list of {name, title, description, created, tags, last_touched, topic_count}.
 
-    last_touched: max mtime among workspace files (cheap stat scan).
-    topic_count: number of *.md files under <ws>/ (excluding reserved subdirs and _MAP.md).
+    v2.4+: walks workspace root via iter_topic_files (skips reserved subdirs/files).
     """
     out: list[dict] = []
     for name in list_workspaces():
@@ -47,18 +46,14 @@ def list_all() -> list[dict]:
             meta = json.loads(meta_path.read_text())
         except Exception:
             pass
-        topics = workspace_dir(name) / "topics"
         topic_count = 0
         last_mtime = 0.0
-        if topics.is_dir():
-            for p in topics.rglob("*.md"):
-                if p.name == "_MAP.md":
-                    continue
-                topic_count += 1
-                try:
-                    last_mtime = max(last_mtime, p.stat().st_mtime)
-                except Exception:
-                    pass
+        for p in iter_topic_files(name):
+            topic_count += 1
+            try:
+                last_mtime = max(last_mtime, p.stat().st_mtime)
+            except Exception:
+                pass
         last_touched = ""
         if last_mtime:
             last_touched = date.fromtimestamp(last_mtime).isoformat()
@@ -77,6 +72,28 @@ def list_all() -> list[dict]:
 
 
 # ─── scaffold ───────────────────────────────────────────────────────────
+
+_WS_AGENTS = """# AGENTS.md (workspace: {name})
+
+{title} — workspace-specific delta. Cross-workspace rules ở `shared/AGENTS.md` áp dụng đầy đủ.
+
+## Focus
+
+- (mô tả 1-2 dòng scope của workspace `{name}`)
+
+## Workspace-specific guardrails
+
+- (KHÔNG ... — luật riêng của ws này, không có trong shared)
+
+## Conventions
+
+- (folder layout / naming convention nếu khác mặc định)
+
+## Common topics
+
+- (gợi ý topic folders sẽ xuất hiện)
+"""
+
 
 _TOPIC_MISC = """---
 slug: misc
@@ -134,30 +151,6 @@ last_rebuilt: {today}
 - [[../../shared/_MAP|shared]] — cross-workspace registries
 - [[docs/handoff|handoff]] — session state THIS workspace
 - [[docs/files|files]] — workspace tree map
-"""
-
-_TOPICS_MAP = """---
-type: MOC
-folder: workspaces/{name}/topics
-workspace: {name}
-last_rebuilt: {today}
----
-
-# Topics — workspace `{name}`
-
-## Children (auto)
-
-- [[misc]] — fallback
-
-## Subfolders (auto)
-
-(none)
-
-## Parent (auto)
-
-- [[../_MAP|{name}]]
-
-## Cross-links (manual)
 """
 
 _HANDOFF = """# Handoff — workspace {name}
@@ -279,6 +272,7 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
     (ws_path / "misc").mkdir(parents=True, exist_ok=True)
     pairs = [
         (ws_path / "_MAP.md", _WS_MAP),
+        (ws_path / "AGENTS.md", _WS_AGENTS),
         (ws_path / "misc" / "misc.md", _TOPIC_MISC),
         (ws_path / "docs" / "handoff.md", _HANDOFF),
         (ws_path / "docs" / "exp.md", _DOCS_EXP),

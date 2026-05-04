@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""SessionStart hook (v2.2): load global ~/.gowth-mem/ memory, scoped to the
+"""SessionStart hook (v2.7): load global ~/.gowth-mem/ memory, scoped to the
 active workspace.
 
 Files loaded (in order):
-  1. AGENTS.md                                — global rules
+  1. shared/AGENTS.md                         — global rules (cross-workspace)
   2. shared/files.md                          — top-level tree
   3. shared/secrets.md                        — env-var pointers
   4. shared/tools.md                          — system-wide tools
-  5. workspaces/<ws>/AGENTS.md                — optional workspace override
+  5. workspaces/<ws>/AGENTS.md                — workspace-specific rules (delta)
   6. workspaces/<ws>/_MAP.md                  — root topic MOC
   7. workspaces/<ws>/docs/handoff.md          — session state
   8. workspaces/<ws>/docs/{exp,ref,tools,files}.md
@@ -16,6 +16,10 @@ Files loaded (in order):
   11. shared/skills/_index + workspaces/<ws>/skills/_index   — synthesized
 
 Caps: 12k char/file, 60k total. Skips blanks, marks truncations.
+
+NOTE: `agents_md()` returns `shared/AGENTS.md` in v2.7 (falls back to legacy
+`~/.gowth-mem/AGENTS.md` only during migration). `workspace_agents_md(ws)`
+returns the per-workspace delta file.
 """
 from __future__ import annotations
 
