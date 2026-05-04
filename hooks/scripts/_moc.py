@@ -1,20 +1,20 @@
-"""MOC (Map of Content) regenerator for v2.2.
+"""MOC (Map of Content) regenerator for v2.3.
 
 Builds three kinds of MOCs:
 
-1. Per-workspace topic MOC      → workspaces/<ws>/_MAP.md
-   Children: top-level topics in workspaces/<ws>/topics/<slug>.md
-   Subfolders: workspaces/<ws>/topics/<dir>/_MAP.md targets
+1. Workspace MOC = topic-root MOC → workspaces/<ws>/_MAP.md
+   Children: top-level topics workspaces/<ws>/<slug>.md (excluding reserved)
+   Subfolders: workspaces/<ws>/<domain>/_MAP.md targets
 
-2. Workspaces registry          → workspaces/_MAP.md
+2. Workspaces registry → workspaces/_MAP.md
    Children: each workspace with topic count + last_touched
 
-3. Shared registry              → shared/_MAP.md
+3. Shared registry → shared/_MAP.md
    Children: secrets/tools/files
    Subfolders: shared/skills
 
-4. Topic-folder MOC             → workspaces/<ws>/topics/<dir>/_MAP.md
-   For nested topic dirs (lazy-nest result).
+4. Topic-folder MOC → workspaces/<ws>/<domain>/.../_MAP.md
+   For nested domain dirs (lazy-nest result, e.g. starrocks/, monitoring/grafana/).
 
 All atomic, under file_lock("moc"). The "## Cross-links (manual)" section is
 preserved verbatim across rebuilds.

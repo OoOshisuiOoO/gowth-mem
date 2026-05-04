@@ -1,10 +1,13 @@
-"""Topic router (v2.2): pick or create the workspaces/<ws>/topics/<slug>.md
-file for a memory entry, route to the correct in-file section.
+"""Topic router (v2.3): pick or create the workspaces/<ws>/<slug>.md file for a
+memory entry, route to the correct in-file section.
+
+v2.3 layout: workspace root IS the topic tree root (no `topics/` wrapper).
+Reserved subdirs at workspace root are NEVER scanned: docs, journal, skills.
 
 Algorithm (route):
   1. Determine active workspace.
   2. Extract keywords from content (≥4 chars, dropping stopwords).
-  3. For each existing workspaces/<ws>/topics/**/<slug>.md, count overlap.
+  3. For each existing workspaces/<ws>/**/<slug>.md (excluding reserved), count overlap.
   4. If max overlap >= settings.topic_routing.min_keyword_overlap → that slug.
   5. Else create a new topic from top-2 distinctive keywords.
   6. Else fall back to settings.topic_routing.default_topic ('misc').

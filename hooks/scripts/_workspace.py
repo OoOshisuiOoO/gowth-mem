@@ -37,7 +37,7 @@ def list_all() -> list[dict]:
     """Return list of {name, title, description, created, tags, last_touched, topic_count}.
 
     last_touched: max mtime among workspace files (cheap stat scan).
-    topic_count: number of *.md files under <ws>/topics/ excluding _MAP.md.
+    topic_count: number of *.md files under <ws>/ (excluding reserved subdirs and _MAP.md).
     """
     out: list[dict] = []
     for name in list_workspaces():
@@ -123,7 +123,7 @@ last_rebuilt: {today}
 
 ## Subfolders (auto)
 
-(none yet — tạo lazily khi ≥5 topic chung domain)
+(none yet — lazy nest khi ≥5 topic chung domain, e.g. starrocks/, monitoring/grafana/)
 
 ## Parent (auto)
 
@@ -133,6 +133,7 @@ last_rebuilt: {today}
 
 - [[../../shared/_MAP|shared]] — cross-workspace registries
 - [[docs/handoff|handoff]] — session state THIS workspace
+- [[docs/files|files]] — workspace tree map
 """
 
 _TOPICS_MAP = """---
@@ -174,7 +175,7 @@ _DOCS_EXP = """# Workspace exp.md ({name})
 
 Cross-topic episodic overflow. Format: `- [exp] 1-2 dòng (Source: <reproducible>)`.
 
-> Ưu tiên route entries vào `topics/<slug>.md`. File này chỉ giữ overflow.
+> Ưu tiên route entries vào `<slug>.md` ở workspace root. File này chỉ giữ overflow.
 
 ## Entries
 
@@ -207,18 +208,24 @@ last_rebuilt: {today}
 
 # Workspace files map: {name}
 
-## Tree
+## Tree (v2.3)
 
 ```
 workspaces/{name}/
-├── workspace.json
-├── AGENTS.md             (optional override)
-├── _MAP.md               root topic MOC
-├── docs/{{handoff,exp,ref,tools,files}}.md
-├── topics/<slug>.md      file-per-topic, ≤3 cấp khi nest
-├── journal/<date>.md
-└── skills/<slug>.md      (optional override of shared/skills/)
+├── workspace.json        metadata (RESERVED)
+├── AGENTS.md             optional override (RESERVED)
+├── _MAP.md               workspace = topic root MOC (RESERVED)
+├── docs/{{handoff,exp,ref,tools,files}}.md   RESERVED
+├── journal/<date>.md     RESERVED
+├── skills/<slug>.md      RESERVED (optional override of shared/skills/)
+├── <slug>.md             top-level topic file (file-per-topic default)
+└── <domain>/             lazy-nest, ≤3 cấp khi ≥5 topic chung domain
+    ├── _MAP.md           folder MOC (auto-rebuild)
+    ├── <slug>.md
+    └── <sub>/<slug>.md   ví dụ: monitoring/grafana/alerting.md
 ```
+
+Reserved names cấm làm slug/domain: docs, journal, skills, _MAP.md, AGENTS.md, workspace.json.
 """
 
 

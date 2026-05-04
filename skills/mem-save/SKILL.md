@@ -20,13 +20,13 @@ If wrong, switch before continuing: `/mem-workspace <other>`.
 
 | Type | Destination | Section |
 |---|---|---|
-| Episodic experience (debug/fix/lesson/anti-pattern) | `workspaces/$WS/topics/<slug>.md` | `## [exp]` |
-| Verified fact (Source REQUIRED) | `workspaces/$WS/topics/<slug>.md` | `## [ref]` |
-| Topic-specific tool quirk | `workspaces/$WS/topics/<slug>.md` | `## [ref]` |
-| Architectural decision + rationale | `workspaces/$WS/topics/<slug>.md` | `## [decision]` |
-| Lesson / takeaway / pattern | `workspaces/$WS/topics/<slug>.md` | `## [exp]` (reflection group) |
+| Episodic experience (debug/fix/lesson/anti-pattern) | `workspaces/$WS/<slug>.md` | `## [exp]` |
+| Verified fact (Source REQUIRED) | `workspaces/$WS/<slug>.md` | `## [ref]` |
+| Topic-specific tool quirk | `workspaces/$WS/<slug>.md` | `## [ref]` |
+| Architectural decision + rationale | `workspaces/$WS/<slug>.md` | `## [decision]` |
+| Lesson / takeaway / pattern | `workspaces/$WS/<slug>.md` | `## [exp]` (reflection group) |
 | Cross-topic tool quirk (workspace-scoped) | `workspaces/$WS/docs/tools.md` | (flat) |
-| Workspace overflow when no topic fits | `workspaces/$WS/docs/{exp,ref}.md` | (flat) |
+| Workspace overflow when no topic fits | `workspaces/$WS/docs/{exp,ref}.md` | (flat — RESERVED subdir) |
 | Session state (current task / next / blocker) | `workspaces/$WS/docs/handoff.md` | prefix `host:<machine>` |
 | Reusable workflow (≥2× repeated) | `shared/skills/<slug>.md` (cross-ws) OR `workspaces/$WS/skills/<slug>.md` | (use `memk`) |
 | **Resource pointer** (env-var name; never the value) | `shared/secrets.md` | (flat, **never workspace-scoped**) |

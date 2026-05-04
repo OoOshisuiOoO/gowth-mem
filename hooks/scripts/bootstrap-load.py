@@ -11,7 +11,7 @@ Files loaded (in order):
   6. workspaces/<ws>/_MAP.md                  — root topic MOC
   7. workspaces/<ws>/docs/handoff.md          — session state
   8. workspaces/<ws>/docs/{exp,ref,tools,files}.md
-  9. top-3 most-recently-touched topics/**.md (frontmatter.last_touched desc, mtime fallback)
+  9. top-3 most-recently-touched workspace topic files (frontmatter.last_touched desc, mtime fallback)
   10. workspaces/<ws>/journal/<today>.md, <yesterday>.md
   11. shared/skills/_index + workspaces/<ws>/skills/_index   — synthesized
 

@@ -97,15 +97,18 @@ Now do this WITHOUT user prompting before yielding control:
 
 1. Scan the last {AUTO_DISTILL_EVERY} user turns and your replies.
 2. For each high-signal item, classify into ONE of these types and prepend the prefix:
-   [decision]    choice + rationale          → workspaces/{ws}/topics/<slug>.md  (## [decision])
-   [exp]         debug / fix / lesson         → workspaces/{ws}/topics/<slug>.md  (## [exp])
-   [reflection]  pattern / takeaway           → workspaces/{ws}/topics/<slug>.md  (## [exp])
-   [ref]         verified external fact       → workspaces/{ws}/topics/<slug>.md  (## [ref], Source REQUIRED)
-   [tool]        topic-specific gotcha        → workspaces/{ws}/topics/<slug>.md  OR  workspaces/{ws}/docs/tools.md
+   [decision]    choice + rationale          → workspaces/{ws}/<slug>.md  (## [decision])
+   [exp]         debug / fix / lesson         → workspaces/{ws}/<slug>.md  (## [exp])
+   [reflection]  pattern / takeaway           → workspaces/{ws}/<slug>.md  (## [exp])
+   [ref]         verified external fact       → workspaces/{ws}/<slug>.md  (## [ref], Source REQUIRED)
+   [tool]        topic-specific gotcha        → workspaces/{ws}/<slug>.md  OR  workspaces/{ws}/docs/tools.md
    [secret-ref]  env-var POINTER              → shared/secrets.md  (NEVER value)
-3. Topic routing: pick existing workspaces/{ws}/topics/**/<slug>.md if keywords overlap (≥3 common words);
-   otherwise create new workspaces/{ws}/topics/<new-slug>.md (file-per-topic, with v2.2 frontmatter:
+3. Topic routing: pick existing workspaces/{ws}/**/<slug>.md (excluding docs/journal/skills) if
+   keywords overlap (≥3 common words); otherwise create new workspaces/{ws}/<new-slug>.md
+   (file-per-topic at workspace root, with v2.3 frontmatter:
    slug/title/status:draft/created/last_touched/parents:[]/links:[]/aliases:[]).
+   Reserved names cannot be used as slug or domain folder: docs, journal, skills, _MAP.md, AGENTS.md, workspace.json.
+   Lazy-nest into domain folders only when ≥5 topics share a theme: workspaces/{ws}/<domain>/<sub>/<slug>.md (≤3 cấp).
 4. Apply quality gates — DROP if:
    - Entry < 20 chars
    - Code-only (no prose)

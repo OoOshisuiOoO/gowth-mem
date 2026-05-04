@@ -4,7 +4,9 @@ v2.2 layout:
   ~/.gowth-mem/
   ├── AGENTS.md  settings.json  config.json  state.json  index.db  .locks/
   ├── shared/{_MAP.md, secrets.md, tools.md, files.md, skills/<slug>.md}
-  └── workspaces/<ws>/{workspace.json, AGENTS.md, _MAP.md, docs/, topics/, journal/, skills/}
+  └── workspaces/<ws>/{workspace.json, AGENTS.md, _MAP.md, docs/, journal/, skills/, <slug>.md, <domain>/}
+       v2.3: workspace root IS the topic tree (no `topics/` wrapper). Reserved subdirs:
+       docs, journal, skills. Reserved files at root: _MAP.md, AGENTS.md, workspace.json.
 
 Active-workspace resolution (first match wins):
   1. Env GOWTH_WORKSPACE=<name>

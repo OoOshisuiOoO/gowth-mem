@@ -9,7 +9,7 @@ Forms accepted (Obsidian-style):
 
 Resolution order for a (ws, slug):
   1. index.db.slugs row (workspace, slug) → path
-  2. Filesystem fallback: workspaces/<ws>/topics/**/<slug>.md (first match)
+  2. Filesystem fallback: workspaces/<ws>/**/<slug>.md (excluding reserved subdirs; first match)
   3. Aliases scan via index.db.slugs (slug == alias)
   4. None (broken link)
 

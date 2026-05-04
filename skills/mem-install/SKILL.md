@@ -14,14 +14,15 @@ If `~/.gowth-mem/AGENTS.md` already exists, abort with: "Already installed. Use 
 ## Step 1 — scaffold layout
 
 ```bash
-mkdir -p ~/.gowth-mem/{topics,docs,journal,skills}
+# v2.3 layout: shared/ + workspaces/<ws>/{docs,journal,skills,<slug>.md,...}
+mkdir -p ~/.gowth-mem/shared/skills
 cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" ~/.gowth-mem/AGENTS.md
 cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v2.json" ~/.gowth-mem/settings.json
-cp "${CLAUDE_PLUGIN_ROOT}/templates/topics/_index.md" ~/.gowth-mem/topics/_index.md
-cp "${CLAUDE_PLUGIN_ROOT}/templates/topics/misc.md" ~/.gowth-mem/topics/misc.md
-cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/handoff.md" ~/.gowth-mem/docs/handoff.md
-cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md" ~/.gowth-mem/docs/secrets.md
-cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md" ~/.gowth-mem/docs/tools.md
+cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md" ~/.gowth-mem/shared/secrets.md
+cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md" ~/.gowth-mem/shared/tools.md
+# Default workspace scaffolded by _workspace.py:
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" create default --title "Default Fallback"
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py" --all
 ```
 
 ## Step 2 — gather config

@@ -40,19 +40,19 @@ RULES_MAX_CHARS = 12_000
 INLINE_MEM_SAVE = """[auto-skill: mem-save] Intent = save. Execute inline (no /mem-save needed):
 
 Routing table (1-2 lines / entry, Source required for [ref]):
-| Episodic experience (debug, fix, lesson, surprise)  | topics/<slug>.md  - [exp] |
-| Verified semantic fact (with Source URL)            | topics/<slug>.md  - [ref] |
-| Topic-specific tool quirk                           | topics/<slug>.md  - [tool] |
-| Architectural decision                              | topics/<slug>.md  - [decision] |
-| Lesson / takeaway / pattern                         | topics/<slug>.md  - [reflection] |
+| Episodic experience (debug, fix, lesson, surprise)  | <slug>.md (at workspace root)  - [exp] |
+| Verified semantic fact (with Source URL)            | <slug>.md (at workspace root)  - [ref] |
+| Topic-specific tool quirk                           | <slug>.md (at workspace root)  - [tool] |
+| Architectural decision                              | <slug>.md (at workspace root)  - [decision] |
+| Lesson / takeaway / pattern                         | <slug>.md (at workspace root)  - [reflection] |
 | Cross-topic tool quirk                              | docs/tools.md |
 | Resource pointer (env-var name; NEVER value)        | docs/secrets.md |
 | Session state (host: prefix; current/next/blocker)  | docs/handoff.md |
 | Workflow done 2+ times                              | skills/<name>.md (use memk) |
 
 Topic routing:
-- Find existing topics/<slug>.md whose keywords overlap (≥3 common words). Append there.
-- Else create topics/<new-slug>.md from top-2 distinctive keywords (kebab-case ≤40 chars).
+- Find existing <slug>.md (at workspace root) whose keywords overlap (≥3 common words). Append there.
+- Else create <new-slug>.md (at workspace root) from top-2 distinctive keywords (kebab-case ≤40 chars).
 - Use python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --route '<text>' to compute slug.
 
 Apply mem0 ADD / UPDATE / DELETE / NOOP. Conflict with existing → drop old. Confirm path written."""
@@ -67,10 +67,10 @@ INLINE_MEM_DISTILL = """[auto-skill: mem-distill] Intent = distill. Execute inli
 
 INLINE_MEM_REFLECT = """[auto-skill: mem-reflect] Intent = reflect/recap. Execute inline (no /mem-reflect needed):
 
-1. Read journal/*.md from last 7 days + recent topics/*.md.
+1. Read journal/*.md from last 7 days + recent workspace topic files.
 2. Score entries by importance × recency × novelty.
 3. Pick top 3 patterns (clusters of related entries).
-4. Append to the matching topics/<slug>.md as `- [reflection] ...` with:
+4. Append to the matching <slug>.md (at workspace root) as `- [reflection] ...` with:
    ### YYYY-MM-DD: <title>
    **Claim**: <evergreen 1-line>
    **Evidence**: <file:line refs (≥2)>
@@ -123,7 +123,7 @@ Report files / chunks indexed and which fallback (FTS5-only vs vector hybrid).""
 INLINE_MEM_COST = """[auto-skill: mem-cost] Intent = estimate bootstrap token footprint. Execute inline:
 
 Sum char count of: AGENTS.md + topics/_index.md + docs/handoff.md + docs/secrets.md + docs/tools.md +
-top-3 most-recent topics/*.md + journal/<today>.md + journal/<yesterday>.md.
+top-3 most-recent workspace topic files + journal/<today>.md + journal/<yesterday>.md.
 Estimate tokens = chars / 4. Print per-file breakdown + total.
 Cap = 60,000 chars (~15,000 tokens). Warn if >40k or >60k."""
 
@@ -170,7 +170,7 @@ INLINE_MEM_MIGRATE_GLOBAL = """[auto-skill: mem-migrate-global] Intent = v1.0 pe
 1. Scan ~/Git/** (or user-provided list) for <ws>/.gowth-mem/ dirs (v1.0 layout).
 2. For each found:
    - Walk docs/exp.md, docs/ref.md, docs/tools.md lines.
-   - Use _topic.py route() to pick or create topics/<slug>.md under ~/.gowth-mem/.
+   - Use _topic.py route() to pick or create <slug>.md (at workspace root) under ~/.gowth-mem/.
    - Append migrated lines with provenance suffix `Source: <ws>/<file>`.
    - Copy docs/handoff.md lines into ~/.gowth-mem/docs/handoff.md, prefixed `host:<ws>`.
    - Copy docs/secrets.md lines (dedup by env-var name).
@@ -184,7 +184,7 @@ INLINE_MEM_TOPIC = """[auto-skill: mem-topic] Intent = list / inspect topics. Ex
 Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --list
 Show table: slug | title | last touched.
 
-If user names a slug: open ~/.gowth-mem/topics/<slug>.md and show first 80 lines.
+If user names a slug: open ~/.gowth-mem/<slug>.md (at workspace root) and show first 80 lines.
 If user gives content text: show what slug --route would pick.
 To regenerate _index.md: python3 _topic.py --regen-index."""
 
