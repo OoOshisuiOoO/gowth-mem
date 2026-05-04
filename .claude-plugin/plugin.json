@@ -1,6 +1,6 @@
 {
   "name": "gowth-mem",
-  "version": "2.3.4",
+  "version": "2.4.0",
   "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, hybrid FTS5+vector recall, SM-2 spaced resurfacing, mem0 ADD/UPDATE/DELETE/NOOP write semantics.",
   "author": {
     "name": "duynguyen",
