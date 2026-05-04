@@ -128,8 +128,8 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
 
     ws_root = workspace_dir(ws).resolve()
     candidates = _walk_topics(ws)
-    # Build slug→landing map once: prefer frontmatter slug; otherwise derive via slug_for_path
-    # (landing files map to parent folder name; sub-aspect files map to file stem).
+    # Build slug→path map. v2.4 + sub-aspect convention: each .md file = own slug.
+    # Landing slug = parent folder name; sub-aspect slug = file stem.
     slug_index: dict[str, Path] = {}
     best_slug = default_topic
     best_overlap = 0
@@ -142,12 +142,7 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
         fm, _ = parse_file(f)
         slug = fm.get("slug") or slug_for_path(f, ws_root)
         if SLUG_RE.match(slug) and slug not in slug_index:
-            # For sub-aspect files, prefer the topic landing (parent folder's <name>.md)
-            if f.parent != ws_root and f.stem != f.parent.name:
-                landing = topic_landing(f.parent)
-                slug_index[slug] = landing if landing.is_file() else f
-            else:
-                slug_index[slug] = f
+            slug_index[slug] = f
         file_kws = _extract_keywords(text)
         overlap = len(kws & file_kws)
         if overlap > best_overlap:
@@ -156,11 +151,8 @@ def route(content: str, ws: str | None = None, settings: dict | None = None) -> 
             best_path = f
 
     if best_overlap >= min_overlap and best_path is not None:
-        # Route to landing if best_path is a sub-aspect file
-        if best_path.parent != ws_root and best_path.stem != best_path.parent.name:
-            landing = topic_landing(best_path.parent)
-            if landing.is_file():
-                return best_slug, landing, section_hint
+        # v2.4+: route to the actual matched file (landing OR sub-aspect).
+        # Sub-aspects have independent slugs (filename stem); writes go to them directly.
         return best_slug, best_path, section_hint
 
     distinctive = sorted(kws, key=len, reverse=True)[:2]
