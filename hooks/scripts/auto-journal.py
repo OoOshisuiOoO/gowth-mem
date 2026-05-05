@@ -85,10 +85,24 @@ def main() -> int:
         except Exception:
             pass
 
+    consolidation_summary = ""
+    consolidate_script = Path(__file__).parent / "_consolidate.py"
+    if consolidate_script.is_file():
+        try:
+            r = subprocess.run(
+                ["python3", str(consolidate_script)],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.stdout:
+                consolidation_summary = r.stdout.strip()
+        except Exception:
+            pass
+
     ws = active_workspace()
     reason = f"""[gowth-mem:auto-journal ws={ws}] {AUTO_DISTILL_EVERY} turns elapsed.
 
 Pre-block prune ran: {prune_summary or '(no prune output)'}
+Pre-block consolidation: {consolidation_summary or '(no consolidation data)'}
 
 Active workspace: {ws}
 All writes below MUST land under workspaces/{ws}/ unless explicitly cross-workspace.

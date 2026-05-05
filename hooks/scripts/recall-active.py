@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import math
 import re
 import sqlite3
 import struct
@@ -147,6 +148,38 @@ def layer_score(p: Path) -> int:
         if sub not in RESERVED_SUBDIRS:
             return 80
     return 10
+
+
+def multi_signal_score(path: Path, state: dict, tier_score: int, now: float) -> float:
+    """Composite score blending tier position with usage signals (OpenClaw-inspired)."""
+    gh = gowth_home()
+    try:
+        rel = str(path.relative_to(gh))
+    except ValueError:
+        return tier_score / 100.0
+
+    meta = state.get("files", {}).get(rel, {})
+    count = meta.get("count", 0)
+    last_seen = meta.get("last_seen", 0)
+    query_hashes = meta.get("query_hashes", [])
+    days_seen = meta.get("days_seen", [])
+
+    freq = min(count / 20.0, 1.0)
+    div = min(len(set(query_hashes)) / 10.0, 1.0)
+    cons = min(len(set(days_seen)) / 14.0, 1.0) if days_seen else 0.0
+
+    if last_seen > 0:
+        age_days = (now - last_seen) / 86400.0
+        recency = math.exp(-0.693 * age_days / 7.0)
+    else:
+        try:
+            age_days = (now - path.stat().st_mtime) / 86400.0
+            recency = math.exp(-0.693 * age_days / 7.0)
+        except Exception:
+            recency = 0.0
+
+    composite = 0.30 * freq + 0.20 * div + 0.35 * recency + 0.15 * cons
+    return 0.6 * (tier_score / 100.0) + 0.4 * composite
 
 
 def jaccard_words(a: str, b: str) -> float:
@@ -424,7 +457,9 @@ def main() -> int:
     if not raw_hits:
         return 0
 
-    raw_hits.sort(key=lambda h: (-h[2], -h[0].stat().st_mtime))
+    state_for_scoring = load_srs_state()
+    now_scoring = time.time()
+    raw_hits.sort(key=lambda h: -multi_signal_score(h[0], state_for_scoring, h[2], now_scoring))
     selected: list[tuple[Path, list[tuple[int, str, str]]]] = []
     selected_text: list[str] = []
     for f, matches, _score in raw_hits:
@@ -507,10 +542,20 @@ def main() -> int:
                     surfaced_paths.append(str(resurfaced[0].relative_to(gh)))
                 except ValueError:
                     pass
+            qh = hashlib.sha1(prompt.encode()).hexdigest()[:8]
+            today_str = date.today().isoformat()
             for rel in surfaced_paths:
                 rec = files_meta.setdefault(rel, {})
                 rec["last_seen"] = now
                 rec["count"] = rec.get("count", 0) + 1
+                hashes = rec.get("query_hashes", [])
+                if qh not in hashes:
+                    hashes.append(qh)
+                rec["query_hashes"] = hashes[-20:]
+                days = rec.get("days_seen", [])
+                if today_str not in days:
+                    days.append(today_str)
+                rec["days_seen"] = days[-30:]
             save_srs_state(state)
     except TimeoutError:
         pass
