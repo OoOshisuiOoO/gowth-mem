@@ -1,140 +1,117 @@
 ---
 name: mem-save
-description: Use when the user says "save this", "remember this", "note this", "ghi lại", "lưu", or after a debug session ends. Routes the entry to the right destination under ~/.gowth-mem/ — file-per-topic in the ACTIVE workspace, or a cross-cutting registry (workspaces/<ws>/docs/* or shared/*). Topic routing uses keyword overlap.
+description: "Run the OpenClaw-inspired dreaming pipeline: prune → consolidate → lint → distill high-signal items from the current conversation into topic files. Use anytime — don't wait for auto-journal's 10-turn threshold."
 ---
 
-# mem-save (v2.2)
+# mem-save — Dreaming Pipeline (v2.9)
 
-Save a memory entry into the right file under `~/.gowth-mem/`. **Writes are scoped to the active workspace** unless the entry is genuinely cross-workspace.
+Run the full OpenClaw dreaming cycle on demand. Same pipeline as `auto-journal.py` but triggered manually — use when a session has valuable content and you don't want to wait for the 10-turn auto threshold.
 
-## 1. Resolve active workspace first
+## 1. Resolve active workspace
 
 ```bash
 WS=$(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" active)
 echo "active workspace: $WS"
 ```
 
-If wrong, switch before continuing: `/mem-workspace <other>`.
+## 2. Pre-processing scripts (run sequentially)
 
-## 2. Routing table
+### 2a. Prune — remove stale/low-quality entries
 
-| Type | Destination | Section |
-|---|---|---|
-| Episodic experience (debug/fix/lesson/anti-pattern) | `workspaces/$WS/<slug>.md` | `## [exp]` |
-| Verified fact (Source REQUIRED) | `workspaces/$WS/<slug>.md` | `## [ref]` |
-| Topic-specific tool quirk | `workspaces/$WS/<slug>.md` | `## [ref]` |
-| Architectural decision + rationale | `workspaces/$WS/<slug>.md` | `## [decision]` |
-| Lesson / takeaway / pattern | `workspaces/$WS/<slug>.md` | `## [exp]` (reflection group) |
-| Cross-topic tool quirk (workspace-scoped) | `workspaces/$WS/docs/tools.md` | (flat) |
-| Workspace overflow when no topic fits | `workspaces/$WS/docs/{exp,ref}.md` | (flat — RESERVED subdir) |
-| Session state (current task / next / blocker) | `workspaces/$WS/docs/handoff.md` | prefix `host:<machine>` |
-| Reusable workflow (≥2× repeated) | `shared/skills/<slug>.md` (cross-ws) OR `workspaces/$WS/skills/<slug>.md` | (use `memk`) |
-| **Resource pointer** (env-var name; never the value) | `shared/secrets.md` | (flat, **never workspace-scoped**) |
-| **System tool** (used across workspaces) | `shared/tools.md` | (flat) |
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_prune.py"
+```
 
-## 3. Topic routing helper
+### 2b. Consolidate — Light→REM→Deep ranking
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_consolidate.py"
+```
+
+Read stdout for the consolidation report: promote/maintain/prune candidates with scores.
+
+### 2c. Lint — contradiction detection
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_lint.py"
+```
+
+Read stdout for any detected contradictions between entries. If contradictions found, resolve them during the distill phase (keep the newer/better-sourced entry, DELETE the stale one).
+
+## 3. Scan conversation for high-signal items
+
+Scan ALL user turns and your replies in this conversation (not just the last 10). For each high-signal item, classify into ONE type:
+
+| Prefix | What | Destination | Section |
+|---|---|---|---|
+| `[decision]` | choice + rationale | `workspaces/$WS/<slug>.md` | `## [decision]` |
+| `[exp]` | debug / fix / lesson | `workspaces/$WS/<slug>.md` | `## [exp]` |
+| `[reflection]` | pattern / takeaway | `workspaces/$WS/<slug>.md` | `## [exp]` |
+| `[ref]` | verified external fact | `workspaces/$WS/<slug>.md` | `## [ref]` (Source REQUIRED) |
+| `[tool]` | topic-specific gotcha | `workspaces/$WS/<slug>.md` OR `workspaces/$WS/docs/tools.md` | |
+| `[secret-ref]` | env-var POINTER | `shared/secrets.md` | (NEVER the value) |
+
+## 4. Quality gates — DROP if
+
+- Entry < 20 chars
+- Code-only (no prose explanation)
+- `[ref]` without `Source:` link
+- Vague / hedged ("maybe", "I think") without backing evidence
+
+## 5. Topic routing
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --route "<your text>" --ws "$WS"
 ```
 
-Outputs `<slug>\t<file_path>\t<section_hint>`. If `<file_path>` doesn't exist, it'll be created on write with the v2.2 frontmatter scaffold.
+Pick existing `workspaces/$WS/**/<slug>.md` (excluding docs/journal/skills) if keywords overlap (>=3 common words); otherwise create new `workspaces/$WS/<new-slug>.md` with v2.3 frontmatter.
 
-To force-create a topic file with frontmatter:
+Reserved names: docs, journal, skills, _MAP.md, AGENTS.md, workspace.json.
 
-```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --ensure "<slug>" --ws "$WS"
-```
+Lazy-nest into domain folders only when >=5 topics share a theme.
 
-## 4. v2.2 topic file format
+## 6. Apply mem0 write semantics
 
-```markdown
----
-slug: <slug>
-title: <Title>
-status: draft|active|distilled|archived
-created: 2026-05-02
-last_touched: 2026-05-02
-parents: []
-links: []
-aliases: []
----
+For each entry against its target file:
 
-# <Title>
+- **ADD** — new and not redundant.
+- **UPDATE** — similar entry exists with stale info -> rewrite that line.
+- **DELETE** — directly contradicts new entry (or flagged by lint).
+- **NOOP** — duplicate already present.
 
-> Cốt lõi 1 dòng.
+Update `frontmatter.last_touched` on every write.
 
-## [exp]
-- 2026-04-15: <1-2 dòng> (Source: <reproducible>)
+## 7. Integrate consolidation results
 
-## [ref]
-- <fact> (Source: <url|file:line|doc>)
+If `_consolidate.py` reported **prune_candidates**, review them:
+- If the entry is truly stale/superseded, DELETE it.
+- If still relevant, leave it (the scoring is advisory, not automatic).
 
-## [decision]
-- Chọn X over Y because Z (Source: …)
+If **promote** items were identified, ensure they have complete entries (add Source if missing, expand terse entries).
 
-## [reflection]
-- Pattern observation. Cross-link: [[other-slug]] hoặc [[other-ws:other-slug]].
-```
+## 8. Update handoff
 
-## 5. Entry format (per line)
+Update `workspaces/$WS/docs/handoff.md` (prefix `host:<machine>`) with current task / next step / blocker.
 
-Each entry is 1–2 lines. No noise. **`Source:` mandatory for `[ref]`.** Reject if missing.
-
-## 6. Atomic writes
-
-```python
-import sys
-sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/hooks/scripts")
-from _atomic import atomic_write
-from _frontmatter import parse_file, render
-from _home import topics_dir, active_workspace
-from datetime import date
-
-ws = active_workspace()
-target = topics_dir(ws) / "<slug>.md"
-fm, body = parse_file(target)
-fm["last_touched"] = date.today().isoformat()
-# … insert new entry under the right `## [exp]` / `## [ref]` heading in `body` …
-atomic_write(target, render(fm, body))
-```
-
-## 7. After write — refresh MOC + index
+## 9. Refresh MOC + index
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py" --ws "$WS"
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py"
 ```
 
-## 8. Steps (the actual save flow)
+## 10. Report summary
 
-1. `WS=$(_workspace.py active)`. Confirm in output.
-2. Determine type per routing table.
-3. For topic content: route via `_topic.py --route ... --ws $WS`. Ensure topic file exists (frontmatter scaffold).
-4. Read target. Apply mem0 ADD / UPDATE / DELETE / NOOP:
-   - **ADD** if new and not redundant.
-   - **UPDATE** if a similar entry exists with stale info → rewrite that line.
-   - **DELETE** if directly contradicts new entry.
-   - **NOOP** if duplicate.
-5. Update frontmatter `last_touched` to today.
-6. Write atomically.
-7. Run `_moc.py --ws $WS` and `_index.py` (cheap).
-8. Report: `path / op / workspace`.
+One line:
 
-## 9. Cross-workspace explicit references
+```
+dreaming: ws=$WS, kept N, dropped M, promoted K, pruned P, contradictions C
+```
 
-Use `[[<workspace>:<slug>]]` syntax:
-- `[[trade:ema-cross]]` — references workspace `trade`
-- `[[shared:secrets]]` — references shared registry
+## Hard rules
 
-Plain `[[slug]]` resolves in the **current** workspace only.
-
-## 10. Hard rules
-
-- **Never write a real secret value** to any file. `shared/secrets.md` is POINTER only (env-var name + how to obtain).
-- **Never `mem-save` to handoff.md mid-task** — wait until end of session or before `/compact`. Prefix with `host:<machine>`.
-- **`[ref]` without Source link → reject.**
-- **Conflict with existing entry** → DELETE old (or mark `(superseded)` if audit matters), keep new.
-- **Slug collisions across workspaces are OK** — slug uniqueness is per-workspace.
-- **Never change a slug** that's been published — wikilinks will break. Use `/mem-restructure` to change `parents:` instead.
-- **Cross-workspace writes** require explicit workspace switch (`/mem-workspace <other>`) — don't write to a non-active workspace silently.
+- **Never write a real secret value.** `shared/secrets.md` stores pointers only.
+- **`[ref]` without Source -> reject.**
+- **Conflict with existing entry** -> DELETE old, keep new.
+- **Cross-workspace writes** require explicit workspace switch.
+- **All file writes** go through `_atomic.atomic_write`.
