@@ -9,14 +9,14 @@ The wizard for a fresh v2.0 install. Run when the user has the plugin installed 
 
 ## Pre-flight
 
-If `~/.gowth-mem/AGENTS.md` already exists, abort with: "Already installed. Use `/mem-config` to change remote, `/mem-sync` to sync, or `/mem-migrate-global` to import v1.0 data."
+If `~/.gowth-mem/shared/AGENTS.md` already exists, abort with: "Already installed. Use `/mem-config` to change remote, `/mem-sync` to sync, or `/mem-migrate-global` to import v1.0 data."
 
 ## Step 1 — scaffold layout
 
 ```bash
 # v2.3 layout: shared/ + workspaces/<ws>/{docs,journal,skills,<slug>.md,...}
 mkdir -p ~/.gowth-mem/shared/skills
-cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" ~/.gowth-mem/AGENTS.md
+cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" ~/.gowth-mem/shared/AGENTS.md
 cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v2.json" ~/.gowth-mem/settings.json
 cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md" ~/.gowth-mem/shared/secrets.md
 cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md" ~/.gowth-mem/shared/tools.md

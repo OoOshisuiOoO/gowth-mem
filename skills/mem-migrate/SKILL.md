@@ -13,11 +13,11 @@ One-time migration from workspace-rooted layout (v0.9) to centralized `.gowth-me
 
 ## Steps
 
-1. Create `.gowth-mem/` + `docs/journal/` + `docs/skills/` if missing.
-2. Move workspace `AGENTS.md` → `.gowth-mem/AGENTS.md`.
-3. Move workspace `docs/{handoff,exp,ref,tools,secrets,files}.md` → `.gowth-mem/docs/`.
-4. Move workspace `docs/journal/*` → `.gowth-mem/docs/journal/`.
-5. Move workspace `docs/skills/*` → `.gowth-mem/docs/skills/`.
+1. Create `.gowth-mem/` + target workspace via `_workspace.py` if missing.
+2. Move workspace `AGENTS.md` → `.gowth-mem/shared/AGENTS.md` (or workspace-level if it contains workspace-specific rules).
+3. Move workspace `docs/{handoff,exp,ref,tools,secrets,files}.md` → `.gowth-mem/workspaces/<ws>/docs/`.
+4. Move workspace `docs/journal/*` → `.gowth-mem/workspaces/<ws>/journal/`.
+5. Move workspace `docs/skills/*` → `.gowth-mem/workspaces/<ws>/skills/`.
 6. Remove now-empty `docs/` dir at workspace root.
 7. Create `.gowth-mem/settings.json` from template if missing.
 8. Create `.gowth-mem/.gitignore` if missing.

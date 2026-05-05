@@ -2,7 +2,7 @@
 description: List, inspect, or route a content snippet to a topic slug. Read-only by default; --regen-index rewrites topics/_index.md.
 ---
 
-Manage the topic registry under `~/.gowth-mem/topics/`.
+Manage the topic registry under the active workspace (`~/.gowth-mem/workspaces/<ws>/`).
 
 Subcommands (mutually exclusive):
 
@@ -11,7 +11,7 @@ Subcommands (mutually exclusive):
   python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --list
   ```
 
-- **inspect `<slug>`**: open `~/.gowth-mem/topics/<slug>.md` and show first 80 lines.
+- **inspect `<slug>`**: open `~/.gowth-mem/workspaces/<ws>/<slug>/<slug>.md` and show first 80 lines.
 
 - **route `<text>`**: show which topic slug `_topic.route()` would pick for that text:
   ```bash

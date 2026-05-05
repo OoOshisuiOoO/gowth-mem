@@ -6,7 +6,7 @@ This command migrated the **v0.9** layout (workspace-rooted `AGENTS.md` + `docs/
 
 In v2.0, memory is global at `~/.gowth-mem/` instead of per-workspace. Most users never need this command.
 
-**If you have v1.0 per-workspace `<ws>/.gowth-mem/` directories**, run `/mem-migrate-global` instead — it walks them all and merges content into `~/.gowth-mem/topics/` by topic.
+**If you have v1.0 per-workspace `<ws>/.gowth-mem/` directories**, run `/mem-migrate-global` instead — it walks them all and merges content into `~/.gowth-mem/workspaces/<ws>/` per workspace.
 
 ## v0.9 → v1.0 (legacy, kept for completeness)
 
@@ -43,10 +43,11 @@ echo "v0.9 → v1.0 migration complete. To go further (v1.0 → v2.0 global), ru
 ## Recommended flow
 
 ```
-v0.9 (root)        →  v1.0 (per-workspace)  →  v2.0 (global)
+v0.9 (root)        →  v1.0 (per-workspace)  →  v2.7+ (global)
 AGENTS.md             <ws>/.gowth-mem/         ~/.gowth-mem/
-docs/*                                         topics/<slug>.md
-                                               docs/{handoff,secrets,tools}.md
+docs/*                                         shared/{AGENTS,secrets,tools}.md
+                                               workspaces/<ws>/docs/
+                                               workspaces/<ws>/<slug>/<slug>.md
 
 /mem-migrate          /mem-migrate-global
 ```

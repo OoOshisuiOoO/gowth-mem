@@ -5,7 +5,7 @@ argument-hint: "<remote-url> [branch]"
 
 Set up `~/.gowth-mem/config.json` for git sync.
 
-Pre-condition: `~/.gowth-mem/AGENTS.md` exists (run `/mem-install` first if not).
+Pre-condition: `~/.gowth-mem/shared/AGENTS.md` exists (run `/mem-install` first if not).
 
 Steps:
 
