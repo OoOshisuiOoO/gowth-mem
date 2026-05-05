@@ -17,6 +17,7 @@ than blocking the hook.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import socket
@@ -30,9 +31,19 @@ from _home import config_path, conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
 
 
-def run_git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def git_cmd(remote: str, token: Optional[str], *args: str) -> list[str]:
+    cmd = ["git"]
+    if token and remote.startswith("https://"):
+        header = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        cmd.extend(["-c", f"http.{remote}.extraHeader=AUTHORIZATION: basic {header}"])
+    cmd.extend(args)
+    return cmd
+
+
+def run_git(cwd: Path, *args: str, check: bool = True,
+            remote: str = "", token: Optional[str] = None) -> subprocess.CompletedProcess:
     r = subprocess.run(
-        ["git", "-C", str(cwd), *args],
+        git_cmd(remote, token, "-C", str(cwd), *args),
         capture_output=True, text=True,
     )
     if check and r.returncode != 0:
@@ -41,9 +52,7 @@ def run_git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedPr
 
 
 def auth_url(remote: str, token: Optional[str]) -> str:
-    if not token or not remote.startswith("https://"):
-        return remote
-    return remote.replace("https://", f"https://{token}@", 1)
+    return remote
 
 
 def load_config() -> dict:
@@ -101,9 +110,11 @@ def commit_local(gh: Path, host: str, quiet: bool, message: str = "auto-sync") -
         return False
 
 
-def pull_rebase(gh: Path, branch: str, quiet: bool) -> int:
+def pull_rebase(gh: Path, branch: str, quiet: bool,
+                remote: str, token: Optional[str]) -> int:
     """Pull --rebase; on conflict invoke _conflict.py. Returns 0/2/1."""
-    r = run_git(gh, "pull", "--rebase", "origin", branch, check=False)
+    r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
+                remote=remote, token=token)
     if r.returncode == 0:
         log(f"sync: pulled origin/{branch}", quiet=quiet)
         return 0
@@ -121,8 +132,10 @@ def pull_rebase(gh: Path, branch: str, quiet: bool) -> int:
     return 1
 
 
-def push(gh: Path, branch: str, quiet: bool) -> int:
-    r = run_git(gh, "push", "-u", "origin", branch, check=False)
+def push(gh: Path, branch: str, quiet: bool,
+         remote: str, token: Optional[str]) -> int:
+    r = run_git(gh, "push", "-u", "origin", branch, check=False,
+                remote=remote, token=token)
     if r.returncode == 0:
         log(f"sync: pushed origin/{branch}", quiet=quiet)
         return 0
@@ -178,14 +191,14 @@ def main() -> int:
                 return 1
 
             if args.pull_only:
-                return pull_rebase(gh, branch, quiet)
+                return pull_rebase(gh, branch, quiet, remote, token)
 
             # Default & --pull-rebase-push: commit local, pull, push.
             commit_local(gh, host, quiet)
-            rc = pull_rebase(gh, branch, quiet)
+            rc = pull_rebase(gh, branch, quiet, remote, token)
             if rc != 0:
                 return rc
-            return push(gh, branch, quiet)
+            return push(gh, branch, quiet, remote, token)
     except TimeoutError:
         log("sync: skipped — another session holds the sync lock", quiet=quiet, err=True)
         return 0

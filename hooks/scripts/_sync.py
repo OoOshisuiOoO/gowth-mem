@@ -14,6 +14,7 @@ User then runs /mem-sync-resolve.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import socket
@@ -27,9 +28,19 @@ from _home import config_path, conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
 
 
-def run_git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def git_cmd(remote: str, token: Optional[str], *args: str) -> list[str]:
+    cmd = ["git"]
+    if token and remote.startswith("https://"):
+        header = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        cmd.extend(["-c", f"http.{remote}.extraHeader=AUTHORIZATION: basic {header}"])
+    cmd.extend(args)
+    return cmd
+
+
+def run_git(cwd: Path, *args: str, check: bool = True,
+            remote: str = "", token: Optional[str] = None) -> subprocess.CompletedProcess:
     r = subprocess.run(
-        ["git", "-C", str(cwd), *args],
+        git_cmd(remote, token, "-C", str(cwd), *args),
         capture_output=True, text=True,
     )
     if check and r.returncode != 0:
@@ -38,9 +49,7 @@ def run_git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedPr
 
 
 def auth_url(remote: str, token: Optional[str]) -> str:
-    if not token or not remote.startswith("https://"):
-        return remote
-    return remote.replace("https://", f"https://{token}@", 1)
+    return remote
 
 
 def load_config(gh: Path) -> dict:
@@ -134,7 +143,8 @@ def main() -> int:
                         print(f"WARN: initial commit failed: {e.stderr}", file=sys.stderr)
                 try:
                     run_git(gh, "pull", "origin", branch,
-                            "--allow-unrelated-histories", "--rebase")
+                            "--allow-unrelated-histories", "--rebase",
+                            remote=remote, token=token)
                     print(f"init: pulled origin/{branch}")
                 except subprocess.CalledProcessError as e:
                     err = (e.stderr or "")
@@ -149,7 +159,7 @@ def main() -> int:
                     else:
                         print(f"init: pull warning: {err.strip()[:200]}")
                 try:
-                    run_git(gh, "push", "-u", "origin", branch)
+                    run_git(gh, "push", "-u", "origin", branch, remote=remote, token=token)
                     print(f"init: pushed to origin/{branch}")
                 except subprocess.CalledProcessError as e:
                     print(f"ERROR: push failed: {e.stderr}", file=sys.stderr)
@@ -177,7 +187,8 @@ def main() -> int:
                         print(f"WARN: commit failed: {e.stderr.strip()[:200]}")
 
             if not args.push_only:
-                r = run_git(gh, "pull", "--rebase", "origin", branch, check=False)
+                r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
+                            remote=remote, token=token)
                 if r.returncode != 0:
                     err = (r.stderr or "") + (r.stdout or "")
                     if "CONFLICT" in err:
@@ -191,7 +202,8 @@ def main() -> int:
                 print(f"sync: pulled origin/{branch}")
 
             if not args.pull_only:
-                r = run_git(gh, "push", "origin", branch, check=False)
+                r = run_git(gh, "push", "origin", branch, check=False,
+                            remote=remote, token=token)
                 if r.returncode != 0:
                     print(f"ERROR: push failed: {(r.stderr or '').strip()[:200]}", file=sys.stderr)
                     return 1
