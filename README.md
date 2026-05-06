@@ -148,6 +148,7 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-cost` | `memc` | Estimate bootstrap token footprint |
 | `/mem-prune` | `memp` | Remove outdated, superseded, or duplicate entries |
 | `/mem-lesson` | `memL` | Append a 5-field bug/lesson entry |
+| `/mem-doctor` | — | Self-heal plugin install path drift (issue #52218); pulls marketplace, materializes cache, patches registry |
 
 ## Multi-session safety
 
