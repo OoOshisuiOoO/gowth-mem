@@ -4,11 +4,22 @@
 Routes destinations for topic-organized memory at ~/.gowth-mem/, scoped to the
 active workspace. Topic files live at workspace root (no `topics/` wrapper);
 reserved subdirs (docs, journal, skills) hold cross-cutting registries.
+
+Idempotency (v2.9.2): once the LLM has flushed (writes a markdown file under the
+active workspace), a follow-up /compact within FLUSH_GRACE seconds passes silently
+so the user isn't trapped in a perpetual block.
 """
 from __future__ import annotations
 
 import json
 import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _home import active_workspace, workspace_dir  # type: ignore
+
+FLUSH_GRACE = 300  # seconds — recent flush window
 
 
 REASON = """[gowth-mem:precompact-flush] HARD-BLOCK: compact incoming. Save EVERYTHING critical first.
@@ -48,10 +59,32 @@ Quy tắc: 1-2 dòng / entry, có Source cho [ref]. Conflict cũ → DELETE cũ.
 Frontmatter.last_touched phải update theo today. Slug đã publish thì KHÔNG đổi (vỡ wikilinks).
 
 After this turn, the PostCompact hook will pull-rebase-push automatically.
-Once saved, the user can run /compact again (the block clears after this turn)."""
+Once saved (any *.md modified under the active workspace), re-run /compact within
+5 minutes — this hook detects the recent flush via mtime and lets it through."""
+
+
+def recently_flushed(grace: int = FLUSH_GRACE) -> bool:
+    """True if any markdown under the active workspace was modified within
+    `grace` seconds — heuristic that the LLM just completed a flush."""
+    try:
+        wsd = workspace_dir(active_workspace())
+    except Exception:
+        return False
+    if not wsd.is_dir():
+        return False
+    cutoff = time.time() - grace
+    for p in wsd.rglob("*.md"):
+        try:
+            if p.stat().st_mtime > cutoff:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def main() -> int:
+    if recently_flushed():
+        return 0  # silent approve — recent flush detected, don't trap the user
     print(json.dumps({"decision": "block", "reason": REASON}))
     return 0
 
