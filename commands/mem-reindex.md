@@ -23,7 +23,7 @@ Both layers are **opt-in**. If `sqlite-vec` is not installed or no embedding key
 
 ## When to run
 
-- After `/mem-init` (first time setup).
+- After `/mem-install` (first time setup).
 - After bulk-importing docs (e.g. ingesting external notes).
 - Periodically (e.g. weekly) if you've added many entries.
 - On-demand whenever recall feels stale.

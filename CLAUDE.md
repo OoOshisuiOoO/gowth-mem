@@ -119,3 +119,5 @@ See `RESEARCH.md` § F for roadmap with `✅` markers. Key shipped items:
 - **v0.9**: 7-type strict schema, quality gates, active auto-DELETE via `_prune.py`
 - **v2.7**: `shared/` + `workspaces/<ws>/` dual-load, workspace resolver
 - **v2.8**: Topic-type templates (10 vocabulary), `ensure_topic` dispatch
+- **v2.9**: OpenClaw dreaming pipeline (staged consolidation + multi-signal recall + contradiction lint)
+- **v2.10**: Deep-research workflow commands (`/mem-research-start`, `/mem-research-distill`, `/mem-research-status`), AGENTS.md rules moved to SessionStart-only (was duplicated every turn), cleanup stale files (mem-init stub, mem-migrate skill, mem-recaller agent, v1.0 settings template)

@@ -15,7 +15,7 @@ Write `.gowth-mem/config.json` with git sync settings.
 
 ## Steps
 
-1. Ensure `.gowth-mem/` exists; if not, run `/mem-init` first.
+1. Ensure `.gowth-mem/` exists; if not, run `/mem-install` first.
 2. Ask user for remote URL. Validate it looks like a git URL.
 3. Ask for branch (default `main`).
 4. Ask whether to set token in `config.json` or via env (recommend env).

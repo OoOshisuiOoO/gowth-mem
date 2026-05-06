@@ -292,5 +292,78 @@ class MultiSignalTests(unittest.TestCase):
             self.assertEqual(stash_list.stdout.strip(), "")
 
 
+class ResearchTests(unittest.TestCase):
+    def test_research_compiles(self):
+        subprocess.run(
+            [sys.executable, "-m", "py_compile", str(SCRIPTS / "_research.py")],
+            check=True,
+        )
+
+    def test_has_source_ref_accepts_one_colon_inline(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertTrue(mod.has_source_ref("see dreaming.ts:593 for the sweep loop"))
+
+    def test_has_source_ref_accepts_two_colon_repo_prefix(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertTrue(mod.has_source_ref("openclaw:src/memory/dreaming.ts:120"))
+
+    def test_has_source_ref_accepts_repo_frontmatter(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertTrue(mod.has_source_ref("---\ntype: locate\nrepo: openclaw/openclaw\n---\n\nbody"))
+
+    def test_has_source_ref_accepts_source_line(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertTrue(mod.has_source_ref("Source: openclaw/openclaw cloned 2026-05-06"))
+
+    def test_has_source_ref_rejects_plain_prose(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertFalse(mod.has_source_ref("Just some plain text without any references."))
+
+    def test_word_count_excludes_frontmatter(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        text = "---\ntype: distilled\ntopic: foo\n---\n\nhello world here"
+        self.assertEqual(mod.word_count(text), 3)
+
+    def test_word_count_no_frontmatter(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertEqual(mod.word_count("hello world here"), 3)
+
+    def test_validate_slug_rejects_invalid_chars(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        with self.assertRaises(SystemExit):
+            mod._validate_slug("foo bar")  # space invalid
+        with self.assertRaises(SystemExit):
+            mod._validate_slug("foo/bar")  # slash invalid
+        with self.assertRaises(SystemExit):
+            mod._validate_slug("-foo")  # leading dash invalid (anchor [a-z0-9])
+
+    def test_validate_slug_accepts_dash_and_underscore(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        self.assertEqual(mod._validate_slug("foo-bar_2"), "foo-bar_2")
+
+    def test_quality_gate_in_isolated_home(self):
+        mod = load_module("research", SCRIPTS / "_research.py")
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            env = os.environ.copy()
+            env["GOWTH_MEM_HOME"] = str(home)
+            # Bootstrap topic via subprocess (uses isolated home)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPTS / "_research.py"), "--start", "demo", "--ws", "ws1"],
+                env=env, cwd=ROOT, check=True, capture_output=True, text=True,
+            )
+            self.assertIn("scaffolded", r.stdout)
+            # No raw notes besides _locate.md template (which has source attribution
+            # via frontmatter) → distill should fail because distilled.md is missing's word
+            # gate isn't reachable; but raw notes count >= 1 so not the no-raw-error.
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPTS / "_research.py"), "--lint", "demo", "--ws", "ws1"],
+                env=env, cwd=ROOT, capture_output=True, text=True,
+            )
+            # Should FAIL because distilled.md missing
+            self.assertEqual(r2.returncode, 1)
+            self.assertIn("distilled.md missing", r2.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -149,6 +149,17 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-prune` | `memp` | Remove outdated, superseded, or duplicate entries |
 | `/mem-lesson` | `memL` | Append a 5-field bug/lesson entry |
 | `/mem-doctor` | — | Self-heal plugin install path drift (issue #52218); pulls marketplace, materializes cache, patches registry |
+| `/mem-research-start <topic>` | — | Scaffold deep-research topic (`research/<topic>/raw/_locate.md` source-code map template) |
+| `/mem-research-distill <topic>` | — | Scaffold `distilled.md` (TL;DR / Architecture / Key facts / Code anchors / Delta / Open questions) + run quality gate (<800 words, every raw note has source ref) |
+| `/mem-research-status` | — | List research topics + state (pending / in-progress / distilled) |
+| `/mem-workspace` | — | Show or switch active workspace |
+| `/mem-workspace-create` | — | Scaffold new workspace |
+| `/mem-workspace-list` | — | List all workspaces |
+| `/mem-workspace-archive` | — | Archive workspace to `_archive/` |
+| `/mem-workspace-map` | — | Add/remove cwd-glob → workspace mapping |
+| `/mem-promote` | — | Promote topic to Obsidian wiki (requires claude-obsidian) |
+| `/mem-restructure` | — | Reorganize topics (move slugs, rebuild MOCs) |
+| `/mem-flush` | — | Manual pre-compact flush reminder |
 
 ## Multi-session safety
 

@@ -19,4 +19,4 @@ Then synthesize EXACTLY 3 lines for the user:
 2. **step kế**: (1 line — next step from `docs/handoff.md` § Next step)
 3. **blocker**: (1 line — from `docs/handoff.md` § Blocker, or `không` if empty)
 
-If `docs/handoff.md` is missing or empty, say so and suggest running `/mem-init` first.
+If `docs/handoff.md` is missing or empty, say so and suggest running `/mem-install` first.

@@ -9,7 +9,7 @@ Multi-machine sync of `.gowth-mem/` (AGENTS.md + docs/* + settings.json + skills
 
 ## Prerequisites
 
-- `.gowth-mem/` exists (run `/mem-init` if not)
+- `.gowth-mem/` exists (run `/mem-install` if not)
 - `.gowth-mem/config.json` configured with `remote` + `branch` (run `/mem-config`)
 - Token via env `GOWTH_MEM_GIT_TOKEN` OR in `config.json` (gitignored)
 

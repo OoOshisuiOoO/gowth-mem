@@ -1,16 +1,18 @@
+# Legacy Commands & Migrations
+
+This file archives commands that were removed from the active surface but are kept for reference. The migration scripts may still be useful if you find a stale workspace at an older layout.
+
+> **Active migration command**: `/mem-migrate-global` — for v1.0 per-workspace `.gowth-mem/` → v2.7+ global `~/.gowth-mem/`. **NOT** archived; still in `commands/`.
+
 ---
-description: (Legacy) v0.9 → v1.0 per-workspace migration. For v1.0 per-workspace → v2.0 global, use /mem-migrate-global.
----
 
-This command migrated the **v0.9** layout (workspace-rooted `AGENTS.md` + `docs/`) into **v1.0** centralized `<workspace>/.gowth-mem/`.
+## `/mem-migrate` — v0.9 → v1.0 per-workspace migration
 
-In v2.0, memory is global at `~/.gowth-mem/` instead of per-workspace. Most users never need this command.
+**Removed from active surface in 2026-05-06.** Original file: `commands/mem-migrate.md`.
 
-**If you have v1.0 per-workspace `<ws>/.gowth-mem/` directories**, run `/mem-migrate-global` instead — it walks them all and merges content into `~/.gowth-mem/workspaces/<ws>/` per workspace.
+The v0.9 layout had `AGENTS.md` + `docs/` rooted directly in each repo. v1.0 centralized those into a per-workspace `<ws>/.gowth-mem/` folder. Almost no users remain on v0.9, so the command was archived.
 
-## v0.9 → v1.0 (legacy, kept for completeness)
-
-Run with the Bash tool:
+If you do have a v0.9 workspace, run this script (originally the body of `/mem-migrate`):
 
 ```bash
 WS="${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -40,7 +42,9 @@ fi
 echo "v0.9 → v1.0 migration complete. To go further (v1.0 → v2.0 global), run /mem-migrate-global."
 ```
 
-## Recommended flow
+After running it, your workspace will be on v1.0; then run `/mem-migrate-global` to import into the v2.7+ global layout at `~/.gowth-mem/workspaces/<ws>/`.
+
+## Migration ladder
 
 ```
 v0.9 (root)        →  v1.0 (per-workspace)  →  v2.7+ (global)
@@ -49,5 +53,5 @@ docs/*                                         shared/{AGENTS,secrets,tools}.md
                                                workspaces/<ws>/docs/
                                                workspaces/<ws>/<slug>/<slug>.md
 
-/mem-migrate          /mem-migrate-global
+(archived here)       /mem-migrate-global      (current default)
 ```

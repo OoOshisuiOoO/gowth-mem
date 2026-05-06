@@ -33,9 +33,11 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import active_workspace, agents_md, workspace_agents_md  # type: ignore
 
-RULES_MAX_CHARS = 12_000  # cap PER file (shared + ws each get their own budget)
+# NOTE: AGENTS.md is loaded ONCE at SessionStart by bootstrap-load.py (which
+# already reads shared/AGENTS.md + workspaces/<ws>/AGENTS.md). We deliberately
+# do NOT re-inject Rules every turn here — that was wasteful (~6k tokens/turn
+# duplicate). See user decision 2026-05-06: "Option B" (rules at SessionStart only).
 
 
 INLINE_MEM_SAVE = """[auto-skill: mem-save] Intent = save. Execute inline (no /mem-save needed):
@@ -348,44 +350,12 @@ def main() -> int:
                     nudge = payload
                 break
 
-    # Always include AGENTS.md as <Rules>...</Rules> so the operating rules
-    # are present on every turn. v2.7: load BOTH shared/AGENTS.md (stable
-    # cache prefix, all workspaces) AND workspaces/<active>/AGENTS.md
-    # (workspace-specific overrides). Shared first → preserves cache hit
-    # when workspace switches but shared content doesn't.
-    def _read_capped(p: Path) -> str:
-        if not p.is_file():
-            return ""
-        try:
-            t = p.read_text(errors="ignore")
-        except Exception:
-            return ""
-        if len(t) > RULES_MAX_CHARS:
-            t = t[:RULES_MAX_CHARS] + "\n[truncated]"
-        return t
-
-    shared_text = _read_capped(agents_md())
-    ws_name = active_workspace()
-    ws_text = _read_capped(workspace_agents_md(ws_name))
-
-    rules_block = ""
-    if shared_text or ws_text:
-        sections: list[str] = []
-        if shared_text:
-            sections.append(f"# === shared/AGENTS.md (cross-workspace) ===\n{shared_text}")
-        if ws_text:
-            sections.append(
-                f"# === workspaces/{ws_name}/AGENTS.md (workspace-specific) ===\n{ws_text}"
-            )
-        rules_block = "<Rules>\n" + "\n\n".join(sections) + "\n</Rules>"
-
-    if not rules_block and not expansions and triggered_block is None and nudge is None:
+    # Rules block removed (2026-05-06): bootstrap-load.py already loads AGENTS.md
+    # at SessionStart. Re-injecting here every turn was duplicate work.
+    if not expansions and triggered_block is None and nudge is None:
         return 0
 
     parts: list[str] = []
-    if rules_block:
-        parts.append(rules_block)
-        parts.append("")
     parts.append("[gowth-mem:user-augment]")
     if expansions:
         parts.append("Shortcuts:")
