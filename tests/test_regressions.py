@@ -226,6 +226,71 @@ class MultiSignalTests(unittest.TestCase):
             subprocess.run(
                 [sys.executable, "-c", code], cwd=ROOT, env=env, check=True)
 
+    def test_pull_rebase_auto_stashes_dirty_tree_and_restores(self):
+        auto_sync = load_module("gowth_auto_sync", SCRIPTS / "auto-sync.py")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bare = root / "remote.git"
+            local = root / "local"
+            other = root / "other"
+            subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+            # Seed remote via "other" clone
+            subprocess.run(["git", "clone", str(bare), str(other)], check=True, capture_output=True)
+            (other / "seed.md").write_text("seed\n")
+            for c in (
+                ["git", "-C", str(other), "-c", "user.name=t", "-c", "user.email=t@x", "add", "."],
+                ["git", "-C", str(other), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "seed"],
+                ["git", "-C", str(other), "push", "origin", "main"],
+            ):
+                subprocess.run(c, check=True, capture_output=True)
+            # Local clone matches remote
+            subprocess.run(["git", "clone", str(bare), str(local)], check=True, capture_output=True)
+            # Remote advances
+            (other / "remote_new.md").write_text("from remote\n")
+            for c in (
+                ["git", "-C", str(other), "-c", "user.name=t", "-c", "user.email=t@x", "add", "."],
+                ["git", "-C", str(other), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "remote update"],
+                ["git", "-C", str(other), "push", "origin", "main"],
+            ):
+                subprocess.run(c, check=True, capture_output=True)
+            # Local has unstaged dirty change (mirrors user's bug)
+            (local / "seed.md").write_text("seed\nlocal-dirty\n")
+            local_dirty_path = local / "untracked.md"
+            local_dirty_path.write_text("untracked content\n")
+
+            rc = auto_sync.pull_rebase(local, "main", quiet=True, remote=str(bare), token=None)
+            self.assertEqual(rc, 0)
+            # Remote commit pulled in
+            self.assertTrue((local / "remote_new.md").is_file())
+            # Local dirty restored
+            self.assertEqual((local / "seed.md").read_text(), "seed\nlocal-dirty\n")
+            self.assertTrue(local_dirty_path.is_file())
+            # No stash entry left behind
+            stash_list = subprocess.run(
+                ["git", "-C", str(local), "stash", "list"], capture_output=True, text=True, check=True)
+            self.assertEqual(stash_list.stdout.strip(), "")
+
+    def test_pull_rebase_clean_tree_unaffected(self):
+        auto_sync = load_module("gowth_auto_sync", SCRIPTS / "auto-sync.py")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bare = root / "remote.git"
+            local = root / "local"
+            subprocess.run(["git", "init", "--bare", "-b", "main", str(bare)], check=True)
+            subprocess.run(["git", "clone", str(bare), str(local)], check=True, capture_output=True)
+            (local / "x.md").write_text("x\n")
+            for c in (
+                ["git", "-C", str(local), "-c", "user.name=t", "-c", "user.email=t@x", "add", "."],
+                ["git", "-C", str(local), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "x"],
+                ["git", "-C", str(local), "push", "-u", "origin", "main"],
+            ):
+                subprocess.run(c, check=True, capture_output=True)
+            rc = auto_sync.pull_rebase(local, "main", quiet=True, remote=str(bare), token=None)
+            self.assertEqual(rc, 0)
+            stash_list = subprocess.run(
+                ["git", "-C", str(local), "stash", "list"], capture_output=True, text=True, check=True)
+            self.assertEqual(stash_list.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

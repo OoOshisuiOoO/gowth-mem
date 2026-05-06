@@ -110,26 +110,82 @@ def commit_local(gh: Path, host: str, quiet: bool, message: str = "auto-sync") -
         return False
 
 
+_STASH_MSG = "auto-sync pre-pull stash"
+
+
+def _stash_if_dirty(gh: Path, quiet: bool):
+    """Stash uncommitted changes if dirty.
+
+    Returns: msg (str) if stashed, None if clean, False if stash failed.
+    """
+    status = run_git(gh, "status", "--porcelain", check=False).stdout
+    if not status.strip():
+        return None
+    r = run_git(gh, "stash", "push", "-u", "-m", _STASH_MSG, check=False)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()[:300]
+        log(
+            f"sync: dirty tree, stash failed ({err}). "
+            f"Resolve manually: cd {gh} && git status, then commit/restore.",
+            quiet=quiet, err=True,
+        )
+        return False
+    if "No local changes to save" in (r.stdout or ""):
+        return None
+    log("sync: stashed dirty tree before pull", quiet=quiet)
+    return _STASH_MSG
+
+
+def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> None:
+    if not pull_ok:
+        log(
+            f"sync: dirty changes preserved in stash '{_STASH_MSG}'. "
+            f"After resolving: cd {gh} && git stash list && git stash pop",
+            quiet=quiet, err=True,
+        )
+        return
+    r = run_git(gh, "stash", "pop", check=False)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()[:300]
+        log(
+            f"sync: pull ok but stash pop conflict — changes safe in stash. "
+            f"Resolve: cd {gh} && git stash pop. Detail: {err}",
+            quiet=quiet, err=True,
+        )
+    else:
+        log("sync: restored stashed changes", quiet=quiet)
+
+
 def pull_rebase(gh: Path, branch: str, quiet: bool,
                 remote: str, token: Optional[str]) -> int:
-    """Pull --rebase; on conflict invoke _conflict.py. Returns 0/2/1."""
+    """Pull --rebase; auto-stash dirty tree, restore after. Returns 0/2/1."""
+    stash_ref = _stash_if_dirty(gh, quiet)
+    if stash_ref is False:
+        return 1
+
     r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
                 remote=remote, token=token)
     if r.returncode == 0:
         log(f"sync: pulled origin/{branch}", quiet=quiet)
-        return 0
-    err = (r.stderr or "") + (r.stdout or "")
-    if "couldn't find remote ref" in err.lower():
-        # Remote branch doesn't exist yet — first push will create it.
-        log(f"sync: remote {branch} doesn't exist yet (will create on push)", quiet=quiet)
-        return 0
-    if "CONFLICT" in err:
-        from _conflict import package_conflict  # type: ignore
-        cm = package_conflict()
-        log(f"sync: conflict — wrote {cm}. Run /mem-sync-resolve.", quiet=quiet, err=True)
-        return 2
-    log(f"sync: pull failed: {err.strip()[:300]}", quiet=quiet, err=True)
-    return 1
+        rc = 0
+    else:
+        err = (r.stderr or "") + (r.stdout or "")
+        if "couldn't find remote ref" in err.lower():
+            # Remote branch doesn't exist yet — first push will create it.
+            log(f"sync: remote {branch} doesn't exist yet (will create on push)", quiet=quiet)
+            rc = 0
+        elif "CONFLICT" in err:
+            from _conflict import package_conflict  # type: ignore
+            cm = package_conflict()
+            log(f"sync: conflict — wrote {cm}. Run /mem-sync-resolve.", quiet=quiet, err=True)
+            rc = 2
+        else:
+            log(f"sync: pull failed: {err.strip()[:300]}", quiet=quiet, err=True)
+            rc = 1
+
+    if stash_ref:
+        _restore_stash(gh, pull_ok=(rc == 0), quiet=quiet)
+    return rc
 
 
 def push(gh: Path, branch: str, quiet: bool,
