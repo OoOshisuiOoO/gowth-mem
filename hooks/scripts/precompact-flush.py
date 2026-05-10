@@ -8,6 +8,10 @@ reserved subdirs (docs, journal, skills) hold cross-cutting registries.
 Idempotency (v2.9.2): once the LLM has flushed (writes a markdown file under the
 active workspace), a follow-up /compact within FLUSH_GRACE seconds passes silently
 so the user isn't trapped in a perpetual block.
+
+Empty-session pass-through (v2.10.1): if the transcript has fewer than
+MIN_USER_TURNS substantive user prompts, there is nothing meaningful to flush —
+pass through. Prevents trapping users who run /compact at session start.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _home import active_workspace, workspace_dir  # type: ignore
 
 FLUSH_GRACE = 300  # seconds — recent flush window
+MIN_USER_TURNS = 2  # below this, transcript has nothing substantive to flush
 
 
 REASON = """[gowth-mem:precompact-flush] HARD-BLOCK: compact incoming. Save EVERYTHING critical first.
@@ -82,9 +87,72 @@ def recently_flushed(grace: int = FLUSH_GRACE) -> bool:
     return False
 
 
+def user_turn_count(transcript_path: str) -> int:
+    """Count substantive user prompts in the transcript.
+
+    A 'user turn' is a `type: "user"` record whose `message.content` carries
+    real text (string OR a `text` part). Tool-result user records and entries
+    without text content are excluded — they do not represent user input.
+    """
+    if not transcript_path:
+        return 0
+    p = Path(transcript_path)
+    if not p.is_file():
+        return 0
+    n = 0
+    try:
+        with p.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "user":
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                if isinstance(content, str):
+                    if content.strip():
+                        n += 1
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            if (part.get("text") or "").strip():
+                                n += 1
+                                break
+    except OSError:
+        return 0
+    return n
+
+
+def read_payload() -> dict:
+    """Read the PreCompact JSON payload from stdin. Empty/invalid → {}."""
+    try:
+        raw = sys.stdin.read()
+    except Exception:
+        return {}
+    if not raw.strip():
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
 def main() -> int:
+    payload = read_payload()
+    transcript_path = payload.get("transcript_path", "") if isinstance(payload, dict) else ""
+
+    # Pass-through if transcript has nothing substantive to flush yet.
+    if user_turn_count(transcript_path) < MIN_USER_TURNS:
+        return 0
+
+    # Pass-through if the LLM just flushed (mtime heuristic).
     if recently_flushed():
-        return 0  # silent approve — recent flush detected, don't trap the user
+        return 0
+
     print(json.dumps({"decision": "block", "reason": REASON}))
     return 0
 

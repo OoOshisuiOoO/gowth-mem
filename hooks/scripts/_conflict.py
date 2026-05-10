@@ -18,10 +18,13 @@ from _home import conflict_md, gowth_home  # type: ignore
 
 
 def _git(cwd: Path, *args: str, check: bool = False) -> tuple[int, str, str]:
+    # errors="replace": some conflicted blobs (binaries, mixed-encoding text)
+    # are not valid UTF-8; lossy decode is acceptable for conflict packaging.
     r = subprocess.run(
         ["git", "-C", str(cwd), *args],
         capture_output=True,
         text=True,
+        errors="replace",
     )
     if check and r.returncode != 0:
         raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)

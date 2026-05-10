@@ -113,6 +113,40 @@ def commit_local(gh: Path, host: str, quiet: bool, message: str = "auto-sync") -
 _STASH_MSG = "auto-sync pre-pull stash"
 
 
+def _clear_stale_rebase(gh: Path, quiet: bool) -> bool:
+    """Abort a leftover rebase if `.git/rebase-merge/` or `.git/rebase-apply/`
+    is present from a previously interrupted sync.
+
+    Refuses to abort when SYNC-CONFLICT.md is present — that signals an
+    *active* conflict awaiting `/mem-sync-resolve`, not stale state.
+
+    Returns True if state is clean (or successfully cleaned), False if abort
+    failed and the repo is still mid-rebase.
+    """
+    git_dir = gh / ".git"
+    stale = (git_dir / "rebase-merge").is_dir() or (git_dir / "rebase-apply").is_dir()
+    if not stale:
+        return True
+    if conflict_md().is_file():
+        log(
+            "sync: rebase in progress with SYNC-CONFLICT.md present — "
+            "leaving intact, run /mem-sync-resolve.",
+            quiet=quiet, err=True,
+        )
+        return False
+    r = run_git(gh, "rebase", "--abort", check=False)
+    if r.returncode == 0:
+        log("sync: aborted stale rebase from prior interrupted sync", quiet=quiet)
+        return True
+    err = (r.stderr or r.stdout or "").strip()[:300]
+    log(
+        f"sync: stale rebase detected but abort failed ({err}). "
+        f"Resolve manually: cd {gh} && git rebase --abort.",
+        quiet=quiet, err=True,
+    )
+    return False
+
+
 def _stash_if_dirty(gh: Path, quiet: bool):
     """Stash uncommitted changes if dirty.
 
@@ -159,6 +193,8 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> None:
 def pull_rebase(gh: Path, branch: str, quiet: bool,
                 remote: str, token: Optional[str]) -> int:
     """Pull --rebase; auto-stash dirty tree, restore after. Returns 0/2/1."""
+    if not _clear_stale_rebase(gh, quiet):
+        return 1
     stash_ref = _stash_if_dirty(gh, quiet)
     if stash_ref is False:
         return 1
