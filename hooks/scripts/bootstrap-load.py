@@ -81,11 +81,66 @@ def _load_file(f: Path, gh: Path, budget: int) -> tuple[str, int]:
     return block, budget
 
 
+def _budget_planner_enabled(settings: dict) -> bool:
+    if not isinstance(settings, dict):
+        return False
+    r = settings.get("retrieval", {})
+    if isinstance(r, dict) and bool(r.get("use_budget_planner", False)):
+        return True
+    cb = settings.get("context_budget", {})
+    return isinstance(cb, dict) and bool(cb.get("enabled", False))
+
+
+def _load_via_budget_planner(ws: str, gh: Path, settings: dict) -> tuple[list[str], int, int, int]:
+    """Use _budget.plan_context to fill the 15k cap. Falls back gracefully on import error."""
+    try:
+        from _budget import plan_context  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        log_debug("bootstrap-load", f"budget planner import failed: {exc}")
+        return [], 0, 0, 0
+    try:
+        plan = plan_context(ws=ws, query="", budget_chars=MAX_TOTAL, settings=settings)
+    except Exception as exc:  # pragma: no cover
+        log_debug("bootstrap-load", f"budget planner failed: {exc}")
+        return [], 0, 0, 0
+    parts: list[str] = []
+    total = 0
+    loaded = 0
+    for p, snippet, _score in plan:
+        try:
+            rel = p.relative_to(gh)
+            label = f"~/.gowth-mem/{rel}"
+        except ValueError:
+            label = str(p)
+        block = f"\n=== {label} ===\n{snippet}"
+        parts.append(block)
+        total += len(snippet)
+        loaded += 1
+    return parts, total, loaded, len(plan)
+
+
 def main() -> int:
     try:
         gh = gowth_home()
         ws = active_workspace()
         today = date.today()
+        settings = read_settings()
+
+        if _budget_planner_enabled(settings):
+            parts, total, loaded, attempted = _load_via_budget_planner(ws, gh, settings)
+            if loaded > 0:
+                summary = f"\n[bootstrap: loaded {loaded}/{attempted} files via budget-planner, {total} chars / {MAX_TOTAL} cap — {DEFERRED_NOTICE}]"
+                context = f"[gowth-mem:bootstrap workspace={ws} mode=budget-planner]" + "".join(parts) + summary
+                out = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": context,
+                    }
+                }
+                print(json.dumps(out))
+                log_debug("bootstrap-load", f"budget-planner: {loaded}/{attempted} files, {total} chars")
+                return 0
+            log_debug("bootstrap-load", "budget planner returned 0 files; falling back to stable prefix")
 
         # Priority-ordered stable files (always attempt to load)
         stable: list[Path] = [
@@ -126,7 +181,6 @@ def main() -> int:
         # v3.0 mismatch nudge: settings.layout_version < 3 → prepend upgrade hint.
         nudge = ""
         try:
-            settings = read_settings()
             layout = int(settings.get("layout_version", 0) or 0)
         except Exception:
             layout = 0

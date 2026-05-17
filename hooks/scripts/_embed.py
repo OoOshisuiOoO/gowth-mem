@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Tiny embedding HTTP client (stdlib only — urllib).
+"""Embedding client — DISABLED by default in v3.3.
 
-Auto-detects which embedding API to use based on env vars:
-  OPENAI_API_KEY    → OpenAI text-embedding-3-small (1536d, supports Matryoshka cut to 512)
-  VOYAGE_API_KEY    → Voyage voyage-multilingual-2 (1024d, best for Vietnamese)
-  GEMINI_API_KEY    → Gemini gemini-embedding-001 (768d default, supports cut)
-                      (also accepts GOOGLE_API_KEY)
+v3.3 ships with **deterministic-only retrieval**: FTS5 BM25 (in ``_index.py``)
+plus char-ngram Jaccard fuzzy match (``_lexical.py``). No external LLM
+embedding API is called unless the user opts in explicitly by setting
+``GOWTH_MEM_USE_LLM_EMBED=1``.
 
-If no key is set, returns None (graceful fallback).
+When opt-in is set, the same providers as before are supported (legacy path):
+  OPENAI_API_KEY  → OpenAI text-embedding-3-small (1536d, Matryoshka cut to 512)
+  VOYAGE_API_KEY  → Voyage voyage-multilingual-2 (1024d, best for Vietnamese)
+  GEMINI_API_KEY  → Gemini gemini-embedding-001 (768d default)
+                    (also accepts GOOGLE_API_KEY)
 
-Usage as module:
-    from _embed import embed_one, detect_provider
-    vec = embed_one("query text")  # list[float] or None
-
-Usage as CLI:
-    python3 _embed.py "query text"  # prints JSON {provider, dim, vector}
+Without the opt-in, ``embed_one()`` and ``detect_provider()`` return ``None``,
+and ``_index.py`` builds an FTS5-only index. This honours the v3.3 design
+goal: no LLM API in the runtime path.
 """
 from __future__ import annotations
 
@@ -28,8 +28,17 @@ from typing import Optional
 
 DEFAULT_DIM = 512  # Matryoshka cut for OpenAI / Gemini; for Voyage use native 1024.
 
+OPT_IN_ENV = "GOWTH_MEM_USE_LLM_EMBED"
+
+
+def _llm_embed_opted_in() -> bool:
+    val = os.environ.get(OPT_IN_ENV, "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
 
 def detect_provider() -> Optional[tuple[str, str]]:
+    if not _llm_embed_opted_in():
+        return None
     if os.environ.get("OPENAI_API_KEY"):
         return ("openai", os.environ["OPENAI_API_KEY"])
     if os.environ.get("VOYAGE_API_KEY"):
@@ -41,6 +50,8 @@ def detect_provider() -> Optional[tuple[str, str]]:
 
 
 def embed_one(text: str, timeout: float = 8.0) -> Optional[list[float]]:
+    if not _llm_embed_opted_in():
+        return None
     p = detect_provider()
     if not p:
         return None

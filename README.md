@@ -2,7 +2,17 @@
 
 A Claude Code plugin for **persistent, topic-organized memory** synced across machines via your own git remote. It hooks the chat lifecycle so memory can bootstrap, recall, journal, distill, and sync itself.
 
-Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Agents, Voyager, Reflexion, Anthropic contextual retrieval, and SM-2 spaced repetition. See [`RESEARCH.md`](RESEARCH.md).
+Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Agents, Voyager, Reflexion, Anthropic contextual retrieval, SM-2 spaced repetition, **OpenClaw "dreaming" staged consolidation**, **agentmemory 4-tier taxonomy**, and **rtk pre-storage compression**. See [`RESEARCH.md`](RESEARCH.md).
+
+## What's new in v3.3
+
+v3.3 is the **deterministic-only retrieval** release. No external embedding API is called in the runtime path; recall, ranking, fuzzy match, and context planning all run on pure-stdlib Python + SQLite FTS5.
+
+- **No LLM in the vector path.** Embedding calls (`_embed.py`) are gated behind explicit opt-in `GOWTH_MEM_USE_LLM_EMBED=1`. Default: FTS5 BM25 + char-trigram Jaccard fuzzy fallback.
+- **4-tier weighted context planner** (`_budget.py`, agentmemory-inspired) — classifies every file as `working / episodic / semantic / procedural`, combines tier weight + char-ngram Jaccard relevance + Ebbinghaus 14-day recency decay, and greedy-fills a token budget. Stable prefix (shared AGENTS/secrets/tools + workspace AGENTS/handoff + today's journal) always loads first for Anthropic prompt-cache hits.
+- **rtk-style pre-storage compression** (`_compress.py`) — collapses 3+ adjacent identical lines into `<line> (×N)` and merges adjacent `key: value` runs into `key: [N items: ...]`. Idempotent. Use via `/mem-compress`.
+- **Heuristic contradiction lint** (`_contradict.py`) — scans `[ref] / [decision] / [tool]` lines for polarity mismatches (`enabled` vs `disabled`, `true` vs `false`, etc.) sharing >=3 keywords; surfaces candidate pairs but never auto-mutates. Use via `/mem-lint`.
+- **Deterministic fuzzy search** (`_lexical.py`) — char-trigram Jaccard with case/whitespace normalisation. Used as fallback when FTS5 BM25 underperforms (typos, multilingual morphology).
 
 ## What it does
 
@@ -192,6 +202,9 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-promote` | — | Promote topic to Obsidian wiki (requires claude-obsidian) |
 | `/mem-restructure` | — | Reorganize topics (move slugs, rebuild MOCs) |
 | `/mem-flush` | — | Manual pre-compact flush reminder |
+| `/mem-lint` | — | v3.3 — heuristic contradiction scan across `[ref]/[decision]/[tool]` lines (polarity-pair mismatches sharing >=3 keywords). Read-only. |
+| `/mem-compress` | — | v3.3 — rtk-style pre-storage compression (collapse 3+ identical lines + merge `key: value` runs). Deterministic, idempotent. |
+| `/mem-budget` | — | v3.3 — preview 4-tier weighted context plan for a query (working/episodic/semantic/procedural + Ebbinghaus decay) within a char budget. |
 
 ## Multi-session safety
 
@@ -217,6 +230,13 @@ If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md
 
 On-prompt recall hook was removed in v3.2 (token cost > retrieval benefit). Use direct queries via slash commands or grep/Read tools. The `index.db` (built by `/mem-reindex`) still powers `[[wikilink]]` slug resolution inside topic files.
 
+**v3.3 deterministic retrieval stack** (no LLM, pure stdlib):
+
+1. **FTS5 BM25** — primary, via `_index.py` against `index.db`.
+2. **Char-trigram Jaccard** (`_lexical.fuzzy_search`) — fallback for typos and morphology where BM25 underperforms.
+3. **Budget planner** (`_budget.plan_context`) — combines tier weight + Jaccard + Ebbinghaus recency to fill a token budget. Opt-in via `settings.json → retrieval.use_budget_planner: true`; when enabled, `SessionStart` uses it instead of the hard-coded 6-file stable prefix.
+4. **LLM embeddings** — disabled by default. Set `GOWTH_MEM_USE_LLM_EMBED=1` and provide an `OPENAI_API_KEY` / `VOYAGE_API_KEY` / `GEMINI_API_KEY` to opt in (legacy path; not on by default in v3.3).
+
 ## Token security
 
 - Best: set `GOWTH_MEM_GIT_TOKEN` in your shell environment.
@@ -231,7 +251,38 @@ Set `GOWTH_MEM_DEBUG=1` to write hook diagnostics to `~/.gowth-mem/logs/hooks.lo
 
 ## Settings
 
-`~/.gowth-mem/settings.json` controls auto-sync, active workspace behavior, topic routing, recall limits, embedding provider, and conflict resolution mode. v3.0 adds `layout_version: 3`, `topic_layout.mode: folder`, `topic_layout.reserved_subdirs` (including `research`), `recall.layer_scores` for per-tier tuning, and `migration.v3_backup_keep: 2`. See `templates/dot-gowth-mem/settings.example.v3.json` for the current schema.
+`~/.gowth-mem/settings.json` controls auto-sync, active workspace behavior, topic routing, recall limits, embedding provider, and conflict resolution mode. v3.0 adds `layout_version: 3`, `topic_layout.mode: folder`, `topic_layout.reserved_subdirs` (including `research`), `recall.layer_scores` for per-tier tuning, and `migration.v3_backup_keep: 2`. v3.3 adds four new sections:
+
+```jsonc
+{
+  "retrieval": {
+    "use_budget_planner": false,    // opt-in: bootstrap-load uses _budget instead of stable prefix
+    "fts5_top_k": 12,
+    "jaccard_min_score": 0.15,
+    "jaccard_top_k": 10,
+    "jaccard_n": 3
+  },
+  "context_budget": {
+    "enabled": false,
+    "budget_chars": 15000,
+    "head_chars_per_file": 4000,
+    "recency_half_life_days": 14,
+    "tier_weights": { "working": 1.0, "episodic": 0.7, "semantic": 0.8, "procedural": 0.6 }
+  },
+  "compression": {
+    "enabled": false,               // when true, /mem-save and journal writers pipe through _compress
+    "min_repeat": 3,
+    "max_per_group": 5
+  },
+  "contradictions": {
+    "enabled": true,
+    "min_entity_overlap": 3,
+    "scan_types": ["ref", "decision", "tool"]
+  }
+}
+```
+
+See `templates/dot-gowth-mem/settings.example.v3.json` for the full schema.
 
 ## What this is not
 
@@ -313,6 +364,9 @@ memx                    # build local index
 | `/mem-prune` | `memp` | Active DELETE outdated/superseded/duplicate |
 | `/mem-lesson` | `memL` | Append 5-field bug/lesson |
 | `/mem-doctor` | — | Self-heal install path drift (issue #52218) |
+| `/mem-lint` | — | v3.3 — quét contradiction giữa `[ref]/[decision]/[tool]` (polarity mismatch + >=3 keyword chung). Read-only. |
+| `/mem-compress` | — | v3.3 — nén rtk-style trước khi ghi (gộp 3+ dòng giống nhau + merge `key: value` chung key). Idempotent. |
+| `/mem-budget` | — | v3.3 — preview kế hoạch context 4-tier (working/episodic/semantic/procedural + Ebbinghaus decay) trong char budget. |
 
 Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-bootstrap`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp.
 
@@ -341,6 +395,13 @@ Windows không có `fcntl` → khuyến nghị single-session.
 ### Recall (tìm lại knowledge cũ)
 
 On-prompt recall hook đã bỏ ở v3.2 (token cost > benefit). Dùng slash command + grep/Read trực tiếp. `index.db` (build bằng `/mem-reindex`) vẫn còn dùng để resolve `[[wikilink]]` slug.
+
+**v3.3 — stack retrieval deterministic (không LLM):**
+
+1. **FTS5 BM25** chính (`_index.py`).
+2. **Char-trigram Jaccard** fallback (`_lexical.py`) khi BM25 yếu (typo, morphology đa ngôn ngữ).
+3. **Budget planner** (`_budget.py`) — 4-tier (working/episodic/semantic/procedural) + Ebbinghaus 14-day decay. Bật bằng `settings.json → retrieval.use_budget_planner: true`.
+4. **LLM embedding** — tắt mặc định ở v3.3. Cần `GOWTH_MEM_USE_LLM_EMBED=1` + key (OpenAI/Voyage/Gemini) để bật lại path cũ.
 
 ### Token security
 

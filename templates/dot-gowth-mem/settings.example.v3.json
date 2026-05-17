@@ -45,8 +45,40 @@
     "preserve_manual": "## Cross-links (manual)"
   },
   "embedding": {
+    "_disabled_in_v33": true,
+    "_opt_in_env": "GOWTH_MEM_USE_LLM_EMBED",
     "provider": "openai",
     "model": "text-embedding-3-small"
+  },
+  "retrieval": {
+    "use_budget_planner": false,
+    "fts5_top_k": 12,
+    "jaccard_min_score": 0.15,
+    "jaccard_top_k": 10,
+    "jaccard_n": 3
+  },
+  "context_budget": {
+    "enabled": false,
+    "budget_chars": 15000,
+    "head_chars_per_file": 4000,
+    "recency_half_life_days": 14,
+    "tier_weights": {
+      "working": 1.0,
+      "episodic": 0.7,
+      "semantic": 0.8,
+      "procedural": 0.6
+    }
+  },
+  "compression": {
+    "enabled": false,
+    "min_repeat": 3,
+    "max_per_group": 5,
+    "modes": ["journal", "aspect", "log"]
+  },
+  "contradictions": {
+    "enabled": true,
+    "min_entity_overlap": 3,
+    "scan_types": ["ref", "decision", "tool"]
   },
   "recall": {
     "max_chars_per_file": 15000,

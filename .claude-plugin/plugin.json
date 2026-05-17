@@ -1,7 +1,7 @@
 {
   "name": "gowth-mem",
-  "version": "3.2.0",
-  "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, hybrid FTS5+vector recall, SM-2 spaced resurfacing, mem0 ADD/UPDATE/DELETE/NOOP write semantics.",
+  "version": "3.3.0",
+  "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v3.3 = deterministic-only retrieval (FTS5 BM25 + char-ngram Jaccard, no external embedding API in runtime path), 4-tier token-budget context planner, rtk-style pre-storage compression, heuristic contradiction lint. Multi-session safe via fcntl locks, AI-mediated conflict resolution, SM-2 spaced resurfacing, mem0 ADD/UPDATE/DELETE/NOOP write semantics.",
   "author": {
     "name": "duynguyen",
     "url": "https://github.com/OoOshisuiOoO"
