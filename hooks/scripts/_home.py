@@ -1,12 +1,17 @@
 """Resolve the global gowth-mem root + workspace-scoped paths.
 
-v2.2 layout:
+v3.0 layout (topic-folder + dated-aspect):
   ~/.gowth-mem/
-  ├── AGENTS.md  settings.json  config.json  state.json  index.db  .locks/
+  ├── AGENTS.md  settings.json  config.json  state.json  index.db  .locks/  .backup/
   ├── shared/{_MAP.md, secrets.md, tools.md, files.md, skills/<slug>.md}
-  └── workspaces/<ws>/{workspace.json, AGENTS.md, _MAP.md, docs/, journal/, skills/, <slug>.md, <domain>/}
-       v2.3: workspace root IS the topic tree (no `topics/` wrapper). Reserved subdirs:
-       docs, journal, skills. Reserved files at root: _MAP.md, AGENTS.md, workspace.json.
+  └── workspaces/<ws>/{workspace.json, AGENTS.md, _MAP.md, docs/, journal/, skills/,
+                       <slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}}
+       v3.0: topic = FOLDER; files inside are aspects. Reserved subdirs:
+       docs, journal, skills, research. Reserved files at root: _MAP.md, AGENTS.md, workspace.json.
+       Reserved filenames INSIDE a topic folder: 00-README.md (MOC), lessons.md (ledger).
+
+Read-path is permissive: detects v3 (`<slug>/00-README.md`), v2.4 folder-note
+(`<slug>/<slug>.md`), and v2.3 flat (`<slug>.md`) layouts. Write-path is strict v3.
 
 Active-workspace resolution (first match wins):
   1. Env GOWTH_WORKSPACE=<name>
@@ -184,8 +189,17 @@ def workspace_moc(ws: str | None = None) -> Path:
 
 
 # Reserved names under a workspace dir — NOT topics, NOT scannable as topic content
-RESERVED_SUBDIRS = frozenset({"docs", "journal", "skills"})
+RESERVED_SUBDIRS = frozenset({"docs", "journal", "skills", "research"})
 RESERVED_FILES = frozenset({"_MAP.md", "AGENTS.md", "workspace.json"})
+
+# v3.0: reserved filenames INSIDE a topic folder
+TOPIC_README = "00-README.md"
+TOPIC_LESSONS = "lessons.md"
+RESERVED_TOPIC_FILES = frozenset({TOPIC_README, TOPIC_LESSONS, "_MAP.md"})
+
+# v3.0: dated-aspect filename pattern: YYYY-MM-DD-<aspect>.md
+import re as _re  # local alias to avoid shadowing in helpers below
+_DATED_ASPECT_RE = _re.compile(r"^(\d{4}-\d{2}-\d{2})-([a-z0-9][a-z0-9-]{0,59})\.md$")
 
 
 def is_reserved(name: str) -> bool:
@@ -198,42 +212,81 @@ def topics_dir(ws: str | None = None) -> Path:
     return workspace_dir(ws)
 
 
+def topic_readme(folder: Path) -> Path:
+    """v3.0: return the topic-folder MOC path: `<folder>/00-README.md`."""
+    return folder / TOPIC_README
+
+
+def topic_lessons(folder: Path) -> Path:
+    """v3.0: return the topic-folder lessons ledger path: `<folder>/lessons.md`."""
+    return folder / TOPIC_LESSONS
+
+
 def is_topic_folder(p: Path) -> bool:
-    """v2.4 Obsidian folder-note convention: a folder IS a topic if it contains
-    a markdown file with the same name as the folder (e.g. `bitcoin/bitcoin.md`).
-    Otherwise the folder is a DOMAIN (holds nested topic folders / sub-domains)."""
-    return p.is_dir() and (p / f"{p.name}.md").is_file()
+    """v3.0 (F7 fix): a folder IS a topic if it contains EITHER:
+      - `<slug>/00-README.md`        (v3 layout)
+      - `<slug>/<slug>.md`            (v2.4 folder-note legacy)
+    Otherwise the folder is a DOMAIN (holds nested topic folders / sub-domains).
+    Read-path stays permissive across partially-migrated workspaces.
+    """
+    if not p.is_dir():
+        return False
+    if (p / TOPIC_README).is_file():
+        return True
+    if (p / f"{p.name}.md").is_file():
+        return True
+    return False
 
 
 def topic_landing(folder: Path) -> Path:
-    """Return the folder-note landing path: `<folder>/<folder.name>.md`."""
-    return folder / f"{folder.name}.md"
+    """v3.0 read-path: prefer `<folder>/00-README.md`; fall back to v2.4 folder note.
+
+    Always returns the README path even if it doesn't yet exist — callers should
+    treat the result as the canonical write target after migration.
+    """
+    readme = folder / TOPIC_README
+    if readme.is_file():
+        return readme
+    legacy = folder / f"{folder.name}.md"
+    if legacy.is_file():
+        return legacy
+    return readme
 
 
 def iter_topic_landings(ws: str | None = None) -> list[Path]:
-    """v2.4: yield every topic-folder landing under workspace root (skipping reserved)."""
+    """v3.0: yield the MOC landing for each topic folder under workspace root.
+
+    Detects v3 (00-README.md) and v2.4 (<slug>/<slug>.md) topic folders.
+    Skips reserved subdirs (docs/journal/skills/research).
+    """
     root = topics_dir(ws)
     if not root.is_dir():
         return []
     out: list[Path] = []
-    for p in root.rglob("*.md"):
-        try:
-            rel = p.relative_to(root)
-        except ValueError:
+    for entry in root.iterdir():
+        if entry.name.startswith(".") or is_reserved(entry.name):
             continue
-        if rel.parts and rel.parts[0] in RESERVED_SUBDIRS:
+        if not entry.is_dir():
             continue
-        # Landing iff filename stem == parent folder name AND it's not at workspace root
-        if p.parent != root and p.stem == p.parent.name:
-            out.append(p)
+        if is_topic_folder(entry):
+            out.append(topic_landing(entry))
+        else:
+            # Domain folder (no landing) — recurse one level for lazy-nest legacy.
+            for sub in entry.rglob("*"):
+                if not sub.is_dir() or sub.name.startswith(".") or is_reserved(sub.name):
+                    continue
+                if is_topic_folder(sub):
+                    out.append(topic_landing(sub))
     return out
 
 
 def iter_topic_files(ws: str | None = None) -> list[Path]:
-    """v2.4: yield every topic .md file (landing + sub-aspect files inside topic folders)
-    plus orphan flat .md files at workspace root (backward-compat).
+    """v3.0: yield every topic .md file (00-README.md + dated aspects + lessons.md
+    inside topic folders) plus legacy fallbacks (v2.4 sub-aspects, v2.3 flat).
 
-    Skips reserved subdirs (docs/journal/skills) and reserved file names (_MAP.md etc.)."""
+    Skips reserved subdirs (docs/journal/skills/research) and reserved file names
+    (_MAP.md, AGENTS.md, workspace.json) at the workspace root level.
+    """
     root = topics_dir(ws)
     if not root.is_dir():
         return []
@@ -251,16 +304,31 @@ def iter_topic_files(ws: str | None = None) -> list[Path]:
     return out
 
 
-def slug_for_path(p: Path, ws_root: Path) -> str:
-    """v2.4: derive the canonical slug for a topic file path.
+def is_dated_aspect_filename(name: str) -> bool:
+    """True if filename matches `YYYY-MM-DD-<aspect>.md`."""
+    return bool(_DATED_ASPECT_RE.match(name))
 
-    Rules:
-      - Landing file `<dir>/<dir>.md` → slug = parent folder name (stem == parent name).
-      - Sub-aspect file `<dir>/<other>.md` → slug = `<other>` (the sub-aspect filename stem).
-      - Flat orphan `<root>/<name>.md` → slug = name (legacy v2.3 layout).
+
+def derive_aspect_slug_from_filename(name: str) -> str | None:
+    """Return the `<aspect>` portion of a dated aspect filename, or None."""
+    m = _DATED_ASPECT_RE.match(name)
+    return m.group(2) if m else None
+
+
+def slug_for_path(p: Path, ws_root: Path) -> str:
+    """v3.0: derive the canonical slug for a topic file path.
+
+    Rules (in order):
+      - File inside a topic folder (parent != ws_root):
+          - `00-README.md`                 → slug = parent folder name
+          - `lessons.md`                   → slug = parent folder name
+          - `YYYY-MM-DD-<aspect>.md`       → slug = parent folder name
+          - v2.4 folder-note `<dir>/<dir>.md` → slug = parent folder name
+          - any other sibling `<aspect>.md` → slug = parent folder name (v2.4 sub-aspect)
+      - File at workspace root `<root>/<name>.md` → slug = name (legacy v2.3 flat).
     """
-    if p.parent != ws_root and p.stem == p.parent.name:
-        return p.parent.name  # landing
+    if p.parent != ws_root:
+        return p.parent.name
     return p.stem
 
 
