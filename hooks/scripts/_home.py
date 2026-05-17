@@ -27,7 +27,11 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _atomic import atomic_write  # type: ignore
 
 SESSION_WS_FILE = ".session-workspace"
 DEFAULT_WORKSPACE = "default"
@@ -80,8 +84,7 @@ def _read_session_workspace() -> str | None:
 def write_session_workspace(name: str) -> None:
     """Persist a session-scoped workspace switch (cleared by clear_session_workspace)."""
     p = gowth_home() / SESSION_WS_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(name.strip())
+    atomic_write(p, name.strip())
 
 
 def clear_session_workspace() -> None:
