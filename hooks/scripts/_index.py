@@ -109,15 +109,15 @@ def _collect_sources() -> list[tuple[str, Path]]:
                 rel = p.relative_to(wd)
             except ValueError:
                 continue
-            if rel.parts and rel.parts[0] in ("docs", "skills"):
-                # docs/skills indexed via separate sub paths below
+            if rel.parts and rel.parts[0] in ("docs", "skills", "research"):
+                # docs/skills/research indexed via separate sub paths below
                 continue
             if rel.parts and rel.parts[0] == "journal":
                 # journal indexed as journal layer
                 continue
             out.append((ws, p))
-        # Reserved subdirs as separate layers (docs/journal/skills)
-        for sub in ("docs", "journal", "skills"):
+        # Reserved subdirs as separate layers (v3.0: docs/journal/skills/research)
+        for sub in ("docs", "journal", "skills", "research"):
             d = wd / sub
             if not d.is_dir():
                 continue
@@ -166,13 +166,22 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
 
 
 def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: bool) -> int:
-    """Refresh `slugs` from frontmatter scan. Returns count written."""
+    """Refresh `slugs` from frontmatter scan (v3.0). Returns count written.
+
+    PK is `(workspace, slug)`. For v3 topic folders, the landing is
+    `<folder>/00-README.md` (which carries the topic frontmatter). For v2.4
+    folder-notes the landing is `<folder>/<folder>.md`. Dated aspect files
+    (`YYYY-MM-DD-<aspect>.md`) and v2.4 sub-aspect files don't get their own
+    slug row — they're recall-able via FTS5/vec but the canonical slug points
+    to the parent topic folder's landing (handled by `slug_for_path`).
+    """
     if full:
         db.execute("DELETE FROM slugs")
     written = 0
     seen: set[tuple[str, str]] = set()
     for ws, path in sources:
-        # Skip MOC files and registries.
+        # Skip MOC files (workspace/registry MOCs and topic READMEs handled below
+        # via slug_for_path) and registries.
         if path.name in {"_MAP.md", "_index.md", "files.md", "secrets.md", "tools.md"}:
             continue
         # Skip per-folder lessons.md ledgers — they share the name across topic
@@ -180,11 +189,16 @@ def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: 
         # FTS5-searchable via chunks_fts; only the slugs table excludes them.
         if path.name == "lessons.md":
             continue
-        # Only frontmatter'd topic files contribute to slugs.
+        # v3.0: skip dated aspect files (YYYY-MM-DD-<aspect>.md) from slugs —
+        # they share the parent folder's slug. Recall finds them via FTS5/vec.
+        from _home import is_dated_aspect_filename  # type: ignore
+        if is_dated_aspect_filename(path.name):
+            continue
+        # Only frontmatter'd topic landings contribute to slugs.
         fm, _ = parse_file(path)
         slug = fm.get("slug")
         if not slug:
-            # v2.4: fall back to derived slug (parent folder name for landing files)
+            # v3.0/v2.4 fall back to derived slug (parent folder name for landings).
             from _home import slug_for_path, workspace_dir  # type: ignore
             try:
                 ws_root = workspace_dir(ws).resolve()

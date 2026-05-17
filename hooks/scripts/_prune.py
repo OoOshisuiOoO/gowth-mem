@@ -105,8 +105,8 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
 
 def collect_files(ws: str | None = None) -> list[Path]:
     out: list[Path] = []
-    skip_names = {"_index.md", "_MAP.md", "lessons.md"}
-    skip_subdirs = {"docs", "journal", "skills"}  # walked separately or never pruned
+    skip_names = {"_index.md", "_MAP.md", "lessons.md", "00-README.md"}
+    skip_subdirs = {"docs", "journal", "skills", "research"}
     td = topics_dir(ws)
     if td.is_dir():
         for p in td.rglob("*.md"):

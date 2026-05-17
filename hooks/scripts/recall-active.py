@@ -122,7 +122,14 @@ def line_is_temporal_invalid(line: str, today_iso: str) -> bool:
 
 
 def layer_score(p: Path) -> int:
-    """Tier score by path layout (v2.2)."""
+    """Tier score by path layout (v3.0, plan F16).
+
+    v3 inside-topic-folder scoring:
+      - `00-README.md`              → 80 (topic MOC — high-signal landing)
+      - `YYYY-MM-DD-<aspect>.md`    → 90 if dated today, else 70 (recency boost)
+      - `lessons.md`                → 75 (folder ledger)
+      - other files inside folder   → 60
+    """
     gh = gowth_home()
     try:
         rel = p.relative_to(gh)
@@ -141,6 +148,8 @@ def layer_score(p: Path) -> int:
             return 60
         if sub == "skills":
             return 40
+        if sub == "research":
+            return 65
         if sub == "journal":
             today = date.today().isoformat()
             yday = (date.today() - timedelta(days=1)).isoformat()
@@ -149,10 +158,22 @@ def layer_score(p: Path) -> int:
             if yday in p.name:
                 return 70
             return 30
-        # v2.4+: workspace root IS the topic tree. Anything not a reserved
-        # subdir is a topic file (landing, sub-aspect, lessons.md, or domain MOC).
+        # v3.0: workspace root holds topic folders. File location classifies tier.
         if sub not in RESERVED_SUBDIRS:
-            return 80
+            name = p.name
+            if name == "00-README.md":
+                return 80
+            if name == "lessons.md":
+                return 75
+            # Dated aspect: YYYY-MM-DD-<aspect>.md → 90 today, 70 older
+            from _home import is_dated_aspect_filename  # type: ignore
+            if is_dated_aspect_filename(name):
+                today_iso = date.today().isoformat()
+                return 90 if name.startswith(today_iso) else 70
+            # v2.4 folder-note legacy `<slug>/<slug>.md` or sub-aspect → 80 / 60
+            if len(parts) >= 4 and name == f"{parts[2]}.md":
+                return 80
+            return 60
     return 10
 
 

@@ -36,6 +36,7 @@ from _home import (  # type: ignore
     docs_dir,
     gowth_home,
     journal_dir,
+    read_settings,
     secrets_md,
     shared_tools_md,
     workspace_agents_md,
@@ -121,7 +122,24 @@ def main() -> int:
             return 0
 
         summary = f"\n[bootstrap: loaded {loaded}/{attempted} files, {total} chars / {MAX_TOTAL} cap — {DEFERRED_NOTICE}]"
-        context = f"[gowth-mem:bootstrap workspace={ws}]" + "".join(parts) + summary
+
+        # v3.0 mismatch nudge: settings.layout_version < 3 → prepend upgrade hint.
+        nudge = ""
+        try:
+            settings = read_settings()
+            layout = int(settings.get("layout_version", 0) or 0)
+        except Exception:
+            layout = 0
+        if layout < 3:
+            nudge = (
+                "\n=== gowth-mem v3.0 upgrade available ===\n"
+                "Your settings.json reports layout_version=" + str(layout) + " (< 3).\n"
+                "v3.0 uses topic-FOLDER + dated-aspect layout (<slug>/00-README.md + YYYY-MM-DD-<aspect>.md).\n"
+                "Run `/mem-migrate-v3` to migrate the local tree, then commit & sync.\n"
+                "Read-path stays permissive across v3/v2.4/v2.3 — but writes are strict v3.\n"
+            )
+
+        context = f"[gowth-mem:bootstrap workspace={ws}]" + nudge + "".join(parts) + summary
 
         out = {
             "hookSpecificOutput": {

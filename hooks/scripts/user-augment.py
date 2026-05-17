@@ -42,21 +42,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 INLINE_MEM_SAVE = """[auto-skill: mem-save] Intent = save. Execute inline (no /mem-save needed):
 
-Routing table (1-2 lines / entry, Source required for [ref]):
-| Episodic experience (debug, fix, lesson, surprise)  | <slug>.md (at workspace root)  - [exp] |
-| Verified semantic fact (with Source URL)            | <slug>.md (at workspace root)  - [ref] |
-| Topic-specific tool quirk                           | <slug>.md (at workspace root)  - [tool] |
-| Architectural decision                              | <slug>.md (at workspace root)  - [decision] |
-| Lesson / takeaway / pattern                         | <slug>.md (at workspace root)  - [reflection] |
+Routing table (v3.0: topic = FOLDER. 1-2 lines / entry, Source required for [ref]):
+| Episodic experience (debug, fix, lesson, surprise)  | <ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  - [exp] |
+| Verified semantic fact (with Source URL)            | <ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  - [ref] |
+| Topic-specific tool quirk                           | <ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  - [tool] |
+| Architectural decision                              | <ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  - [decision] |
+| Lesson / takeaway / pattern                         | <ws>/<slug>/lessons.md (5-field schema)        |
 | Cross-topic tool quirk                              | docs/tools.md |
-| Resource pointer (env-var name; NEVER value)        | docs/secrets.md |
+| Resource pointer (env-var name; NEVER value)        | shared/secrets.md |
 | Session state (host: prefix; current/next/blocker)  | docs/handoff.md |
 | Workflow done 2+ times                              | skills/<name>.md (use memk) |
 
-Topic routing:
-- Find existing <slug>.md (at workspace root) whose keywords overlap (≥3 common words). Append there.
-- Else create <new-slug>.md (at workspace root) from top-2 distinctive keywords (kebab-case ≤40 chars).
-- Use python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --route '<text>' to compute slug.
+Topic routing (v3.0):
+- Find existing topic folder <ws>/<slug>/ whose 00-README.md keywords overlap (≥3 common words).
+- Else create new <ws>/<new-slug>/ with 00-README.md from top-2 distinctive keywords (kebab-case ≤60 chars).
+- Append entry to TODAY's aspect file: <ws>/<slug>/YYYY-MM-DD-<aspect>.md (NEVER 00-README.md).
+- Use python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --route '<text>' to compute (slug, path).
 
 Apply mem0 ADD / UPDATE / DELETE / NOOP. Conflict with existing → drop old. Confirm path written."""
 
@@ -73,7 +74,7 @@ INLINE_MEM_REFLECT = """[auto-skill: mem-reflect] Intent = reflect/recap. Execut
 1. Read journal/*.md from last 7 days + recent workspace topic files.
 2. Score entries by importance × recency × novelty.
 3. Pick top 3 patterns (clusters of related entries).
-4. Append to the matching <slug>.md (at workspace root) as `- [reflection] ...` with:
+4. Append to the matching topic folder's today-dated aspect file `<ws>/<slug>/<YYYY-MM-DD>-reflections.md` as `- [reflection] ...` with:
    ### YYYY-MM-DD: <title>
    **Claim**: <evergreen 1-line>
    **Evidence**: <file:line refs (≥2)>
@@ -150,7 +151,7 @@ Pre-req: ~/.gowth-mem/config.json with `remote`+`branch` (use /mem-config). Toke
 Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py
 Flags: --init (first-time) | --pull-only | --push-only
 
-What syncs: AGENTS.md, settings.json, shared/*, workspaces/<ws>/{_MAP, workspace.json, docs, journal, skills, <slug>.md, <domain>/}.
+What syncs: AGENTS.md, settings.json, shared/*, workspaces/<ws>/{_MAP, workspace.json, docs, journal, skills, research, <slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}}.
 Gitignored (per-machine): config.json, state.json, index.db, .locks/.
 
 On conflict: writes ~/.gowth-mem/SYNC-CONFLICT.md and exits 2.
@@ -174,7 +175,7 @@ INLINE_MEM_MIGRATE_GLOBAL = """[auto-skill: mem-migrate-global] Intent = v1.0 pe
 1. Scan ~/Git/** (or user-provided list) for <ws>/.gowth-mem/ dirs (v1.0 layout).
 2. For each found:
    - Walk docs/exp.md, docs/ref.md, docs/tools.md lines.
-   - Use _topic.py route() to pick or create <slug>.md (at workspace root) under ~/.gowth-mem/.
+   - Use _topic.py route() to pick or create v3 topic FOLDER <ws>/<slug>/ + today-dated aspect file under ~/.gowth-mem/.
    - Append migrated lines with provenance suffix `Source: <ws>/<file>`.
    - Copy docs/handoff.md lines into ~/.gowth-mem/docs/handoff.md, prefixed `host:<ws>`.
    - Copy docs/secrets.md lines (dedup by env-var name).
@@ -188,21 +189,23 @@ INLINE_MEM_TOPIC = """[auto-skill: mem-topic] Intent = list / inspect topics. Ex
 Run: python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py --list
 Show table: slug | title | last touched.
 
-If user names a slug: open ~/.gowth-mem/<slug>.md (at workspace root) and show first 80 lines.
+If user names a slug: open ~/.gowth-mem/workspaces/<ws>/<slug>/00-README.md (v3 topic MOC) and show first 80 lines.
 If user gives content text: show what slug --route would pick.
-To regenerate _index.md: python3 _topic.py --regen-index."""
+To regenerate workspace MOC + topic READMEs: python3 _moc.py --ws <ws>."""
 
 INLINE_MEM_INSTALL = """[auto-skill: mem-install] Intent = first-time setup wizard. Execute inline:
 
-If ~/.gowth-mem/ already exists and has AGENTS.md, refuse and suggest /mem-config or /mem-sync.
+If ~/.gowth-mem/ already exists with AGENTS.md AND settings.layout_version >= 3, refuse and suggest /mem-config or /mem-sync.
+If ~/.gowth-mem/ exists with AGENTS.md AND settings.layout_version < 3, suggest /mem-migrate-v3 (with --dry-run + y/N prompt) instead of /mem-install.
 
-1. mkdir -p ~/.gowth-mem/shared/skills (v2.3 layout: shared + workspaces)
+1. mkdir -p ~/.gowth-mem/shared/skills (v3.0 layout: shared + workspaces)
 2. Copy templates from ${CLAUDE_PLUGIN_ROOT}/templates/:
    - AGENTS.md → ~/.gowth-mem/AGENTS.md
-   - dot-gowth-mem/settings.example.v2.json → ~/.gowth-mem/settings.json (rewrite version=2.3)
+   - dot-gowth-mem/settings.example.v3.json → ~/.gowth-mem/settings.json (layout_version: 3)
    - docs/secrets.md → ~/.gowth-mem/shared/secrets.md
    - docs/tools.md → ~/.gowth-mem/shared/tools.md
    Then scaffold default workspace: python3 _workspace.py create default --title "Default Fallback"
+   (creates docs/, journal/, skills/, research/ + misc/00-README.md MOC).
 3. Ask user 3 questions:
    a. Git remote URL (HTTPS preferred for token-based auth)
    b. Branch (default: main)
@@ -307,7 +310,7 @@ NL_PATTERNS: list[tuple[re.Pattern[str], str, bool]] = [
     (re.compile(r"^\s*(fix|debug|repair)\b", re.I),
      "intent=fix: root-cause first, minimal diff, verify before claiming done.", False),
     (re.compile(r"^\s*(research|find|investigate|explain)\b", re.I),
-     "intent=research: read first, no edits, cite sources, save findings under workspaces/<ws>/<slug>.md.", False),
+     "intent=research: read first, no edits, cite sources, save findings under workspaces/<ws>/<slug>/<YYYY-MM-DD>-<aspect>.md.", False),
     (re.compile(r"^\s*(plan|design|architect)\b", re.I),
      "intent=plan: produce structure, list steps, do not implement yet.", False),
 ]

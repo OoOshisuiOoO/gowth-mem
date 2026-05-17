@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""PreCompact hook (v2.3): block until critical info is flushed to topics.
+"""PreCompact hook (v3.0): block until critical info is flushed to topic folders.
 
 Routes destinations for topic-organized memory at ~/.gowth-mem/, scoped to the
-active workspace. Topic files live at workspace root (no `topics/` wrapper);
-reserved subdirs (docs, journal, skills) hold cross-cutting registries.
+active workspace. v3.0: topic = FOLDER `workspaces/<ws>/<slug>/` with
+`00-README.md` (MOC) + `YYYY-MM-DD-<aspect>.md` dated aspect files + `lessons.md`.
+Reserved subdirs at workspace root: docs, journal, skills, research.
 
 Idempotency (v2.9.2): once the LLM has flushed (writes a markdown file under the
 active workspace), a follow-up /compact within FLUSH_GRACE seconds passes silently
@@ -43,16 +44,17 @@ Before context is summarized, do this WITHOUT user prompting:
    - Cross-workspace (flat under shared/):
      - Resource pointers (env-var name only, NEVER value) → shared/secrets.md
      - System-wide tools (kubectl, frida, …) → shared/tools.md
-   - Topic content — pick or create the right topic file at workspace root:
-     - Find existing <ws>/**/<slug>.md (excluding docs/journal/skills) whose keywords overlap
-       (≥3 common words). Append there.
-     - Else create <ws>/<new-slug>.md (top-2 distinctive keywords as slug, kebab-case ≤60).
-     - Reserved names blocked: docs, journal, skills, _MAP.md, AGENTS.md, workspace.json.
+   - Topic content (v3.0: topic = FOLDER) — pick or create the right topic folder:
+     - Find existing <ws>/<slug>/ whose 00-README.md keywords overlap (≥3 common words).
+     - Else create <ws>/<new-slug>/ with 00-README.md (top-2 distinctive keywords as slug,
+       kebab-case ≤60). Reserved subdir names blocked: docs, journal, skills, research.
+     - Append entries to TODAY'S aspect file: <ws>/<slug>/YYYY-MM-DD-<aspect>.md
+       (NEVER to 00-README.md — that's the auto-regenerated MOC).
      - Episodic experience → `## [exp]` section, line `- ...`
      - Verified fact (Source REQUIRED) → `## [ref]` section
      - Tool quirk specific to this topic → `## [ref]` section
      - Architectural decision → `## [decision]` section
-     - Lesson learned → `## [exp]` section (reflection group)
+     - Lesson learned → `<ws>/<slug>/lessons.md` (5-field schema, not append to aspect)
 3. Append raw observations to <ws>/journal/<today>.md if useful.
 4. Update <ws>/docs/handoff.md so the next session can resume.
 5. After writes: refresh MOC + index:

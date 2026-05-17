@@ -13,7 +13,21 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import conflict_md  # type: ignore
+from _home import conflict_md, read_settings  # type: ignore
+
+
+def _v3_nudge() -> str:
+    """Return v3 upgrade nudge if settings.layout_version < 3, else empty."""
+    try:
+        layout = int(read_settings().get("layout_version", 0) or 0)
+    except Exception:
+        layout = 0
+    if layout >= 3:
+        return ""
+    return (
+        "[gowth-mem v3.0 upgrade] settings.layout_version=" + str(layout) + " (< 3).\n"
+        "Run `/mem-migrate-v3` to convert this tree to v3 topic-folder + dated-aspect layout.\n\n"
+    )
 
 
 def main() -> int:
@@ -28,7 +42,8 @@ def main() -> int:
 
     summary = "\n".join(head)
     msg = (
-        "[gowth-mem SYNC-CONFLICT pending]\n\n"
+        _v3_nudge()
+        + "[gowth-mem SYNC-CONFLICT pending]\n\n"
         f"~/.gowth-mem/SYNC-CONFLICT.md exists. Resolve before continuing other work.\n"
         f"Run /mem-sync-resolve to walk each conflicted file and apply the user's choice.\n\n"
         "Preview (first 30 lines):\n"
