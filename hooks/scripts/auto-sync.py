@@ -10,15 +10,13 @@ Modes:
 If ~/.gowth-mem/config.json is missing 'remote', script exits 0 silently in
 hook contexts (user hasn't run /mem-install yet — don't spam logs).
 
-All git ops run under file_lock('sync') with default 30s timeout. If a
+All git ops run under file_lock('sync') with a short 5s timeout. If a
 parallel session holds the lock longer, this run skips with a warning rather
 than blocking the hook.
 """
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import os
 import socket
 import subprocess
@@ -27,44 +25,10 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _debug import log_debug  # type: ignore
-from _home import config_path, conflict_md, gowth_home  # type: ignore
+from _git import auth_url, git_cmd, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
+from _home import conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
 
-
-def git_cmd(remote: str, token: Optional[str], *args: str) -> list[str]:
-    cmd = ["git"]
-    if token and remote.startswith("https://"):
-        header = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        cmd.extend(["-c", f"http.{remote}.extraHeader=AUTHORIZATION: basic {header}"])
-    cmd.extend(args)
-    return cmd
-
-
-def run_git(cwd: Path, *args: str, check: bool = True,
-            remote: str = "", token: Optional[str] = None) -> subprocess.CompletedProcess:
-    r = subprocess.run(
-        git_cmd(remote, token, "-C", str(cwd), *args),
-        capture_output=True, text=True,
-    )
-    if check and r.returncode != 0:
-        raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
-    return r
-
-
-def auth_url(remote: str, token: Optional[str]) -> str:
-    return remote
-
-
-def load_config() -> dict:
-    p = config_path()
-    if not p.is_file():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception as e:
-        log_debug("auto-sync", f"load_config failed: {e}")
-        return {}
 
 
 def log(msg: str, *, quiet: bool, err: bool = False) -> None:
