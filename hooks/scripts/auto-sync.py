@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _debug import log_debug  # type: ignore
 from _home import config_path, conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
 
@@ -61,7 +62,8 @@ def load_config() -> dict:
         return {}
     try:
         return json.loads(p.read_text())
-    except Exception:
+    except Exception as e:
+        log_debug("auto-sync", f"load_config failed: {e}")
         return {}
 
 
@@ -266,9 +268,10 @@ def main() -> int:
         if not (gh / ".git").is_dir():
             return 0
         try:
-            with file_lock("sync", timeout=10.0):
+            with file_lock("sync", timeout=5.0):
                 commit_local(gh, host, quiet, message="pre-compact snapshot")
-        except TimeoutError:
+        except TimeoutError as e:
+            log_debug("auto-sync", f"commit-only lock timeout: {e}")
             log("sync: commit skipped — sync lock held", quiet=quiet, err=True)
             return 0
         return 0
@@ -277,8 +280,11 @@ def main() -> int:
         log("sync: no remote configured — run /mem-config or /mem-install", quiet=quiet)
         return 0
 
+    # SessionStart pull-only path must never block > ~8s. Full sync is more
+    # tolerant but still capped well below the old 30s.
+    lock_timeout = 5.0 if args.pull_only else 5.0
     try:
-        with file_lock("sync", timeout=30.0):
+        with file_lock("sync", timeout=lock_timeout):
             if not ensure_repo(gh, remote, branch, token, quiet):
                 return 1
 
@@ -291,7 +297,8 @@ def main() -> int:
             if rc != 0:
                 return rc
             return push(gh, branch, quiet, remote, token)
-    except TimeoutError:
+    except TimeoutError as e:
+        log_debug("auto-sync", f"sync lock timeout (pull_only={args.pull_only}): {e}")
         log("sync: skipped — another session holds the sync lock", quiet=quiet, err=True)
         return 0
 

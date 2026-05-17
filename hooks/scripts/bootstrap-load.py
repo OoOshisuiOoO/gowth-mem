@@ -1,36 +1,35 @@
 #!/usr/bin/env python3
-"""SessionStart hook (v2.7): load global ~/.gowth-mem/ memory, scoped to the
-active workspace.
+"""SessionStart hook (v2.10.2): aggressive-cap bootstrap — 15k char hard limit.
 
-Files loaded (in order):
-  1. shared/AGENTS.md                         — global rules (cross-workspace)
-  2. shared/files.md                          — top-level tree
-  3. shared/secrets.md                        — env-var pointers
-  4. shared/tools.md                          — system-wide tools
-  5. workspaces/<ws>/AGENTS.md                — workspace-specific rules (delta)
-  6. workspaces/<ws>/_MAP.md                  — root topic MOC
-  7. workspaces/<ws>/docs/handoff.md          — session state
-  8. workspaces/<ws>/docs/{exp,ref,tools,files}.md
-  9. top-3 most-recently-touched workspace topic files (frontmatter.last_touched desc, mtime fallback)
-  10. workspaces/<ws>/journal/<today>.md, <yesterday>.md
-  11. shared/skills/_index + workspaces/<ws>/skills/_index   — synthesized
+Stable prefix (always loaded, helps Anthropic prompt cache):
+  1. shared/AGENTS.md                    — global rules
+  2. shared/secrets.md                   — env-var pointers (small, stable)
+  3. shared/tools.md                     — system-wide tools (small, stable)
+  4. workspaces/<ws>/AGENTS.md           — workspace-specific rules (delta)
+  5. workspaces/<ws>/docs/handoff.md     — current session state
 
-Caps: 12k char/file, 60k total. Skips blanks, marks truncations.
+Conditional (today only):
+  6. workspaces/<ws>/journal/<today>.md  — loaded ONLY if it already exists
 
-NOTE: `agents_md()` returns `shared/AGENTS.md` in v2.7 (falls back to legacy
-`~/.gowth-mem/AGENTS.md` only during migration). `workspace_agents_md(ws)`
-returns the per-workspace delta file.
+Deferred to recall-active.py at query time (NOT loaded here):
+  - workspaces/<ws>/docs/{exp,ref,tools,files}.md
+  - topic files (workspace root subdirs)
+  - skills/ content
+  - shared/files.md, _MAP.md
+  - yesterday's journal and older
+
+Caps: 15k total. Per-file truncation with [truncated: N chars omitted] marker.
+Final line: [bootstrap: loaded N/M files, X chars / Y cap]
 """
 from __future__ import annotations
 
 import json
-import re
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _frontmatter import parse_file  # type: ignore
+from _debug import log_debug  # type: ignore
 from _home import (  # type: ignore
     active_workspace,
     agents_md,
@@ -38,147 +37,105 @@ from _home import (  # type: ignore
     gowth_home,
     journal_dir,
     secrets_md,
-    shared_dir,
-    shared_files_md,
-    shared_skills_dir,
     shared_tools_md,
-    skills_dir,
-    topics_dir,
     workspace_agents_md,
-    workspace_dir,
-    workspace_moc,
 )
 
-MAX_PER_FILE = 12_000
-MAX_TOTAL = 60_000
-SKILL_INDEX_MAX_CHARS = 2_000
-RECENT_TOPICS = 3
+MAX_TOTAL = 15_000
+DEFERRED_NOTICE = (
+    "(docs/exp, docs/ref, docs/tools, docs/files, topic files, and skills "
+    "are loaded on-demand via recall)"
+)
 
 
-def _build_skills_index(d: Path) -> str:
-    if not d.is_dir():
-        return ""
-    entries: list[str] = []
-    for f in sorted(d.glob("*.md")):
-        if f.name == "_index.md":
-            continue
-        try:
-            text = f.read_text(errors="ignore")
-        except Exception:
-            continue
-        name = f.stem
-        desc = ""
-        m = re.search(r"^---\s*$(.*?)^---\s*$", text, re.DOTALL | re.MULTILINE)
-        if m:
-            front = m.group(1)
-            dm = re.search(r"^description:\s*(.+)$", front, re.MULTILINE)
-            if dm:
-                desc = dm.group(1).strip().strip("\"'")
-            nm = re.search(r"^name:\s*(.+)$", front, re.MULTILINE)
-            if nm:
-                name = nm.group(1).strip().strip("\"'")
-        entries.append(f"- **{name}** — {desc}" if desc else f"- **{name}**")
-    if not entries:
-        return ""
-    return "\n".join(entries)[:SKILL_INDEX_MAX_CHARS]
+def _load_file(f: Path, gh: Path, budget: int) -> tuple[str, int]:
+    """Read *f* and return (formatted_block, chars_used).
 
+    If the file's content exceeds *budget*, truncate and append a marker.
+    Returns ("", 0) for missing / empty / unreadable files.
+    """
+    if not f.is_file():
+        return "", 0
+    try:
+        raw = f.read_text(errors="ignore")
+    except Exception as exc:
+        log_debug("bootstrap-load", f"read error {f}: {exc}")
+        return "", 0
+    if not raw.strip():
+        return "", 0
 
-def _recent_topic_files(ws: str) -> list[Path]:
-    from _home import iter_topic_files  # type: ignore
-    files = iter_topic_files(ws)
+    try:
+        rel = f.relative_to(gh)
+        label = f"~/.gowth-mem/{rel}"
+    except ValueError:
+        label = str(f)
 
-    def sort_key(p: Path):
-        fm, _ = parse_file(p)
-        last = fm.get("last_touched") or ""
-        return (last, p.stat().st_mtime)
+    if len(raw) <= budget:
+        block = f"\n=== {label} ===\n{raw}"
+        return block, len(raw)
 
-    files.sort(key=sort_key, reverse=True)
-    return files[:RECENT_TOPICS]
+    omitted = len(raw) - budget
+    chunk = raw[:budget]
+    block = f"\n=== {label} ===\n{chunk}\n[truncated: {omitted} chars omitted]"
+    return block, budget
 
 
 def main() -> int:
-    gh = gowth_home()
-    ws = active_workspace()
-    today = date.today()
-    yesterday = today - timedelta(days=1)
+    try:
+        gh = gowth_home()
+        ws = active_workspace()
+        today = date.today()
 
-    candidates: list[Path] = [
-        agents_md(),
-        shared_files_md(),
-        secrets_md(),
-        shared_tools_md(),
-        workspace_agents_md(ws),
-        workspace_moc(ws),
-        docs_dir(ws) / "handoff.md",
-        docs_dir(ws) / "exp.md",
-        docs_dir(ws) / "ref.md",
-        docs_dir(ws) / "tools.md",
-        docs_dir(ws) / "files.md",
-    ]
-    candidates.extend(_recent_topic_files(ws))
-    candidates.extend([
-        journal_dir(ws) / f"{today.isoformat()}.md",
-        journal_dir(ws) / f"{yesterday.isoformat()}.md",
-    ])
+        # Priority-ordered stable files (always attempt to load)
+        stable: list[Path] = [
+            agents_md(),
+            secrets_md(),
+            shared_tools_md(),
+            workspace_agents_md(ws),
+            docs_dir(ws) / "handoff.md",
+        ]
 
-    parts: list[str] = []
-    total = 0
-    stop = False
-    for f in candidates:
-        if stop:
-            break
-        if not f.is_file():
-            continue
-        try:
-            raw = f.read_text(errors="ignore")
-        except Exception:
-            continue
-        if not raw.strip():
-            continue
-        truncated_file = len(raw) > MAX_PER_FILE
-        chunk = raw[:MAX_PER_FILE]
-        room = MAX_TOTAL - total
-        if room <= 200:
-            break
-        truncated_total = False
-        if len(chunk) > room:
-            chunk = chunk[:room]
-            truncated_total = True
-            stop = True
-        try:
-            rel = f.relative_to(gh)
-            label = f"~/.gowth-mem/{rel}"
-        except ValueError:
-            label = str(f)
-        marker = f"\n[truncated, see {label}]" if (truncated_file or truncated_total) else ""
-        parts.append(f"\n=== {label} ===\n{chunk}{marker}")
-        total += len(chunk)
+        # Conditional: today's journal only if it already exists
+        today_journal = journal_dir(ws) / f"{today.isoformat()}.md"
+        if today_journal.is_file():
+            stable.append(today_journal)
 
-    # Skills indexes (shared first, then workspace override) — honor cap from prior loop
-    if not stop:
-        for label, idx_dir in (
-            ("shared/skills/", shared_skills_dir()),
-            (f"workspaces/{ws}/skills/", skills_dir(ws)),
-        ):
-            text = _build_skills_index(idx_dir)
-            if not text:
-                continue
-            if total + len(text) + 100 >= MAX_TOTAL:
+        parts: list[str] = []
+        total = 0
+        loaded = 0
+        attempted = len(stable)
+
+        for f in stable:
+            room = MAX_TOTAL - total
+            if room <= 200:
+                log_debug("bootstrap-load", f"budget exhausted at {total}/{MAX_TOTAL}, stopping")
                 break
-            parts.append(f"\n=== ~/.gowth-mem/{label} (index) ===\n{text}")
-            total += len(text)
+            block, used = _load_file(f, gh, room)
+            if not block:
+                continue
+            parts.append(block)
+            total += used
+            loaded += 1
 
-    if not parts:
+        if not parts:
+            return 0
+
+        summary = f"\n[bootstrap: loaded {loaded}/{attempted} files, {total} chars / {MAX_TOTAL} cap — {DEFERRED_NOTICE}]"
+        context = f"[gowth-mem:bootstrap workspace={ws}]" + "".join(parts) + summary
+
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            }
+        }
+        print(json.dumps(out))
+        log_debug("bootstrap-load", f"done: {loaded}/{attempted} files, {total} chars")
         return 0
 
-    out = {
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": f"[gowth-mem:bootstrap workspace={ws}]" + "".join(parts),
-        }
-    }
-    print(json.dumps(out))
-    return 0
+    except Exception as exc:
+        log_debug("bootstrap-load", f"unhandled error: {exc}")
+        return 0
 
 
 if __name__ == "__main__":

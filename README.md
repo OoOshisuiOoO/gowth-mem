@@ -214,6 +214,141 @@ Set `GOWTH_MEM_DEBUG=1` to write hook diagnostics to `~/.gowth-mem/logs/hooks.lo
 - Not a Windows-first multi-session system.
 - Not a replacement for project-local docs or tests.
 
+---
+
+## 🇻🇳 Tiếng Việt
+
+Plugin Claude Code cho **bộ nhớ bền vững, tổ chức theo topic**, đồng bộ qua git remote của bạn giữa nhiều máy. State nằm ở `~/.gowth-mem/` — chia thành `shared/` (kiến thức chung) và `workspaces/<ws>/` (kiến thức theo workspace).
+
+### Vì sao có v2.0
+
+State v1.0 nằm ở `<workspace>/.gowth-mem/` — silo theo project. v2.0 trả lời 3 vấn đề: 1 thư mục `~/.gowth-mem/` toàn cục, sắp xếp theo topic, an toàn khi chạy song song, tự động pull/push quanh `/compact`, AI giúp resolve conflict. Từ v2.7, layout chia `shared/` (cross-workspace) + `workspaces/<ws>/` (per-workspace).
+
+### Cài đặt nhanh
+
+```text
+/plugin marketplace add OoOshisuiOoO/gowth-mem
+/plugin install gowth-mem@gowth-mem
+```
+
+Restart Claude Code, rồi:
+
+```text
+/mem-install     wizard cài đặt: tạo ~/.gowth-mem, hỏi remote+branch+token, push initial
+memx             build search index
+```
+
+**Lưu ý SSH**: Claude Code clone qua SSH mặc định. Nếu chưa setup SSH key cho GitHub, fix bằng:
+
+```bash
+git config --global url."https://github.com/".insteadOf git@github.com:
+```
+
+Hoặc clone thủ công: `git clone https://github.com/OoOshisuiOoO/gowth-mem ~/.claude/plugins/gowth-mem`.
+
+### Setup máy thứ 2
+
+```bash
+git clone <REMOTE-URL> ~/.gowth-mem
+/mem-config             # set remote+token (config.json gitignore nên không có trong clone)
+memx                    # build local index
+```
+
+### Hook (chạy tự động — không cần gõ command)
+
+| Event | Hook | Làm gì |
+|---|---|---|
+| SessionStart | `bootstrap-load.py` | Inject shared+workspace rules, docs/handoff, top topic gần đây, journal hôm nay (cap 15k tổng) |
+| SessionStart | `auto-sync.py --pull-only` | Rebase remote → local, không push |
+| SessionStart | `system-augment.py` | cwd, git, OS, host, datetime |
+| PreCompact | `precompact-flush.py` | **HARD-BLOCK** distill journal → topics trước khi compact |
+| PreCompact | `auto-sync.py --commit-only` | Commit local không network |
+| PostCompact | `auto-sync.py --pull-rebase-push` | Sync đầy đủ; conflict → `SYNC-CONFLICT.md` |
+| UserPromptSubmit | `conflict-detect.py` | Nhắc chạy `/mem-sync-resolve` khi có conflict |
+| UserPromptSubmit | `recall-active.py` | Hybrid FTS5/vector/grep recall, MMR, SRS, wikilink follow |
+| UserPromptSubmit | `user-augment.py` | Inject rules + shortcut intent |
+| Stop | `auto-journal.py` | Mỗi 10 turn: BLOCK với hướng dẫn auto-distill + active prune |
+
+### Slash command & shortcut
+
+| Command | Shortcut | Mục đích |
+|---|---|---|
+| `/mem-install` | `memI` | Wizard cài lần đầu |
+| `/mem-config` | `memg` | Đổi remote / branch / token |
+| `/mem-sync` | `memy` | Sync thủ công |
+| `/mem-sync-resolve` | `memC` | AI giải conflict |
+| `/mem-migrate-global` | `memm` | Import v1.0 per-workspace → v2.x global |
+| `/mem-topic` | `memT` | List / inspect / route topic |
+| `/mem-save` | `mems` | Lưu entry vào topic |
+| `/mem-distill` | `memd` | Journal → topics |
+| `/mem-reflect` | `memr` | Sinh reflection |
+| `/mem-skillify` | `memk` | Extract workflow tái dùng |
+| `/mem-bootstrap` | `memb` | 3 dòng: doing / next / blocker |
+| `/mem-hyde-recall` | `memh` | HyDE retrieval cho conceptual query |
+| `/mem-journal` | `memj` | Mở journal hôm nay |
+| `/mem-reindex` | `memx` | Rebuild SQLite FTS5+vec |
+| `/mem-cost` | `memc` | Estimate token footprint của bootstrap |
+| `/mem-prune` | `memp` | Active DELETE outdated/superseded/duplicate |
+| `/mem-lesson` | `memL` | Append 5-field bug/lesson |
+| `/mem-doctor` | — | Self-heal install path drift (issue #52218) |
+
+Shortcut match ở **đầu prompt**:
+
+```
+mems quyết định dùng EMA cross 9/21
+memb
+memh làm sao plugin install hooks?
+```
+
+### 7-type schema (line-level prefix trong topic file)
+
+```
+- [exp]         debug / fix / lesson
+- [ref]         fact đã verify (Source: BẮT BUỘC)
+- [tool]        tool quirk theo topic
+- [decision]    architectural choice + lý do
+- [reflection]  pattern / takeaway
+- [skill-ref]   pointer tới skills/<slug>.md
+- [secret-ref]  pointer tới docs/secrets.md (env-var name)
+```
+
+### Multi-session (chạy song song)
+
+Plugin bảo vệ shared state bằng:
+
+1. **`fcntl.flock`** advisory locks ở `~/.gowth-mem/.locks/` (sync 30s, state 5s).
+2. **Atomic write** qua `_atomic.atomic_write` (tempfile + `os.replace`).
+3. **SQLite WAL mode** + `busy_timeout=5000` cho `index.db`.
+
+Windows không có `fcntl` → khuyến nghị single-session.
+
+### Recall (tìm lại knowledge cũ)
+
+Mỗi UserPrompt → `recall-active.py`:
+
+1. Scope default: active workspace + `shared/`.
+2. Có `index.db` → hybrid FTS5 BM25 + sqlite-vec (optional).
+3. Không có → grep workspace + shared markdown.
+4. Skip `(superseded)` + `valid_until:` đã hết hạn.
+5. MMR diversity, wikilink follow 1 hop, SRS resurfacing (~25% prob, ≥7 days unseen).
+
+### Token security
+
+- **Tốt nhất**: `export GOWTH_MEM_GIT_TOKEN=ghp_xxxx` trong shell rc.
+- OK: `config.json["token"]` (gitignore, plaintext on disk).
+- KHÔNG: commit token vào file synced.
+- `shared/secrets.md` chỉ POINTER (env-var name + cách lấy) — không bao giờ ghi giá trị thật.
+
+### Troubleshooting
+
+| Triệu chứng | Cách fix |
+|---|---|
+| `/mem-install` báo "already initialized" | Đã cài rồi. Dùng `/mem-config`, `/mem-sync`, `/mem-migrate-global` |
+| Recall không tìm thấy entry vừa lưu | Chạy `memx` rebuild index. Vẫn không thấy → `_topic.py --list` xem entry vào file nào |
+| `SYNC-CONFLICT.md` xuất hiện hoài | Chạy `/mem-sync-resolve` |
+| Push bị reject | Token sai scope (cần `repo`). Check `~/.gowth-mem/config.json` + `echo $GOWTH_MEM_GIT_TOKEN` |
+| Plugin im lặng sau update | Issue Claude Code #52218 — chạy `/mem-doctor` (hoặc setup self-heal hook bên trên) |
+
 ## License
 
 MIT

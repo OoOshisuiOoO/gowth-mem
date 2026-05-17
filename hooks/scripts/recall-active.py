@@ -39,6 +39,7 @@ try:
 except ImportError:
     HAS_EMBED = False
 from _atomic import atomic_write  # type: ignore
+from _debug import log_debug  # type: ignore
 from _home import (  # type: ignore
     RESERVED_SUBDIRS,
     active_workspace,
@@ -53,6 +54,11 @@ from _home import (  # type: ignore
 )
 from _lock import file_lock  # type: ignore
 from _wikilink import resolve as wikilink_resolve  # type: ignore
+
+# Skip the synchronous embedding call inside UserPromptSubmit by default —
+# `embed_one()` can block up to ~8s per request. BM25 over FTS5 covers most
+# queries. Re-enable with GOWTH_MEM_EMBED_IN_HOOK=1 for live vector recall.
+EMBED_IN_HOOK = os.environ.get("GOWTH_MEM_EMBED_IN_HOOK", "0") == "1"
 
 MAX_KEYWORDS = 8
 MAX_FILES = 3
@@ -206,8 +212,8 @@ def save_srs_state(state: dict) -> None:
     try:
         gowth_home().mkdir(parents=True, exist_ok=True)
         atomic_write(state_path(), json.dumps(state, indent=2))
-    except Exception:
-        pass
+    except Exception as e:
+        log_debug("recall-active", f"save_srs failed: {e}")
 
 
 def serialize_vec(vec: list[float]) -> bytes:
@@ -254,7 +260,7 @@ def index_recall(prompt: str, kws: list[str], allowed_ws: list[str] | None
         ).fetchall()
 
         vec_rows: list[tuple] = []
-        if HAS_VEC and HAS_EMBED:
+        if HAS_VEC and HAS_EMBED and EMBED_IN_HOOK:
             try:
                 db.execute("SELECT 1 FROM chunks_vec LIMIT 1")
                 sqlite_vec.load(db)  # type: ignore
@@ -267,7 +273,8 @@ def index_recall(prompt: str, kws: list[str], allowed_ws: list[str] | None
                         "ORDER BY distance",
                         (serialize_vec(qvec), INDEX_TOP_K),
                     ).fetchall()
-            except (sqlite3.OperationalError, AttributeError):
+            except (sqlite3.OperationalError, AttributeError) as e:
+                log_debug("recall-active", f"vec query failed: {e}")
                 vec_rows = []
 
         scores: dict[int, float] = {}
@@ -430,7 +437,7 @@ def main() -> int:
     raw_hits: list[tuple[Path, list[tuple[int, str, str]], int]] = []
 
     if index_results is not None and len(index_results) > 0:
-        backend_label = "index" + ("+vec" if HAS_VEC and HAS_EMBED else "+fts5")
+        backend_label = "index" + ("+vec" if HAS_VEC and HAS_EMBED and EMBED_IN_HOOK else "+fts5")
         per_file: dict[str, list[tuple[int, str, str]]] = {}
         for path, heading, content in index_results:
             for idx, ln in enumerate(content.splitlines()):
@@ -527,7 +534,7 @@ def main() -> int:
             parts.append(f"{prefix}{line}")
 
     try:
-        with file_lock("state", timeout=5.0):
+        with file_lock("state", timeout=2.0):
             state = load_srs_state()
             now = time.time()
             files_meta = state.setdefault("files", {})
@@ -557,8 +564,8 @@ def main() -> int:
                     days.append(today_str)
                 rec["days_seen"] = days[-30:]
             save_srs_state(state)
-    except TimeoutError:
-        pass
+    except TimeoutError as e:
+        log_debug("recall-active", f"state lock timeout: {e}")
 
     out = {
         "hookSpecificOutput": {
