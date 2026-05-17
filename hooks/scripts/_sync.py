@@ -14,8 +14,6 @@ User then runs /mem-sync-resolve.
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import os
 import socket
 import subprocess
@@ -24,49 +22,18 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import config_path, conflict_md, gowth_home  # type: ignore
+from _atomic import atomic_write  # type: ignore
+from _git import auth_url, git_cmd, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
+from _home import conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
-
-
-def git_cmd(remote: str, token: Optional[str], *args: str) -> list[str]:
-    cmd = ["git"]
-    if token and remote.startswith("https://"):
-        header = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        cmd.extend(["-c", f"http.{remote}.extraHeader=AUTHORIZATION: basic {header}"])
-    cmd.extend(args)
-    return cmd
-
-
-def run_git(cwd: Path, *args: str, check: bool = True,
-            remote: str = "", token: Optional[str] = None) -> subprocess.CompletedProcess:
-    r = subprocess.run(
-        git_cmd(remote, token, "-C", str(cwd), *args),
-        capture_output=True, text=True,
-    )
-    if check and r.returncode != 0:
-        raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
-    return r
-
-
-def auth_url(remote: str, token: Optional[str]) -> str:
-    return remote
-
-
-def load_config(gh: Path) -> dict:
-    p = config_path()
-    if not p.is_file():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return {}
 
 
 def write_default_gitignore(gh: Path) -> None:
     gi = gh / ".gitignore"
     if gi.is_file():
         return
-    gi.write_text(
+    atomic_write(
+        gi,
         "# ~/.gowth-mem internal — gitignored (per-machine)\n"
         "config.json\n"
         "state.json\n"
@@ -76,7 +43,7 @@ def write_default_gitignore(gh: Path) -> None:
         ".locks/\n"
         "__pycache__/\n"
         "*.pyc\n"
-        "SYNC-CONFLICT.md\n"
+        "SYNC-CONFLICT.md\n",
     )
 
 
@@ -96,7 +63,7 @@ def main() -> int:
         print("ERROR: SYNC-CONFLICT.md present. Run /mem-sync-resolve first.", file=sys.stderr)
         return 2
 
-    config = load_config(gh)
+    config = load_config()
     remote = config.get("remote")
     branch = config.get("branch", "main")
     token = os.environ.get("GOWTH_MEM_GIT_TOKEN") or config.get("token")
