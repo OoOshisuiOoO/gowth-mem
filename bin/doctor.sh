@@ -30,6 +30,11 @@ PLUGIN="gowth-mem"
 QUIET=0
 DRY=0
 PULL=0
+# Exit code semantics for env-validation failures (accumulated, highest wins):
+#   1 = gowth-mem home missing (needs /mem-install)
+#   2 = python3 missing or too old
+#   3 = git missing
+ENV_EXIT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -52,6 +57,50 @@ KEY="${PLUGIN}@${MARKET}"
 log()  { [ "$QUIET" -eq 0 ] && echo "[doctor:${KEY}] $*" >&2 || true; }
 say()  { echo "[doctor:${KEY}] $*" >&2; }
 warn() { echo "[doctor:${KEY}] WARN: $*" >&2; }
+
+# ─── env validation ──────────────────────────────────────────────────────
+# 1. gowth-mem home directory
+GOWTH_HOME="${GOWTH_MEM_HOME:-${HOME}/.gowth-mem}"
+if [ ! -d "$GOWTH_HOME" ]; then
+  warn "gowth-mem home not found: $GOWTH_HOME"
+  warn "  → Run /mem-install to create it."
+  ENV_EXIT=1
+else
+  log "gowth-mem home: $GOWTH_HOME ✓"
+fi
+
+# 2. Python 3.9+
+if ! command -v python3 >/dev/null 2>&1; then
+  warn "python3 not found on PATH"
+  warn "  → Install Python 3.9+ (https://python.org/downloads) and ensure it is on PATH."
+  [ "$ENV_EXIT" -lt 2 ] && ENV_EXIT=2
+else
+  PY_VER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "unknown")"
+  PY_MAJOR="$(python3 -c 'import sys; print(sys.version_info[0])' 2>/dev/null || echo "0")"
+  PY_MINOR="$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null || echo "0")"
+  if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; }; then
+    warn "python3 found but version $PY_VER is below the required 3.9"
+    warn "  → Upgrade to Python 3.9+ (https://python.org/downloads)."
+    [ "$ENV_EXIT" -lt 2 ] && ENV_EXIT=2
+  else
+    log "python3: $PY_VER ✓"
+  fi
+fi
+
+# 3. git
+if ! command -v git >/dev/null 2>&1; then
+  warn "git not found on PATH"
+  warn "  → Install git (https://git-scm.com/downloads)."
+  [ "$ENV_EXIT" -lt 3 ] && ENV_EXIT=3
+else
+  GIT_VER="$(git --version 2>/dev/null | awk '{print $3}')"
+  log "git: ${GIT_VER:-unknown} ✓"
+fi
+
+# Surface env failures before plugin-registry checks
+if [ "$ENV_EXIT" -ne 0 ]; then
+  exit "$ENV_EXIT"
+fi
 
 # ─── preflight (silent unless something is genuinely wrong) ─────────────
 [ -f "$INSTALLED" ] || exit 0
