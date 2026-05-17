@@ -15,12 +15,14 @@ Switch: `/mem-workspace <name>`.
 
 ## 3. Bootstrap (SessionStart)
 
-1. **Global**: `shared/AGENTS.md` → `shared/{files,secrets,tools}.md`
-2. **Workspace**: `<ws>/AGENTS.md` → `<ws>/_MAP.md` → `<ws>/docs/handoff.md` → `<ws>/docs/{exp,ref,tools,files}.md` → top-3 topics → `<ws>/journal/{today,yesterday}.md` → `<ws>/skills/_index`
+1. **Global**: `shared/AGENTS.md` → `shared/{files,secrets,tools}.md`.
+2. **Workspace**: `workspaces/<ws>/AGENTS.md` (override) → `<ws>/_MAP.md` → `<ws>/docs/handoff.md` → `<ws>/docs/{exp,ref,tools,files}.md` → top-3 topic `00-README.md` (by `frontmatter.last_touched`) → `<ws>/journal/{today,yesterday}.md` → `<ws>/skills/_index`.
+
+v3 nudge: if `settings.layout_version < 3`, SessionStart prepends an upgrade hint pointing at `/mem-migrate-v3`.
 
 Output: **workspace=<ws> / đang làm gì / step kế / blocker**.
 
-## 4. Layout
+## 4. Layout (v3.0 — topic folder + dated aspect)
 
 ```
 ~/.gowth-mem/
@@ -28,47 +30,97 @@ Output: **workspace=<ws> / đang làm gì / step kế / blocker**.
 │   ├── AGENTS.md  _MAP.md  files.md  secrets.md  tools.md
 │   └── skills/<slug>.md
 └── workspaces/<ws>/
-    ├── AGENTS.md  workspace.json  _MAP.md
-    ├── docs/                 handoff/exp/ref/tools/files
-    ├── journal/<date>.md
-    ├── skills/<slug>.md
-    ├── <slug>/               topic folder (Obsidian folder-note)
-    │   ├── <slug>.md         landing page
-    │   ├── <aspect>.md       sub-aspect
-    │   └── lessons.md        folder ledger (§6)
-    └── <domain>/_MAP.md      domain grouping (no <domain>.md)
+    ├── AGENTS.md             workspace-specific rules (slim)
+    ├── workspace.json  _MAP.md
+    ├── docs/                 RESERVED — handoff/exp/ref/tools/files
+    ├── journal/<date>.md     RESERVED
+    ├── skills/<slug>.md      RESERVED
+    ├── research/             RESERVED — long-form research output (new in v3)
+    ├── <slug>/               ★ TOPIC FOLDER (v3)
+    │   ├── 00-README.md      ★ MOC — TL;DR + Aspects (auto) + Cross-links (manual)
+    │   ├── YYYY-MM-DD-<aspect>.md   ★ dated aspect — multiple per topic per day
+    │   └── lessons.md        ★ folder ledger (5-field schema)
+    └── <domain>/             DOMAIN folder (no <domain>/<domain>.md)
+        ├── _MAP.md
+        └── <sub>/00-README.md   nested topic (≤3 levels)
 ```
 
-Reserved names: `docs`, `journal`, `skills`, `_MAP.md`, `AGENTS.md`, `workspace.json`.
+`[[<slug>]]` resolves to `<somewhere>/<slug>/00-README.md` (v3), falling back to
+v2.4 `<slug>/<slug>.md` and v2.3 flat `<slug>.md` for read-path compatibility.
+
+Reserved subdirs (cannot be a topic slug at workspace root):
+`docs`, `journal`, `skills`, `research`.
+Reserved files inside topic folders: `00-README.md`, `lessons.md`, `_MAP.md`, `AGENTS.md`, `workspace.json`.
+Reserved aspect names (cannot be `<aspect>` portion): `readme`, `lessons`, `00-readme`.
 Default flat. ≥5 topics same domain → nest. Max 3 levels. `_MAP.md` auto-generated; `## Cross-links (manual)` never overwritten.
 
-## 5. Topic file format
+## 5. Topic format (v3 = 3 file types inside `<slug>/`)
+
+### 5a. 00-README.md — MOC (auto-regenerated except `## Cross-links (manual)`)
 
 ```markdown
 ---
-slug: ema-cross               # unique in ws, kebab-case ≤60
+slug: ema-cross               # unique within ws, kebab-case ≤60
 title: EMA Cross Strategy
+type: topic
 status: draft|active|distilled|archived
+maturity: experimental|stable|deprecated
 created: 2026-05-02
 last_touched: 2026-05-02
 parents: [strategies, trend]
 links: [rsi, breakout]
 aliases: [ema-9-21]
+tags: []
 ---
 # EMA Cross Strategy
-> Cốt lõi 1 dòng.
 
-## [exp]        episodic, 1-2 dòng
-## [ref]        verified fact, Source: BẮT BUỘC
-## [decision]   architectural choice + rationale
-## [reflection] pattern (weekly qua /mem-reflect)
-## [tool]       tool quirk (cross-topic → docs/tools.md)
+## TL;DR
+> 1-2 lines core.
+
+## Aspects (auto)
+- 2026-05-04: [[ema-cross/2026-05-04-backtest|backtest]] — first preview line
+- 2026-05-03: [[ema-cross/2026-05-03-rules|rules]] — entry/exit logic
+- [[ema-cross/lessons|lessons]] — 5-field ledger
+
+## Cross-links (manual)
+- (preserved across rebuilds)
 ```
 
-## 6. Lesson schema (lessons.md per topic folder)
+### 5b. `YYYY-MM-DD-<aspect>.md` — dated aspect file (the actual content)
 
 ```markdown
-## <Symptom — observable error, H2 for FTS5>
+---
+slug: ema-cross-backtest      # topic-slug + aspect-slug
+title: EMA Cross Strategy — Backtest
+type: aspect
+date: 2026-05-04
+topic: ema-cross
+aspect: backtest
+status: draft
+created: 2026-05-04
+last_touched: 2026-05-04
+links: []
+tags: []
+---
+
+# Backtest
+
+## [exp]      ← episodic, 1-2 lines
+## [ref]      ← verified fact, **Source: REQUIRED**
+## [decision] ← architectural choice + rationale
+## [reflection] ← pattern (weekly via /mem-reflect)
+## [tool]     ← tool quirks specific to this topic
+```
+
+### 5c. `lessons.md` — per-topic ledger (5-field schema, see §6)
+
+NEVER write entries into `00-README.md` directly. NEVER mix `[lesson]` with other
+type-prefixes inside dated aspect files (lessons have their own file).
+
+## 6. `[lesson]` 5-field schema (`lessons.md` per topic folder)
+
+```markdown
+## <Symptom — observable error / behavior, becomes H2 for FTS5 prefix>
 - **Tried**: <ordered attempts>
 - **Root cause**: <1 line>
 - **Fix**: <working command/patch>
@@ -76,19 +128,41 @@ aliases: [ema-9-21]
 - **When**: 2026-05-04
 ```
 
-Append-at-top via `memL`. One lessons.md per topic folder.
+Append-at-top via `memL`. One `lessons.md` PER TOPIC FOLDER (not per dated aspect).
 
-## 7. Slugs & wikilinks
+## 7. Slug + wikilink scope (v3)
 
-- Slug unique within workspace. Regex: `^[a-z0-9-]{1,60}$`.
-- `[[slug]]` → active ws. `[[ws:slug]]` → cross-ws. `[[shared:secrets]]` → shared.
-- KHÔNG đổi slug đã publish (vỡ wikilinks). Đổi parents OK qua `/mem-restructure`.
+- Topic slug unique **within workspace**. 2 ws can reuse the same slug.
+- Aspect slug unique **within topic+date** (you can have 2 aspects same day, must differ).
+- `[[slug]]` → resolves in active ws via v3 layout: `<base>/<slug>/00-README.md`.
+  Falls back to v2.4 `<slug>/<slug>.md` then v2.3 flat `<slug>.md` (read-path only).
+- `[[ws:slug]]` → cross-workspace explicit. `[[shared:secrets]]` → shared registry.
+- `[[slug/aspect]]` or `[[slug/YYYY-MM-DD-aspect]]` → specific aspect file.
+- Slug regex (both topic and aspect): `^[a-z0-9][a-z0-9-]{0,59}$`. Conflict in same scope → reject.
+- Reserved aspect names blocked: `readme`, `lessons`, `00-readme`.
+- NEVER rename published topic slug (breaks wikilinks). Change `parents:` via `/mem-restructure` only.
 
 ## 8. Lifecycle
 
-`draft → active → distilled → archived`. File >800 dòng → `/mem-promote` split. 6 tháng untouched + distilled → archive.
+- `status`: `draft → active → distilled → archived`.
+- Topic folder >800 lines aggregate → `/mem-promote` split into sub-topics.
+- 6 months untouched + distilled → `<ws>/_archive/<slug>/`.
+- Workspace 6 months untouched → `/mem-workspace-archive`.
 
-## 9. Workflow
+## 9. Lazy nesting + MOC
+
+- Default FLAT in workspace. ≥5 topics with shared parent → suggest nest. Max 3 levels.
+- Each topic folder has `00-README.md` (auto via `_moc.py rebuild_topic_readme`).
+- Each domain folder (no `00-README.md`) has `_MAP.md` (auto via `_moc.py`).
+- `## Cross-links (manual)` block NEVER overwritten.
+
+## 10. Recall scope
+
+- Default `recall.cross_workspace=false`: search active ws + `shared/`.
+- Wikilink follow: 1 hop default.
+- Skip lines `(superseded)` / expired `valid_until:`.
+
+## 11. Workflow
 
 1. Log raw → `journal/<today>.md` (`memj`).
 2. Repeating ≥2× → `memk` (skillify).
@@ -100,7 +174,7 @@ Append-at-top via `memL`. One lessons.md per topic folder.
 8. Tools-first: tra `shared/tools.md` + `<ws>/docs/tools.md` trước khi tự code.
 9. Verify before claim: no log/screenshot/test → no "done".
 
-## 10. Shortcuts
+## 12. Shortcuts
 
 | Alias | Skill | | Alias | Skill |
 |---|---|---|---|---|
@@ -116,7 +190,7 @@ Append-at-top via `memL`. One lessons.md per topic folder.
 
 Capital-suffix is case-sensitive.
 
-## 11. Auto-sync
+## 13. Auto-sync
 
 ```
 SessionStart  → auto-sync.py --pull-only
@@ -126,11 +200,7 @@ PostCompact   → auto-sync.py --pull-rebase-push
 
 `SYNC-CONFLICT.md` exists → mỗi prompt nhắc `/mem-sync-resolve`. KHÔNG sửa markers tay.
 
-## 12. Recall
-
-Default `cross_workspace=false`: search active ws + `shared/`. Wikilink follow: 1 hop. Skip `(superseded)` / expired `valid_until:`.
-
-## 13. Guardrails
+## 14. Guardrails
 
 - KHÔNG commit secret values — `secrets.md` is pointer-only (env-var names).
 - KHÔNG skip bootstrap.

@@ -1,0 +1,98 @@
+{
+  "version": "3.0",
+  "layout_version": 3,
+  "language": "vi+en",
+  "auto_sync": {
+    "on_session_start": true,
+    "on_pre_compact": true,
+    "on_post_compact": true,
+    "on_stop_every_n_turns": 10
+  },
+  "workspace": {
+    "default": "default",
+    "auto_detect_from_cwd": true,
+    "create_if_missing": false
+  },
+  "topic_layout": {
+    "mode": "folder",
+    "readme_filename": "00-README.md",
+    "aspect_filename_pattern": "YYYY-MM-DD-<aspect>.md",
+    "lessons_filename": "lessons.md",
+    "reserved_aspect_names": ["readme", "lessons", "00-readme"],
+    "reserved_subdirs": ["docs", "journal", "skills", "research"],
+    "promote_lines": 800,
+    "lazy_nest_threshold": 5,
+    "max_depth": 3,
+    "archive_threshold_days": 180,
+    "live_state_window_days": 14
+  },
+  "topic_routing": {
+    "min_keyword_overlap": 3,
+    "auto_create_threshold": 5,
+    "default_topic": "misc",
+    "default_aspect": "note"
+  },
+  "slug": {
+    "regex": "^[a-z0-9][a-z0-9-]{0,59}$",
+    "aspect_regex": "^[a-z0-9][a-z0-9-]{0,59}$",
+    "unique_scope": "workspace",
+    "index": true
+  },
+  "moc": {
+    "auto_rebuild": true,
+    "workspace_sections": ["topics", "docs", "journal"],
+    "topic_readme_sections": ["TL;DR", "Aspects (auto)", "Cross-links (manual)"],
+    "preserve_manual": "## Cross-links (manual)"
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small"
+  },
+  "recall": {
+    "max_chars_per_file": 15000,
+    "max_total_chars": 60000,
+    "top_k": 8,
+    "mmr_lambda": 0.7,
+    "srs_resurface_days": 7,
+    "srs_resurface_prob": 4,
+    "wikilink_follow": true,
+    "wikilink_hop_depth": 1,
+    "cross_workspace": false,
+    "layer_scores": {
+      "shared_skills": 40,
+      "shared_other": 60,
+      "docs": 60,
+      "skills": 40,
+      "research": 65,
+      "journal_today": 100,
+      "journal_yesterday": 70,
+      "journal_older": 30,
+      "topic_readme": 80,
+      "topic_lessons": 75,
+      "topic_aspect_today": 90,
+      "topic_aspect_older": 70,
+      "topic_v24_landing": 80,
+      "topic_else": 60
+    }
+  },
+  "migration": {
+    "v3_backup_keep": 2,
+    "v3_backup_demote_after_hours": 24
+  },
+  "conflict_resolution": {
+    "mode": "ai-mediated"
+  },
+  "_notes": {
+    "version": "schema 3.0 = topic-FOLDER + dated-aspect layout (replaces v2.4 single-file-per-topic)",
+    "layout_version": "Integer schema version. v3 is current. Read-path stays permissive across v3/v2.4/v2.3; write-path is strict v3.",
+    "topic_layout.mode": "folder (v3 only). Each topic = workspaces/<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}.",
+    "topic_layout.reserved_aspect_names": "Blocked aspect slugs (would collide with structural files).",
+    "topic_layout.reserved_subdirs": "Cannot be used as topic slugs at workspace root.",
+    "topic_routing.default_aspect": "Aspect slug when keyword extraction yields nothing (fallback to 'note').",
+    "slug.aspect_regex": "Same regex as topic slug. Applied to <aspect> portion of YYYY-MM-DD-<aspect>.md.",
+    "moc.topic_readme_sections": "Sections inside 00-README.md. Cross-links manual NEVER overwritten.",
+    "migration.v3_backup_keep": "Rolling-2 window: keep newest 2 v3 backups in shared/backup-v3/.",
+    "migration.v3_backup_demote_after_hours": "Demote oldest backup beyond keep window if older than this many hours.",
+    "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest."
+  }
+}
