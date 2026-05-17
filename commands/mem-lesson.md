@@ -97,15 +97,22 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_lesson.py" \
     ${SOURCE:+--source "$SOURCE"} ${TOPIC:+--topic "$TOPIC"}
 ```
 
-## Storage layout
+## Storage layout (v3)
 
 ```
 workspaces/<ws>/<topic>/lessons.md
 ```
 
-Per topic folder, NOT per sub-aspect file. If user logs a lesson while routing matches `starrocks/operator.md`, the lesson lands in `starrocks/lessons.md` (folder-level ledger) — a single ledger covers all aspects of the topic. The H2 heading prefix can mention the aspect manually if needed.
+Per topic folder, NOT per dated aspect file. If user logs a lesson while routing
+matches the `starrocks` topic, the lesson lands in `starrocks/lessons.md` (folder-level
+ledger) — a single ledger covers all `YYYY-MM-DD-<aspect>.md` aspects of the topic.
+The H2 heading prefix can mention the aspect or date manually if needed.
 
-For legacy flat topics (no folder), lesson lands at `workspaces/<ws>/<slug>-lessons.md`.
+Routing: `_lesson.py` calls `derive_topic_slug(content)` (no `--topic`) or
+`resolve_topic_folder(slug)` (with `--topic`), both via `_topic.py`. Neither path
+ever spawns a dated aspect file — lessons go straight to the topic folder's
+`lessons.md`. The topic folder + `00-README.md` MOC are created on-demand if
+missing (idempotent via `ensure_topic_folder`).
 
 ## Promotion lifecycle
 

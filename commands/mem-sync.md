@@ -22,12 +22,20 @@ Token: env var `GOWTH_MEM_GIT_TOKEN` preferred. Fallback: `config.json["token"]`
 
 | Path | Synced? | Reason |
 |---|---|---|
-| `AGENTS.md` | ✅ | shared operating rules |
-| `settings.json` | ✅ | plugin behavior |
-| `topics/**` | ✅ | topic-organized knowledge |
-| `docs/{handoff,secrets,tools}.md` | ✅ | cross-topic registries |
-| `journal/**` | ✅ | raw daily logs (small, append-only) |
-| `skills/**` | ✅ | Voyager workflows |
+| `shared/AGENTS.md` | ✅ | shared operating rules |
+| `settings.json` (includes `layout_version: 3`) | ✅ | plugin behavior |
+| `shared/{secrets,tools,files}.md` | ✅ | cross-workspace registries (pointers only) |
+| `shared/skills/**` | ✅ | cross-workspace skill library |
+| `workspaces/<ws>/AGENTS.md` | ✅ | per-workspace delta rules |
+| `workspaces/<ws>/_MAP.md` | ✅ | workspace MOC (auto via `_moc.py`) |
+| `workspaces/<ws>/<slug>/00-README.md` | ✅ | topic MOC (auto via `_moc.py rebuild_topic_readme`) |
+| `workspaces/<ws>/<slug>/YYYY-MM-DD-<aspect>.md` | ✅ | dated aspect content (v3) |
+| `workspaces/<ws>/<slug>/lessons.md` | ✅ | per-topic 5-field ledger |
+| `workspaces/<ws>/docs/{handoff,exp,ref,tools,files}.md` | ✅ | workspace cross-topic registries |
+| `workspaces/<ws>/journal/<date>.md` | ✅ | raw daily logs (small, append-only) |
+| `workspaces/<ws>/skills/**` | ✅ | workspace-specific Voyager workflows |
+| `workspaces/<ws>/research/**` | ✅ | long-form research output (v3) |
+| `shared/backup-v3/v2-pre-v3-*/` | ✅ | v3 migration backup (rolling-2 window) |
 | `config.json` | ❌ gitignored | token + per-machine remote |
 | `state.json` | ❌ gitignored | per-machine SRS tracker |
 | `index.db` | ❌ gitignored | per-machine FTS5/vector — rebuild via `memx` |

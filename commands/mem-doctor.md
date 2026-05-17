@@ -35,6 +35,17 @@ fi
 - After `claude /plugin marketplace update gowth-mem` to confirm the cache dir was materialized.
 - When `[gowth-mem:bootstrap]` stops appearing in SessionStart context.
 - Before pushing a fresh `~/.claude/settings.json` to a new machine.
+- After running `/mem-migrate-v3` to confirm the v3 layout is healthy across all workspaces.
+
+## v3 layout sanity checks (advisory)
+
+`bin/doctor.sh` is plugin-install scoped (registry repair) and does NOT validate
+`~/.gowth-mem/` layout. To verify the v3 migration succeeded, inspect:
+
+- `settings.json` → `layout_version` should be `3`.
+- `shared/backup-v3/v2-pre-v3-*/` should hold ≤2 snapshots (rolling window).
+- Every `workspaces/<ws>/<slug>/` topic folder should have `00-README.md` (not just `<slug>.md`).
+- Reserved subdirs (`docs`, `journal`, `skills`, `research`) should never be reshaped into topic folders.
 
 ## What it heals
 

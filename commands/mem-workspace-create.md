@@ -5,7 +5,14 @@ argument-hint: "<name> [--title \"Title\"] [--description \"…\"]"
 
 # /mem-workspace-create
 
-Create a new workspace under `~/.gowth-mem/workspaces/<name>/` with full skeleton (`workspace.json`, `_MAP.md`, `docs/`, `topics/`, `journal/`, `skills/`).
+Create a new workspace under `~/.gowth-mem/workspaces/<name>/` with full v3 skeleton:
+- `workspace.json`, `_MAP.md` (workspace MOC, `layout_version: 3`)
+- `AGENTS.md` (workspace-specific delta rules)
+- `docs/{handoff,exp,ref,tools,files}.md` (reserved subdir)
+- `journal/` (reserved subdir for daily logs)
+- `skills/` (reserved subdir for workspace-specific skills)
+- `research/` (reserved subdir for long-form research output, new in v3)
+- `misc/00-README.md` (fallback topic folder — v3 layout, no inline entries)
 
 ## Steps
 
@@ -33,7 +40,7 @@ echo "Done. Switch with: /mem-workspace $NAME"
 
 ## After create
 
-The new workspace contains a `topics/misc.md` fallback and an empty `_MAP.md`. Add a `workspace_map` glob if you want auto-detection from `cwd`:
+The new workspace contains a `misc/00-README.md` fallback topic folder (v3 layout — no inline entries; first routed line creates `misc/YYYY-MM-DD-note.md`) and an empty `_MAP.md`. Add a `workspace_map` glob if you want auto-detection from `cwd`:
 
 ```
 /mem-workspace-map "/Volumes/Data/Git/<your-repo>/**" <name>
