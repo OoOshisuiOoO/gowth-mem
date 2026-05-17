@@ -1,27 +1,31 @@
-"""MOC (Map of Content) regenerator for v2.3.
+"""MOC (Map of Content) regenerator for v3.0 (topic-folder + dated-aspect).
 
-Builds three kinds of MOCs:
+Three kinds of MOCs:
 
-1. Workspace MOC = topic-root MOC → workspaces/<ws>/_MAP.md
-   Children: top-level topics workspaces/<ws>/<slug>.md (excluding reserved)
-   Subfolders: workspaces/<ws>/<domain>/_MAP.md targets
+1. Workspace MOC → `workspaces/<ws>/_MAP.md`
+   Children: every topic folder under workspace root, listed as
+   `[[<slug>]] — <TL;DR first line>` (TL;DR pulled from `<slug>/00-README.md`).
+   Reserved subdirs (docs/journal/skills/research) and reserved files always skipped.
 
-2. Workspaces registry → workspaces/_MAP.md
-   Children: each workspace with topic count + last_touched
+2. Topic README → `workspaces/<ws>/<slug>/00-README.md`
+   Auto-regenerates `## Aspects (auto)` listing dated-aspect siblings (newest first)
+   plus `lessons.md` if present. Preserves `## TL;DR` and `## Cross-links (manual)`
+   verbatim across rebuilds (idempotent — no double-write if nothing changed).
 
-3. Shared registry → shared/_MAP.md
-   Children: secrets/tools/files
-   Subfolders: shared/skills
+3. Workspaces registry → `workspaces/_MAP.md`
+4. Shared registry    → `shared/_MAP.md`
 
-4. Topic-folder MOC → workspaces/<ws>/<domain>/.../_MAP.md
-   For nested domain dirs (lazy-nest result, e.g. starrocks/, monitoring/grafana/).
+All writes atomic, under `file_lock("moc")`. `## Cross-links (manual)` and
+`## TL;DR` are preserved verbatim across rebuilds.
 
-All atomic, under file_lock("moc"). The "## Cross-links (manual)" section is
-preserved verbatim across rebuilds.
+F18 lock (2026-05-17): dropped legacy `rebuild_topic_folder_moc` /
+`rebuild_topic_subfolders` (which emitted `_MAP.md` inside topic folders).
+v3 puts the topic MOC inside `00-README.md` instead.
 """
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -32,11 +36,18 @@ from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
     RESERVED_SUBDIRS,
+    TOPIC_LESSONS,
+    TOPIC_README,
+    derive_aspect_slug_from_filename,
+    is_dated_aspect_filename,
     is_reserved,
+    is_topic_folder,
+    iter_topic_landings,
     list_workspaces,
     shared_dir,
     shared_moc,
-    topics_dir,
+    topic_landing,
+    topic_readme,
     workspace_dir,
     workspace_meta,
     workspace_moc,
@@ -46,13 +57,36 @@ from _home import (  # type: ignore
 from _lock import file_lock  # type: ignore
 
 MANUAL_HEADING = "## Cross-links (manual)"
+TLDR_HEADING = "## TL;DR"
+ASPECTS_HEADING = "## Aspects (auto)"
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────
 
+def _extract_section(path: Path, heading: str, stop_headings: tuple[str, ...]) -> str:
+    """Read file and return verbatim text starting at `heading` (inclusive) up
+    to the next heading in `stop_headings` (exclusive). Empty if missing."""
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(errors="ignore")
+    except Exception:
+        return ""
+    idx = text.find(heading)
+    if idx < 0:
+        return ""
+    rest = text[idx:]
+    end = len(rest)
+    for stop in stop_headings:
+        pos = rest.find("\n" + stop, len(heading))
+        if pos >= 0 and pos < end:
+            end = pos + 1  # keep the trailing newline before stop heading
+    return rest[:end].rstrip() + "\n"
+
+
 def _extract_manual_block(path: Path) -> str:
-    """Read existing _MAP.md and return the verbatim text from MANUAL_HEADING
-    onward, including the heading. Empty string if file missing or section absent."""
+    """Read existing MOC and return verbatim Cross-links (manual) onward.
+    Empty if absent."""
     if not path.is_file():
         return ""
     try:
@@ -65,6 +99,11 @@ def _extract_manual_block(path: Path) -> str:
     return text[idx:]
 
 
+def _extract_tldr_block(path: Path) -> str:
+    """Return verbatim `## TL;DR` section (up to next `## `). Empty if missing."""
+    return _extract_section(path, TLDR_HEADING, (ASPECTS_HEADING, MANUAL_HEADING, "## "))
+
+
 def _summary_line(fm: dict, fallback: str) -> str:
     title = fm.get("title") or fallback
     status = fm.get("status") or ""
@@ -73,18 +112,61 @@ def _summary_line(fm: dict, fallback: str) -> str:
     return title
 
 
-# ─── per-workspace MOCs ──────────────────────────────────────────────────
+def _first_tldr_line(path: Path) -> str:
+    """Pull the first non-empty TL;DR line (after `## TL;DR`) for workspace MOC.
+    Strips leading `>` blockquote markers. Empty string if missing."""
+    block = _extract_tldr_block(path)
+    if not block:
+        return ""
+    for line in block.splitlines()[1:]:  # skip heading
+        s = line.strip()
+        if not s:
+            continue
+        s = s.lstrip(">").strip()
+        if not s:
+            continue
+        return s
+    return ""
+
+
+def _aspect_preview(path: Path) -> str:
+    """First non-empty content line of an aspect file (after frontmatter +
+    title). Used for `## Aspects (auto)` preview. Empty if nothing useful."""
+    try:
+        text = path.read_text(errors="ignore")
+    except Exception:
+        return ""
+    # Strip frontmatter
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end > 0:
+            text = text[end + 5:]
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            continue
+        if s.startswith("## "):
+            continue
+        # skip the "> 1-2 lines describing..." placeholder bleed
+        s2 = s.lstrip(">").strip()
+        if not s2 or s2.startswith("("):
+            continue
+        return s2[:120]
+    return ""
+
+
+# ─── workspace MOC ───────────────────────────────────────────────────────
 
 def rebuild_workspace_moc(ws: str) -> Path:
-    """v2.4: Regenerate workspaces/<ws>/_MAP.md — workspace = topic tree root.
+    """v3.0: Regenerate `workspaces/<ws>/_MAP.md` — workspace = topic tree root.
 
-    Children: direct topic FOLDERS (Obsidian folder notes — `<slug>/<slug>.md` exists)
-              + legacy flat .md files at root (v2.3 backward-compat).
-    Subfolders: direct DOMAIN dirs (no `<dir>/<dir>.md` — they hold nested topics).
-    Reserved subdirs (docs/journal/skills) and reserved files always skipped.
+    Children: every topic folder under workspace root, sorted by slug, rendered
+              as `- [[<slug>]] — <TL;DR first line>` (or title fallback).
+    Subfolders: domain folders (non-topic-folder dirs) for lazy-nest legacy.
+    Reserved subdirs (docs/journal/skills/research) and reserved files skipped.
     """
-    from _home import is_topic_folder, topic_landing  # type: ignore
-
     ws_path = workspace_dir(ws)
     moc_path = ws_path / "_MAP.md"
     today = date.today().isoformat()
@@ -97,23 +179,27 @@ def rebuild_workspace_moc(ws: str) -> Path:
             if entry.name.startswith(".") or is_reserved(entry.name):
                 continue
             if entry.is_file() and entry.suffix == ".md":
-                # Legacy flat topic file (v2.3) — still valid; encourage migration.
+                # Legacy flat topic file (v2.3) — still scannable.
                 fm, _ = parse_file(entry)
                 slug = fm.get("slug") or entry.stem
-                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())} _(legacy flat)_")
+                children.append(
+                    f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())} _(legacy flat)_"
+                )
             elif entry.is_dir():
                 if is_topic_folder(entry):
                     landing = topic_landing(entry)
                     fm, _ = parse_file(landing)
                     slug = fm.get("slug") or entry.name
-                    children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
+                    tldr = _first_tldr_line(landing)
+                    label = tldr or _summary_line(fm, slug.replace("-", " ").title())
+                    children.append(f"- [[{slug}]] — {label}")
                 else:
-                    subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
+                    subfolders.append(f"- {entry.name}/ — domain folder")
 
     if not children:
         children.append("(no topics yet — sẽ tạo qua `mems` / `/mem-save`)")
     if not subfolders:
-        subfolders.append("(none — lazy nest khi ≥5 topic chung domain)")
+        subfolders.append("(none)")
 
     manual = _extract_manual_block(moc_path) or (
         f"{MANUAL_HEADING}\n\n"
@@ -126,6 +212,7 @@ def rebuild_workspace_moc(ws: str) -> Path:
         f"type: MOC\n"
         f"folder: workspaces/{ws}\n"
         f"workspace: {ws}\n"
+        f"layout_version: 3\n"
         f"last_rebuilt: {today}\n"
         f"---\n\n"
         f"# Workspace: {ws}\n\n"
@@ -138,92 +225,129 @@ def rebuild_workspace_moc(ws: str) -> Path:
     return moc_path
 
 
-def rebuild_topic_folder_moc(ws: str, folder: Path) -> Path:
-    """v2.4: Regenerate _MAP.md inside a folder under workspace root.
+# ─── topic README (the per-topic MOC) ────────────────────────────────────
 
-    `folder` may be:
-      - A DOMAIN folder (no `<name>/<name>.md`) → MOC lists child topic folders + sub-domains.
-      - A TOPIC folder (`<name>/<name>.md` exists) → MOC lists sub-aspect .md files inside.
-        (rare — domain MOC is the typical case; topic landing is what wikilinks resolve to.)
-    Reserved files always skipped.
+def rebuild_topic_readme(folder: Path) -> Path | None:
+    """v3.0: Regenerate `<folder>/00-README.md` `## Aspects (auto)` section.
+
+    Preserves `## TL;DR` and `## Cross-links (manual)` verbatim. Idempotent:
+    rebuilds frontmatter `last_touched` only if Aspects content changed.
+
+    Returns the README path written, or None if `folder` is not a topic folder
+    (defensive — caller should pre-filter via `is_topic_folder`).
     """
-    from _home import is_topic_folder, topic_landing  # type: ignore
-
-    moc_path = folder / "_MAP.md"
+    if not is_topic_folder(folder):
+        return None
+    readme = topic_readme(folder)
     today = date.today().isoformat()
-    ws_root = workspace_dir(ws)
-    rel = folder.relative_to(ws_root)
-    children: list[str] = []
-    subfolders: list[str] = []
 
-    landing = folder / f"{folder.name}.md"
-    is_topic = landing.is_file()
+    # Read existing frontmatter (or synthesize from folder name).
+    if readme.is_file():
+        fm, _ = parse_file(readme)
+    else:
+        fm = {}
+    slug = fm.get("slug") or folder.name
+    title = fm.get("title") or slug.replace("-", " ").title()
+    topic_type = fm.get("type") or "misc"
+    status = fm.get("status") or "draft"
+    maturity = fm.get("maturity") or "draft"
+    created = fm.get("created") or today
+    parents = fm.get("parents") or []
+    links = fm.get("links") or []
+    aliases = fm.get("aliases") or []
+    tags = fm.get("tags") or []
 
-    for entry in sorted(folder.iterdir()):
-        if entry.name.startswith(".") or is_reserved(entry.name):
+    # Build Aspects (auto) — dated siblings, newest first, then lessons.md.
+    aspect_rows: list[str] = []
+    dated: list[tuple[str, str, Path]] = []  # (date, aspect_slug, path)
+    for entry in folder.iterdir():
+        if not entry.is_file() or entry.suffix != ".md":
             continue
-        # Skip the landing file itself in a topic folder — it IS the topic, not a child.
-        if is_topic and entry == landing:
+        if entry.name in (TOPIC_README, TOPIC_LESSONS, "_MAP.md"):
             continue
-        if entry.is_file() and entry.suffix == ".md":
-            fm, _ = parse_file(entry)
-            slug = fm.get("slug") or entry.stem
-            # lessons.md is per-topic-folder ledger; many topics share the name.
-            # Emit a path-qualified wikilink so it resolves unambiguously.
-            if entry.name == "lessons.md" and is_topic:
-                children.append(f"- [[{folder.name}/lessons|lessons]] — folder ledger ({_summary_line(fm, 'lessons')})")
-            else:
-                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
-        elif entry.is_dir():
-            if is_topic_folder(entry):
-                el = topic_landing(entry)
-                fm, _ = parse_file(el)
-                slug = fm.get("slug") or entry.name
-                children.append(f"- [[{slug}]] — {_summary_line(fm, slug.replace('-', ' ').title())}")
-            else:
-                subfolders.append(f"- [[{entry.name}/_MAP|{entry.name}]]")
-                rebuild_topic_folder_moc(ws, entry)
+        if is_dated_aspect_filename(entry.name):
+            stem = entry.stem  # YYYY-MM-DD-<aspect>
+            d = stem[:10]
+            aspect = derive_aspect_slug_from_filename(entry.name) or "note"
+            dated.append((d, aspect, entry))
+        elif entry.name == f"{folder.name}.md":
+            # v2.4 folder-note — emit a one-liner so users see legacy content.
+            preview = _aspect_preview(entry)
+            line = f"- `{entry.name}` (legacy v2.4 folder note)"
+            if preview:
+                line += f" — {preview}"
+            aspect_rows.append(line)
+        else:
+            # v2.4 sub-aspect (`<aspect>.md` undated) — list as-is.
+            preview = _aspect_preview(entry)
+            line = f"- `{entry.name}` (legacy v2.4 aspect)"
+            if preview:
+                line += f" — {preview}"
+            aspect_rows.append(line)
 
-    if not children:
-        children.append("(empty)")
-    if not subfolders:
-        subfolders.append("(none)")
+    # Newest-first by date, then aspect slug for stable order
+    for d, aspect, p in sorted(dated, key=lambda x: (x[0], x[1]), reverse=True):
+        preview = _aspect_preview(p)
+        line = f"- [[{p.stem}|{d} — {aspect}]]"
+        if preview:
+            line += f" — {preview}"
+        aspect_rows.append(line)
 
-    manual = _extract_manual_block(moc_path) or (
-        f"{MANUAL_HEADING}\n\n(curate sibling MOCs here)\n"
+    lessons_path = folder / TOPIC_LESSONS
+    if lessons_path.is_file():
+        aspect_rows.append(f"- [[lessons]] — folder ledger")
+
+    if not aspect_rows:
+        aspect_rows.append("(empty — dated `YYYY-MM-DD-<aspect>.md` siblings appear here after first write)")
+
+    # Preserve TL;DR + manual cross-links verbatim
+    tldr = _extract_tldr_block(readme)
+    if not tldr:
+        tldr = f"{TLDR_HEADING}\n\n> Cốt lõi 1 dòng (TODO).\n"
+
+    manual = _extract_manual_block(readme) or (
+        f"{MANUAL_HEADING}\n\n"
+        f"(curate `[[wikilinks]]` to related topics here — preserved across MOC rebuilds)\n"
     )
 
-    parent_link = f"../_MAP|{rel.parent.name if rel.parent.name else ws}"
-
+    fm_lines = [
+        "---",
+        f"slug: {slug}",
+        f"title: {title}",
+        f"type: {topic_type}",
+        f"status: {status}",
+        f"maturity: {maturity}",
+        f"created: {created}",
+        f"last_touched: {today}",
+        f"parents: [{', '.join(parents)}]",
+        f"links: [{', '.join(links)}]",
+        f"aliases: [{', '.join(aliases)}]",
+        f"tags: [{', '.join(tags)}]",
+        "---",
+        "",
+    ]
     body = (
-        f"---\n"
-        f"type: MOC\n"
-        f"folder: workspaces/{ws}/{rel.as_posix()}\n"
-        f"workspace: {ws}\n"
-        f"last_rebuilt: {today}\n"
-        f"---\n\n"
-        f"# {rel.as_posix()}\n\n"
-        f"## Children (auto)\n\n" + "\n".join(children) + "\n\n"
-        f"## Subfolders (auto)\n\n" + "\n".join(subfolders) + "\n\n"
-        f"## Parent (auto)\n\n- [[{parent_link}]]\n\n"
-        f"{manual}"
+        "\n".join(fm_lines)
+        + f"\n# {title}\n\n"
+        + tldr.rstrip() + "\n\n"
+        + f"{ASPECTS_HEADING}\n\n" + "\n".join(aspect_rows) + "\n\n"
+        + manual
     )
-    atomic_write(moc_path, body)
-    return moc_path
 
+    # Idempotency: only write if content actually changed (mtime hygiene + git noise).
+    if readme.is_file():
+        try:
+            existing = readme.read_text(errors="ignore")
+            # Compare ignoring `last_touched:` line (otherwise we'd churn daily).
+            def _strip_lt(t: str) -> str:
+                return re.sub(r"^last_touched: .+$", "last_touched: X", t, flags=re.M)
+            if _strip_lt(existing) == _strip_lt(body):
+                return readme
+        except Exception:
+            pass
 
-def rebuild_topic_subfolders(ws: str) -> list[Path]:
-    """v2.3: rebuild _MAP.md for every non-reserved direct subfolder under workspace root.
-    Returns list of MOC paths written. Recurses into nested subfolders."""
-    out: list[Path] = []
-    ws_root = workspace_dir(ws)
-    if not ws_root.is_dir():
-        return out
-    for entry in sorted(ws_root.iterdir()):
-        if not entry.is_dir() or entry.name.startswith(".") or is_reserved(entry.name):
-            continue
-        out.append(rebuild_topic_folder_moc(ws, entry))
-    return out
+    atomic_write(readme, body)
+    return readme
 
 
 # ─── workspace registry ──────────────────────────────────────────────────
@@ -239,12 +363,11 @@ def rebuild_workspaces_registry() -> Path:
             meta = json.loads(meta_path.read_text())
         except Exception:
             pass
-        # v2.4: count workspace topic files (root, excluding reserved)
-        from _home import iter_topic_files  # type: ignore
-        topic_count = 0
+        # v3.0: count topic FOLDERS (one per topic), use README mtime for last_touched.
+        landings = iter_topic_landings(name)
+        topic_count = len(landings)
         last_mtime = 0.0
-        for p in iter_topic_files(name):
-            topic_count += 1
+        for p in landings:
             try:
                 last_mtime = max(last_mtime, p.stat().st_mtime)
             except Exception:
@@ -276,6 +399,7 @@ def rebuild_workspaces_registry() -> Path:
         f"---\n"
         f"type: MOC\n"
         f"folder: workspaces\n"
+        f"layout_version: 3\n"
         f"last_rebuilt: {today}\n"
         f"---\n\n"
         f"# Workspaces Registry\n\n"
@@ -319,6 +443,7 @@ def rebuild_shared_moc() -> Path:
         f"---\n"
         f"type: MOC\n"
         f"folder: shared\n"
+        f"layout_version: 3\n"
         f"last_rebuilt: {today}\n"
         f"---\n\n"
         f"# Shared Map\n\n"
@@ -333,8 +458,7 @@ def rebuild_shared_moc() -> Path:
 # ─── orchestrator ────────────────────────────────────────────────────────
 
 def rebuild_all(ws: str | None = None) -> dict:
-    """v2.3: rebuild shared + workspace registry + per-ws workspace MOC + nested folder MOCs.
-    Workspace MOC IS the topic-root MOC (no separate topics/_MAP)."""
+    """v3.0: rebuild shared + workspace registry + per-ws workspace MOC + every topic README."""
     written: dict[str, str] = {}
     with file_lock("moc"):
         written["shared"] = str(rebuild_shared_moc())
@@ -342,8 +466,12 @@ def rebuild_all(ws: str | None = None) -> dict:
         targets = [ws] if ws is not None else list_workspaces()
         for w in targets:
             written[f"ws:{w}"] = str(rebuild_workspace_moc(w))
-            for sub in rebuild_topic_subfolders(w):
-                written[f"sub:{w}:{sub.parent.name}"] = str(sub)
+            # Rebuild every topic README in this workspace
+            for landing in iter_topic_landings(w):
+                folder = landing.parent
+                out = rebuild_topic_readme(folder)
+                if out is not None:
+                    written[f"topic:{w}:{folder.name}"] = str(out)
     return written
 
 

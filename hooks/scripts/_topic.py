@@ -243,6 +243,50 @@ def resolve_topic_folder(slug: str, ws: str | None = None) -> Path:
     return ensure_topic_folder(slug, ws=ws)
 
 
+def derive_topic_slug(content: str, ws: str | None = None,
+                      settings: dict | None = None) -> str:
+    """v3.0: return the topic FOLDER slug for `content` without spawning files.
+
+    Mirrors `route()` slug-selection logic (existing-topic match by keyword
+    overlap, else top-2 distinctive keywords, else default `misc`) but never
+    calls `ensure_topic_folder` and never returns a file path. Used by
+    `_lesson.py` to pick the topic folder for `lessons.md` without creating
+    a parasitic dated-aspect file as a side-effect.
+    """
+    s = settings or read_settings()
+    routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
+    min_overlap = int(routing.get("min_keyword_overlap", 3))
+    default_topic = routing.get("default_topic", "misc")
+    ws = ws or active_workspace()
+
+    kws = _extract_keywords(content)
+    if not kws:
+        return default_topic
+
+    ws_root = workspace_dir(ws).resolve()
+    best_slug = default_topic
+    best_overlap = 0
+    for f in _walk_topics(ws):
+        try:
+            text = f.read_text(errors="ignore")
+        except Exception:
+            continue
+        fm, _ = parse_file(f)
+        slug = fm.get("slug") or slug_for_path(f, ws_root)
+        if not SLUG_RE.match(slug):
+            continue
+        overlap = len(kws & _extract_keywords(text))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_slug = slug
+
+    if best_overlap >= min_overlap:
+        return best_slug
+
+    distinctive = sorted(kws, key=len, reverse=True)[:2]
+    return _slugify(distinctive) or default_topic
+
+
 def route(content: str, ws: str | None = None,
           settings: dict | None = None) -> tuple[str, Path, str | None]:
     """v3.0: return `(slug, file_path, section_hint)` for a memory entry.

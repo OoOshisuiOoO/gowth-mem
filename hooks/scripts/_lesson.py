@@ -8,11 +8,10 @@
   - Fix        — working command/patch/config (Stripe Solutions + Beads Fix)
   - Source     — commit | file:line | URL    (Stripe doc_url + AI-trade [ref] rule)
 
-Storage: one `lessons.md` per topic folder (NOT per sub-aspect file).
-  - Match landing  workspaces/<ws>/<topic>/<topic>.md  → lessons go to workspaces/<ws>/<topic>/lessons.md
-  - Match sub-aspect workspaces/<ws>/<topic>/<aspect>.md → lessons go to workspaces/<ws>/<topic>/lessons.md
-  - Legacy flat workspaces/<ws>/<topic>.md → lessons go to workspaces/<ws>/<topic>-lessons.md
-    (we don't auto-promote flat files to folder; user can /mem-restructure later)
+Storage v3.0: one `lessons.md` per topic folder.
+  - Explicit --topic <slug>:  workspaces/<ws>/<slug>/lessons.md (ensure folder via F4)
+  - Auto-route via _topic.derive_topic_slug: pick top-keyword slug, ensure folder,
+    write lessons.md inside (NEVER spawn a dated-aspect file for lessons).
 
 Format per entry: H2 heading "## [YYYY-MM-DD] <symptom truncated>" + 5 bold-prefix bullets.
 Newest entries appended at TOP under "## Entries" section so most-recent-first reading
@@ -32,12 +31,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _home import (  # type: ignore
+    TOPIC_LESSONS,
     active_workspace,
-    is_topic_folder,
-    topic_landing,
-    workspace_dir,
 )
-from _topic import route as topic_route  # type: ignore
+from _topic import derive_topic_slug, resolve_topic_folder  # type: ignore
 
 
 HEADER = "# Lessons & Troubleshooting\n\n> Append-only ledger. Newest-first under `## Entries`. Schema cited from NASA LLIS / Army AAR / AWS EKS / Stripe / 5 Whys.\n\n## Entries\n\n"
@@ -49,26 +46,17 @@ def _truncate(s: str, n: int = 60) -> str:
 
 
 def _resolve_target(ws: str, topic: str | None, content: str) -> Path:
-    """Return path to lessons.md for the routed topic.
+    """v3.0: return path to `<folder>/lessons.md` for the routed topic folder.
 
-    Routing rules:
-      - explicit --topic <slug>: ensure_topic if missing, then put lessons next to landing
-      - else: _topic.route(content) → matched file → lessons.md in matched file's parent folder
-        (parent folder is the topic folder for landing/sub-aspect; or workspace root for legacy flat)
+    Uses `resolve_topic_folder` (F4) so we never spawn a parasitic dated-aspect
+    file just to figure out where lessons should live.
     """
-    ws_root = workspace_dir(ws).resolve()
-
     if topic:
-        from _topic import ensure_topic  # type: ignore
-        landing = ensure_topic(topic, ws=ws)
-        return landing.parent / "lessons.md"
-
-    slug, matched, _section = topic_route(content, ws=ws)
-    target_dir = matched.parent
-    if target_dir == ws_root:
-        # Legacy flat topic file at ws root → use sibling <slug>-lessons.md to avoid clobbering
-        return ws_root / f"{matched.stem}-lessons.md"
-    return target_dir / "lessons.md"
+        folder = resolve_topic_folder(topic, ws=ws)
+    else:
+        slug = derive_topic_slug(content, ws=ws)
+        folder = resolve_topic_folder(slug, ws=ws)
+    return folder / TOPIC_LESSONS
 
 
 def append_lesson(

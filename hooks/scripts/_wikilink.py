@@ -1,4 +1,4 @@
-"""Wikilink resolver for v2.2.
+"""Wikilink resolver for v3.0 (topic-folder + dated-aspect).
 
 Forms accepted (Obsidian-style):
   [[slug]]              same workspace
@@ -9,9 +9,18 @@ Forms accepted (Obsidian-style):
 
 Resolution order for a (ws, slug):
   1. index.db.slugs row (workspace, slug) → path
-  2. Filesystem fallback: workspaces/<ws>/**/<slug>.md (excluding reserved subdirs; first match)
+  2. Filesystem fallback (v3-aware, plan §2.7):
+       a. workspaces/<ws>/<slug>/00-README.md   (v3 layout — PREFERRED)
+       b. workspaces/<ws>/**/<slug>/00-README.md (v3 lazy-nest)
+       c. workspaces/<ws>/<slug>/<slug>.md       (v2.4 folder-note legacy)
+       d. workspaces/<ws>/**/<slug>/<slug>.md    (v2.4 lazy-nest legacy)
+       e. workspaces/<ws>/<slug>.md              (v2.3 flat legacy)
+       f. workspaces/<ws>/**/<slug>.md           (v2.3 flat lazy-nest)
   3. Aliases scan via index.db.slugs (slug == alias)
   4. None (broken link)
+
+Read-path stays permissive across v3 + v2.4 + v2.3 so a partially-migrated
+workspace (multi-machine) keeps resolving links. Write-path is strict v3.
 
 `shared` is a virtual workspace pointing to `shared/<slug>.md`.
 """
@@ -24,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _home import (  # type: ignore
+    TOPIC_README,
     active_workspace,
     index_db,
     shared_dir,
@@ -92,17 +102,33 @@ def _query_db(ws: str, slug: str) -> Path | None:
 
 
 def _fs_fallback(ws: str, slug: str) -> Path | None:
-    """v2.4: prefer Obsidian folder-note landing `<slug>/<slug>.md`, then any flat `<slug>.md`."""
+    """v3.0 (plan §2.7): prefer v3 `<slug>/00-README.md`, then v2.4 folder-note,
+    then v2.3 flat. Top-level first (cheap), rglob second (lazy-nest)."""
     if ws == "shared":
         cand = shared_dir() / f"{slug}.md"
         return cand if cand.is_file() else None
     base = topics_dir(ws)
     if not base.is_dir():
         return None
-    # Prefer folder-note landing
+    # a. v3 layout — top-level topic folder
+    v3_top = base / slug / TOPIC_README
+    if v3_top.is_file():
+        return v3_top
+    # b. v3 layout — lazy-nested
+    for f in base.rglob(f"{slug}/{TOPIC_README}"):
+        return f
+    # c. v2.4 folder-note — top-level
+    v24_top = base / slug / f"{slug}.md"
+    if v24_top.is_file():
+        return v24_top
+    # d. v2.4 folder-note — lazy-nested
     for f in base.rglob(f"{slug}/{slug}.md"):
         return f
-    # Fall back to any matching flat file (legacy v2.3)
+    # e. v2.3 flat — top-level
+    v23_top = base / f"{slug}.md"
+    if v23_top.is_file():
+        return v23_top
+    # f. v2.3 flat — lazy-nested
     for f in base.rglob(f"{slug}.md"):
         return f
     return None

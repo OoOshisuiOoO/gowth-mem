@@ -95,38 +95,40 @@ _WS_AGENTS = """# AGENTS.md (workspace: {name})
 """
 
 
-_TOPIC_MISC = """---
+_TOPIC_MISC_README = """---
 slug: misc
 title: Misc
+type: misc
 status: draft
+maturity: draft
 created: {today}
 last_touched: {today}
 parents: []
 links: []
 aliases: [misc, fallback]
+tags: []
 ---
 
 # Misc
 
-> Cốt lõi: Default fallback cho entries chưa match topic nào trong workspace `{name}`.
+## TL;DR
 
-## [exp]
-(empty)
+> Default fallback cho entries chưa match topic nào trong workspace `{name}`.
 
-## [ref]
-(empty)
+## Aspects (auto)
 
-## [decision]
-(empty)
+(empty — dated `YYYY-MM-DD-<aspect>.md` siblings appear here after first write)
 
-## [reflection]
-(empty)
+## Cross-links (manual)
+
+(curate `[[wikilinks]]` to related topics here — preserved across MOC rebuilds)
 """
 
 _WS_MAP = """---
 type: MOC
 folder: workspaces/{name}
 workspace: {name}
+layout_version: 3
 last_rebuilt: {today}
 ---
 
@@ -140,7 +142,7 @@ last_rebuilt: {today}
 
 ## Subfolders (auto)
 
-(none yet — lazy nest khi ≥5 topic chung domain, e.g. starrocks/, monitoring/grafana/)
+(none)
 
 ## Parent (auto)
 
@@ -196,12 +198,13 @@ Tool quirks **specific to workspace `{name}`**. System tools → `shared/tools.m
 _DOCS_FILES = """---
 type: files-map
 workspace: {name}
+layout_version: 3
 last_rebuilt: {today}
 ---
 
 # Workspace files map: {name}
 
-## Tree (v2.3)
+## Tree (v3.0)
 
 ```
 workspaces/{name}/
@@ -211,14 +214,16 @@ workspaces/{name}/
 ├── docs/{{handoff,exp,ref,tools,files}}.md   RESERVED
 ├── journal/<date>.md     RESERVED
 ├── skills/<slug>.md      RESERVED (optional override of shared/skills/)
-├── <slug>.md             top-level topic file (file-per-topic default)
-└── <domain>/             lazy-nest, ≤3 cấp khi ≥5 topic chung domain
-    ├── _MAP.md           folder MOC (auto-rebuild)
-    ├── <slug>.md
-    └── <sub>/<slug>.md   ví dụ: monitoring/grafana/alerting.md
+├── research/<topic>/     RESERVED (deep-research workspace)
+└── <slug>/               topic folder (v3.0: topic = folder)
+    ├── 00-README.md      RESERVED — topic MOC (TL;DR + Aspects auto + manual links)
+    ├── YYYY-MM-DD-<aspect>.md   dated aspect (multiple per topic)
+    └── lessons.md        RESERVED — append-only ledger
 ```
 
-Reserved names cấm làm slug/domain: docs, journal, skills, _MAP.md, AGENTS.md, workspace.json.
+Reserved subdirs at workspace root: docs, journal, skills, research.
+Reserved files at workspace root: _MAP.md, AGENTS.md, workspace.json.
+Reserved filenames INSIDE a topic folder: 00-README.md, lessons.md, _MAP.md.
 """
 
 
@@ -252,6 +257,7 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
     (ws_path / "docs").mkdir(parents=True, exist_ok=True)
     (ws_path / "journal").mkdir(parents=True, exist_ok=True)
     (ws_path / "skills").mkdir(parents=True, exist_ok=True)
+    (ws_path / "research").mkdir(parents=True, exist_ok=True)
 
     # workspace.json
     meta = {
@@ -268,12 +274,12 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
 
     fmt = {"name": name, "title": meta["title"], "today": today}
 
-    # v2.4: misc topic = folder `misc/` containing `misc.md` (Obsidian folder note)
+    # v3.0: misc topic = folder `misc/` containing `00-README.md` (MOC).
     (ws_path / "misc").mkdir(parents=True, exist_ok=True)
     pairs = [
         (ws_path / "_MAP.md", _WS_MAP),
         (ws_path / "AGENTS.md", _WS_AGENTS),
-        (ws_path / "misc" / "misc.md", _TOPIC_MISC),
+        (ws_path / "misc" / "00-README.md", _TOPIC_MISC_README),
         (ws_path / "docs" / "handoff.md", _HANDOFF),
         (ws_path / "docs" / "exp.md", _DOCS_EXP),
         (ws_path / "docs" / "ref.md", _DOCS_REF),
