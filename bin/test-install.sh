@@ -117,8 +117,6 @@ HOOK_LIST=(
   bootstrap-load.py
   auto-journal.py
   precompact-flush.py
-  user-augment.py
-  system-augment.py
   conflict-detect.py
   auto-sync.py
 )

@@ -18,7 +18,7 @@ gowth-mem studies and adapts patterns from [OpenClaw](https://github.com/opencla
 | `MEMORY.md` long-term memory | `shared/AGENTS.md` + topic files |
 | `memory/YYYY-MM-DD.md` daily notes | `workspaces/<ws>/journal/<date>.md` |
 | Dreaming (Light→REM→Deep consolidation) | `auto-journal.py` + `_prune.py` (simpler, gaps identified) |
-| `memory_search` hybrid recall | `recall-active.py` BM25+vector+grep |
+| `memory_search` hybrid recall | DROPPED v3.2 (token cost > benefit); `index.db` now slug-only via `_wikilink` |
 | `AGENTS.md` operating instructions | `shared/AGENTS.md` |
 | `skills/<slug>/SKILL.md` | `shared/skills/<slug>.md` |
 | Pre-compaction memory flush | `precompact-flush.py` HARD-BLOCK |

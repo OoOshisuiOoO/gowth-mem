@@ -1,5 +1,5 @@
 ---
-description: Build or refresh the SQLite FTS5 + (optional) sqlite-vec index over docs/** and wiki/**. Enables faster, smarter recall via BM25 + vector hybrid. Graceful fallback to FTS5-only or grep if deps/keys missing.
+description: Build or refresh the SQLite index over workspaces/**. Primarily powers `[[wikilink]]` slug resolution inside topic files. (The on-prompt recall hook was removed in v3.2.)
 ---
 
 Build / refresh the gowth-mem search index.
@@ -28,7 +28,7 @@ Both layers are **opt-in**. If `sqlite-vec` is not installed or no embedding key
 - Periodically (e.g. weekly) if you've added many entries.
 - On-demand whenever recall feels stale.
 
-The recall hook (`recall-active.py`) **automatically uses the index if it exists**. To revert to grep-only behavior, delete `.gowth-mem/index.db`.
+The index is consumed by `_wikilink.resolve()` for `[[slug]]` resolution. The on-prompt recall hook was removed in v3.2; FTS5 / vector tables are still maintained for future opt-in retrieval skills but nothing reads them today.
 
 ## Cost
 

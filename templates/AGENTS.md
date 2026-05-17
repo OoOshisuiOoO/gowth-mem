@@ -183,8 +183,8 @@ Append-at-top via `memL`. One `lessons.md` PER TOPIC FOLDER (not per dated aspec
 | `memr` | mem-reflect | | `memp` | mem-prune |
 | `memk` | mem-skillify | | `memy` | mem-sync |
 | `memb` | mem-bootstrap | | `memg` | mem-config |
-| `memh` | mem-hyde-recall | | `memm` | mem-migrate-global |
-| `memj` | mem-journal | | `memT` | mem-topic |
+| `memm` | mem-migrate-global | | `memT` | mem-topic |
+| `memj` | mem-journal | | | |
 | `memI` | mem-install | | `memL` | mem-lesson |
 | `memC` | mem-sync-resolve | | | |
 

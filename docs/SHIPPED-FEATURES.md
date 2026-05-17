@@ -11,8 +11,8 @@ here with a version tag.
 ### Tier 1 — ship now (no new deps)
 
 1. **mem0 ADD/UPDATE/DELETE/NOOP** in mem-distill skill — prevents dedup bloat, file-size wins.
-2. **Contextual retrieval** in recall-active.py — prepend heading/breadcrumb to each match line. Reported 35-67% reduction in retrieval failures.
-3. **MMR diversity** in recall-active.py — when 3 hits cluster in same file, pick across files.
+2. **Contextual retrieval** (was in recall-active.py — REMOVED v3.2 with the hook) — prepend heading/breadcrumb to each match line. Reported 35-67% reduction in retrieval failures.
+3. **MMR diversity** (was in recall-active.py — REMOVED v3.2 with the hook) — when 3 hits cluster in same file, pick across files.
 4. **Voyager skill library** convention — `docs/skills/<name>.md` with description + steps. Auto-loaded by recall when intent matches.
 5. **Generative Agents reflection** — `/mem-reflect` reads journal, produces 1-3 high-level summaries to docs/exp.md or wiki/concepts.
 
@@ -25,7 +25,7 @@ here with a version tag.
 ### Tier 3 — architectural
 
 9. ✅ **SHIPPED v0.5**: Temporal facts — `valid_until: YYYY-MM-DD` and `(superseded)` markers; recall auto-skips invalid lines.
-10. ✅ **SHIPPED v0.6**: HyDE-lite — exposed as opt-in `/mem-hyde-recall <question>` skill rather than auto-on-prompt. Drafts hypothetical answer, embeds via index (or falls back to keyword grep), synthesizes against retrieved chunks.
+10. ✅ **SHIPPED v0.6 / REMOVED v3.2**: HyDE-lite — was exposed as opt-in `/mem-hyde-recall <question>` skill. Removed alongside `recall-active.py`; token cost > benefit in observed usage.
 11. ✅ **SHIPPED v0.5**: Provider prompt caching guidance in `templates/AGENTS.md` § Token efficiency. Stable prefix (AGENTS / SECRETS / TOOLS / FILES) → cache hit; volatile suffix (handoff / journal / recall) → cache miss expected.
 
 ### Bonus shipped v0.5
@@ -58,7 +58,7 @@ After studying [MemPalace](https://github.com/MemPalace/mempalace) (their `mempa
 
 14. ✅ **PreCompact upgraded to BLOCK** — was advisory `additionalContext`; now `decision: "block"` with full save instructions. Compact can't proceed until docs/* are flushed.
 
-15. ✅ **UserPromptSubmit intent → inline skill body** — `user-augment.py` detects intents (save / skillify / reflect / bootstrap; English + Vietnamese) and injects FULL skill instructions inline. Claude executes the skill behavior without `/mem-*` slash command.
+15. ✅ **SHIPPED v0.7 / REMOVED v3.2**: UserPromptSubmit intent → inline skill body — `user-augment.py` detected intents (save / skillify / reflect / bootstrap; English + Vietnamese) and injected FULL skill instructions inline. Removed v3.2 alongside `recall-active.py` + `system-augment.py`: per-prompt augmentation duplicated the SessionStart bootstrap and burned tokens on every turn.
 
 Note on MemPalace storage: their plugin DOES use ChromaDB embeddings under the hood (verified from `mempalace/searcher.py` + plugin manifest keywords `chromadb`). What's distinctive is they store **verbatim text** with embeddings as the index — no summarization/paraphrasing. The "no manual skill" pattern was the actual lesson worth porting.
 
@@ -117,6 +117,21 @@ After dual-track review (`code-reviewer` REQUEST CHANGES, `security-reviewer` ME
 40. ✅ **Quoted heredocs + clean-room install hardening** — `bin/test-install.sh` heredocs are now `<<'PY'` (no shell expansion / injection); paths passed via `GOWTH_SCRIPTS`/`GOWTH_TMP` env vars. Added: comment-guard gitignore test, perm verification (`0o700`/`0o600`), dedup self-heal poison-recovery test.
 
 Test coverage: 102/102 unit tests + 6/6 `bin/test-install.sh` steps green (verified parallel). New tests in `test_privacy_dedup_audit.py`: 8 new privacy shapes, `AuditPermissionsTests`, `DedupSelfHealTests` (3 poison shapes), `SafeWriteTests`, `PruneFirstWriteWinsTests`, extended `GitignoreBackfillTests` (comment-only mention + negation).
+
+### Shipped v3.2 — drop per-prompt augmentation hooks
+
+After 4 months of v0.7/v0.6 on-prompt magic in production, the per-turn token cost (system-augment + recall-active + user-augment fired on EVERY UserPromptSubmit) outweighed retrieval benefit. SessionStart bootstrap already loads stable context once; Claude can grep / wikilink-resolve on demand for the rest.
+
+41. ✅ **Dropped `recall-active.py`** — UserPromptSubmit hook that ran BM25 + vector hybrid retrieval against `index.db` on every prompt. Index.db is retained but its consumer is now only `_wikilink.resolve()` for `[[slug]]` lookup. `/mem-reindex` still ships so wikilinks keep working.
+
+42. ✅ **Dropped `user-augment.py`** — UserPromptSubmit hook that pattern-matched intents (`INLINE_MEM_SAVE`, `INLINE_MEM_REFLECT`, …; English + Vietnamese) and inlined full skill body. Replaced by direct `/mem-save`, `/mem-reflect`, etc. — explicit skill invocation is cheaper than always-on regex.
+
+43. ✅ **Dropped `system-augment.py`** — SessionStart context augmenter that injected extra system messages duplicating `shared/AGENTS.md`. `bootstrap-load.py` already covers the same prefix; the duplication was confusing the cache + costing tokens.
+
+44. ✅ **Dropped `/mem-hyde-recall` skill + command** — opt-in HyDE retrieval was tied to `recall-active.py`'s embedding/scoring stack; standalone it duplicated `/mem-reindex` setup with no surviving consumer.
+
+Hook entrypoints: 8 → 5 (`bootstrap-load`, `auto-journal`, `precompact-flush`, `conflict-detect`, `auto-sync`).
+Test coverage: 94/94 unit tests + 6/6 `bin/test-install.sh` steps green (was 102/102; 8 tests removed alongside their subjects — `test_multi_aspect_recall_v3.py` deleted entirely, 3 `MultiSignalTests` methods excised from `test_regressions.py`).
 
 ### Tier 4 — out of scope
 

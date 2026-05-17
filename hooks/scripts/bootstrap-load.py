@@ -11,7 +11,7 @@ Stable prefix (always loaded, helps Anthropic prompt cache):
 Conditional (today only):
   6. workspaces/<ws>/journal/<today>.md  — loaded ONLY if it already exists
 
-Deferred to recall-active.py at query time (NOT loaded here):
+NOT loaded here (Claude reads on-demand via grep / `[[wikilink]]` / explicit Read):
   - workspaces/<ws>/docs/{exp,ref,tools,files}.md
   - topic files (workspace root subdirs)
   - skills/ content

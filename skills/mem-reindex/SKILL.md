@@ -5,7 +5,9 @@ description: Use to (re)build the gowth-mem SQLite search index over docs/** and
 
 # mem-reindex
 
-Build or refresh the search index used by recall-active.py.
+Build or refresh the SQLite index that powers `[[wikilink]]` slug resolution in `_wikilink.resolve()`.
+
+(The on-prompt recall hook was removed in v3.2 — see CLAUDE.md for the rationale. FTS5 + vector tables are still built so future opt-in retrieval skills can consume them, but nothing in the runtime path reads them today.)
 
 ## Pre-requisites
 
@@ -21,7 +23,7 @@ Build or refresh the search index used by recall-active.py.
    - Add `--full` to rebuild from scratch (rare; only if the index is corrupted).
 2. The script reports: number of files / chunks indexed, vector embeddings made (if any), and which fallback (if any) was used.
 3. Add `.gowth-mem/` to the workspace `.gitignore` if not already.
-4. Confirm the index works by running a recall: a quick `/mem-bootstrap` or any user prompt should now show snippets via the index.
+4. Confirm slug resolution: open a topic file with a `[[wikilink]]` and verify it resolves.
 
 ## Verification
 

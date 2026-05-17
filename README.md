@@ -153,13 +153,10 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 |---|---|---|
 | SessionStart | `bootstrap-load.py` | Inject shared rules, workspace rules, docs, recent topics, and journal snippets |
 | SessionStart | `auto-sync.py --pull-only --quiet` | Rebase remote into local without pushing |
-| SessionStart | `system-augment.py` | Inject cwd, git, OS, host, and datetime |
 | PreCompact | `precompact-flush.py` | Hard-block with distill instructions before compact |
 | PreCompact | `auto-sync.py --commit-only --quiet` | Commit local memory changes without network |
 | PostCompact | `auto-sync.py --pull-rebase-push --quiet` | Pull, rebase, push; conflict writes `SYNC-CONFLICT.md` |
 | UserPromptSubmit | `conflict-detect.py` | Remind when sync conflict resolution is pending |
-| UserPromptSubmit | `recall-active.py` | Hybrid FTS5/vector/grep recall, MMR diversity, SRS resurfacing, wikilink follow |
-| UserPromptSubmit | `user-augment.py` | Inject rules and shortcut intent context |
 | Stop | `auto-journal.py` | Periodic journal/distill reminder |
 
 ## Slash commands & shortcuts
@@ -178,7 +175,6 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-reflect` | `memr` | Generate reflections |
 | `/mem-skillify` | `memk` | Extract reusable workflows |
 | `/mem-bootstrap` | `memb` | Print workspace / doing / next / blocker |
-| `/mem-hyde-recall` | `memh` | HyDE retrieval for conceptual queries |
 | `/mem-journal` | `memj` | Open today's journal |
 | `/mem-reindex` | `memx` | Rebuild SQLite FTS5 + optional vector index |
 | `/mem-cost` | `memc` | Estimate bootstrap token footprint |
@@ -219,13 +215,7 @@ If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md
 
 ## Recall
 
-Each user prompt triggers `recall-active.py`:
-
-1. Scope defaults to active workspace + `shared/` unless cross-workspace recall is enabled.
-2. If `index.db` exists, use hybrid FTS5 BM25 + optional sqlite-vec.
-3. Otherwise grep workspace/shared markdown files.
-4. Skip `(superseded)` lines and expired `valid_until:` lines.
-5. Apply MMR diversity, wikilink follow, and SRS resurfacing.
+On-prompt recall hook was removed in v3.2 (token cost > retrieval benefit). Use direct queries via slash commands or grep/Read tools. The `index.db` (built by `/mem-reindex`) still powers `[[wikilink]]` slug resolution inside topic files.
 
 ## Token security
 
@@ -296,13 +286,10 @@ memx                    # build local index
 |---|---|---|
 | SessionStart | `bootstrap-load.py` | Inject shared+workspace rules, docs/handoff, top topic gần đây, journal hôm nay (cap 15k tổng) |
 | SessionStart | `auto-sync.py --pull-only` | Rebase remote → local, không push |
-| SessionStart | `system-augment.py` | cwd, git, OS, host, datetime |
 | PreCompact | `precompact-flush.py` | **HARD-BLOCK** distill journal → topics trước khi compact |
 | PreCompact | `auto-sync.py --commit-only` | Commit local không network |
 | PostCompact | `auto-sync.py --pull-rebase-push` | Sync đầy đủ; conflict → `SYNC-CONFLICT.md` |
 | UserPromptSubmit | `conflict-detect.py` | Nhắc chạy `/mem-sync-resolve` khi có conflict |
-| UserPromptSubmit | `recall-active.py` | Hybrid FTS5/vector/grep recall, MMR, SRS, wikilink follow |
-| UserPromptSubmit | `user-augment.py` | Inject rules + shortcut intent |
 | Stop | `auto-journal.py` | Mỗi 10 turn: BLOCK với hướng dẫn auto-distill + active prune |
 
 ### Slash command & shortcut
@@ -320,7 +307,6 @@ memx                    # build local index
 | `/mem-reflect` | `memr` | Sinh reflection |
 | `/mem-skillify` | `memk` | Extract workflow tái dùng |
 | `/mem-bootstrap` | `memb` | 3 dòng: doing / next / blocker |
-| `/mem-hyde-recall` | `memh` | HyDE retrieval cho conceptual query |
 | `/mem-journal` | `memj` | Mở journal hôm nay |
 | `/mem-reindex` | `memx` | Rebuild SQLite FTS5+vec |
 | `/mem-cost` | `memc` | Estimate token footprint của bootstrap |
@@ -328,13 +314,7 @@ memx                    # build local index
 | `/mem-lesson` | `memL` | Append 5-field bug/lesson |
 | `/mem-doctor` | — | Self-heal install path drift (issue #52218) |
 
-Shortcut match ở **đầu prompt**:
-
-```
-mems quyết định dùng EMA cross 9/21
-memb
-memh làm sao plugin install hooks?
-```
+Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-bootstrap`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp.
 
 ### 7-type schema (line-level prefix trong topic file)
 
@@ -360,13 +340,7 @@ Windows không có `fcntl` → khuyến nghị single-session.
 
 ### Recall (tìm lại knowledge cũ)
 
-Mỗi UserPrompt → `recall-active.py`:
-
-1. Scope default: active workspace + `shared/`.
-2. Có `index.db` → hybrid FTS5 BM25 + sqlite-vec (optional).
-3. Không có → grep workspace + shared markdown.
-4. Skip `(superseded)` + `valid_until:` đã hết hạn.
-5. MMR diversity, wikilink follow 1 hop, SRS resurfacing (~25% prob, ≥7 days unseen).
+On-prompt recall hook đã bỏ ở v3.2 (token cost > benefit). Dùng slash command + grep/Read trực tiếp. `index.db` (build bằng `/mem-reindex`) vẫn còn dùng để resolve `[[wikilink]]` slug.
 
 ### Token security
 

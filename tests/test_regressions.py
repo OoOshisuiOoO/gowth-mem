@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -202,47 +201,7 @@ class LintTests(unittest.TestCase):
                 os.unlink(f.name)
 
 
-class MultiSignalTests(unittest.TestCase):
-    def test_recall_compiles(self):
-        subprocess.run(
-            [sys.executable, "-m", "py_compile", str(SCRIPTS / "recall-active.py")],
-            check=True,
-        )
-
-    def test_multi_signal_score_unknown_path_returns_tier(self):
-        mod = load_module("recall", SCRIPTS / "recall-active.py")
-        with tempfile.NamedTemporaryFile(suffix=".md") as tf:
-            p = Path(tf.name)
-            score = mod.multi_signal_score(p, {"files": {}}, 80, time.time())
-            self.assertAlmostEqual(score, 0.8, places=2)
-
-    def test_multi_signal_score_with_history_boosts(self):
-        # v3 layout: topic = workspaces/<ws>/<slug>/00-README.md (MOC)
-        with tempfile.TemporaryDirectory() as td:
-            home = Path(td)
-            topic_dir = home / "workspaces" / "test" / "topic"
-            topic_dir.mkdir(parents=True)
-            (topic_dir / "00-README.md").write_text("# topic\n> TL;DR\n")
-            env = os.environ.copy()
-            env["GOWTH_MEM_HOME"] = str(home)
-            code = (
-                "import sys, time; sys.path.insert(0, 'hooks/scripts');"
-                "import importlib.util;"
-                "spec = importlib.util.spec_from_file_location('recall', 'hooks/scripts/recall-active.py');"
-                "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod);"
-                "now = time.time();"
-                "from pathlib import Path; p = Path('" + str(topic_dir / "00-README.md") + "');"
-                "state = {'files': {'workspaces/test/topic/00-README.md': {"
-                "'count': 15, 'last_seen': now - 3600,"
-                "'query_hashes': ['a','b','c','d','e'],"
-                "'days_seen': ['2026-05-01','2026-05-02','2026-05-03']}}};"
-                "s1 = mod.multi_signal_score(p, state, 80, now);"
-                "s2 = mod.multi_signal_score(p, {'files': {}}, 80, now);"
-                "assert s1 > s2, f'{s1} not > {s2}'"
-            )
-            subprocess.run(
-                [sys.executable, "-c", code], cwd=ROOT, env=env, check=True)
-
+class AutoSyncRebaseTests(unittest.TestCase):
     def test_pull_rebase_auto_stashes_dirty_tree_and_restores(self):
         auto_sync = load_module("gowth_auto_sync", SCRIPTS / "auto-sync.py")
         with tempfile.TemporaryDirectory() as td:

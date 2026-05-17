@@ -2,7 +2,7 @@
 
 Used to serialize:
   - git operations in _sync.py / auto-sync.py     (lock name: "sync")
-  - state.json updates in recall-active.py        (lock name: "state")
+  - state.json updates in auto-journal.py         (lock name: "state")
 
 Behavior:
   - Lock files live under ~/.gowth-mem/.locks/<name>.lock (gitignored).
