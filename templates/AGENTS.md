@@ -1,58 +1,52 @@
 # AGENTS.md (shared — cross-workspace)
 
-Hard rules. Workflow. Must / never. Stable across workspaces.
-Per-workspace overrides live in `workspaces/<ws>/AGENTS.md`.
+Hard rules. Stable across workspaces. Per-workspace overrides: `workspaces/<ws>/AGENTS.md`.
 
 ## 1. Identity
 
-Long-term cross-project memory layer for Claude Code. Single global vault at `~/.gowth-mem/`, synced via private git remote.
-Mỗi session = **1 active workspace** (devops / trade / personal / default). Knowledge updates ghi vào active workspace, không lan sang ws khác trừ khi explicit.
-Tự đọc state, tự tra `shared/secrets.md` khi cần tài nguyên, tự ghi lại kinh nghiệm khi học. Không hỏi lại thứ đã có trong docs.
+Persistent memory layer for Claude Code. Single vault `~/.gowth-mem/`, synced via git remote.
+1 session = 1 active workspace. Knowledge stays in active ws unless explicit cross-ws.
+Tự đọc state, tra `shared/secrets.md`, ghi kinh nghiệm. Không hỏi lại thứ đã có trong docs.
 
-## 2. Active workspace (BẮT BUỘC mỗi session)
+## 2. Workspace resolve
 
-Resolve order (first match wins): env `GOWTH_WORKSPACE` → glob `$PWD` trong `config.json.workspace_map` → `config.json.active_workspace` → `"default"`.
-Switch trong session: `/mem-workspace <name>`.
+First match wins: env `GOWTH_WORKSPACE` → `config.json.workspace_map` glob → `config.json.active_workspace` → `"default"`.
+Switch: `/mem-workspace <name>`.
 
-## 3. Bootstrap order (SessionStart)
+## 3. Bootstrap (SessionStart)
 
-1. **Global**: `shared/AGENTS.md` (file này) → `shared/files.md` → `shared/secrets.md` → `shared/tools.md`.
-2. **Workspace**: `workspaces/<ws>/AGENTS.md` (override) → `<ws>/_MAP.md` → `<ws>/docs/handoff.md` → `<ws>/docs/{exp,ref,tools,files}.md` → top-3 topics (frontmatter.last_touched) → `<ws>/journal/{today,yesterday}.md` → `<ws>/skills/_index`.
+1. **Global**: `shared/AGENTS.md` → `shared/{files,secrets,tools}.md`
+2. **Workspace**: `<ws>/AGENTS.md` → `<ws>/_MAP.md` → `<ws>/docs/handoff.md` → `<ws>/docs/{exp,ref,tools,files}.md` → top-3 topics → `<ws>/journal/{today,yesterday}.md` → `<ws>/skills/_index`
 
-Sau bootstrap → 3 dòng: **workspace=<ws> / đang làm gì / step kế / blocker**.
+Output: **workspace=<ws> / đang làm gì / step kế / blocker**.
 
 ## 4. Layout
 
 ```
 ~/.gowth-mem/
-├── shared/                   ★ cross-workspace
-│   ├── AGENTS.md             ← THIS FILE (global rules)
-│   ├── _MAP.md  files.md  secrets.md  tools.md
+├── shared/                   cross-workspace
+│   ├── AGENTS.md  _MAP.md  files.md  secrets.md  tools.md
 │   └── skills/<slug>.md
-│
 └── workspaces/<ws>/
-    ├── AGENTS.md             workspace-specific rules (slim)
-    ├── workspace.json  _MAP.md
-    ├── docs/                 RESERVED — handoff/exp/ref/tools/files
-    ├── journal/<date>.md     RESERVED
-    ├── skills/<slug>.md      RESERVED
-    ├── <slug>/               ★ TOPIC FOLDER (Obsidian folder-note)
-    │   ├── <slug>.md         landing (filename = folder name)
-    │   ├── <aspect>.md       sub-aspect — first-class slug `<aspect>`
-    │   └── lessons.md        ★ folder ledger (5-field schema)
-    └── <domain>/             DOMAIN folder (no <domain>/<domain>.md)
-        ├── _MAP.md
-        └── <sub>/<sub>.md    nested topic (≤3 cấp)
+    ├── AGENTS.md  workspace.json  _MAP.md
+    ├── docs/                 handoff/exp/ref/tools/files
+    ├── journal/<date>.md
+    ├── skills/<slug>.md
+    ├── <slug>/               topic folder (Obsidian folder-note)
+    │   ├── <slug>.md         landing page
+    │   ├── <aspect>.md       sub-aspect
+    │   └── lessons.md        folder ledger (§6)
+    └── <domain>/_MAP.md      domain grouping (no <domain>.md)
 ```
 
-`[[<slug>]]` resolves natively → `<somewhere>/<slug>/<slug>.md`.
-Reserved (cấm làm slug/domain): `docs`, `journal`, `skills`, `_MAP.md`, `AGENTS.md`, `workspace.json`.
+Reserved names: `docs`, `journal`, `skills`, `_MAP.md`, `AGENTS.md`, `workspace.json`.
+Default flat. ≥5 topics same domain → nest. Max 3 levels. `_MAP.md` auto-generated; `## Cross-links (manual)` never overwritten.
 
 ## 5. Topic file format
 
 ```markdown
 ---
-slug: ema-cross               # unique TRONG ws, kebab-case ≤60
+slug: ema-cross               # unique in ws, kebab-case ≤60
 title: EMA Cross Strategy
 status: draft|active|distilled|archived
 created: 2026-05-02
@@ -61,110 +55,88 @@ parents: [strategies, trend]
 links: [rsi, breakout]
 aliases: [ema-9-21]
 ---
-
 # EMA Cross Strategy
 > Cốt lõi 1 dòng.
 
-## [exp]      ← episodic, 1-2 dòng
-## [ref]      ← verified fact, **Source: BẮT BUỘC**
-## [decision] ← architectural choice + rationale
-## [reflection] ← pattern (sinh weekly qua /mem-reflect)
-## [tool]     ← tool quirk topic này (cross-topic → <ws>/docs/tools.md)
+## [exp]        episodic, 1-2 dòng
+## [ref]        verified fact, Source: BẮT BUỘC
+## [decision]   architectural choice + rationale
+## [reflection] pattern (weekly qua /mem-reflect)
+## [tool]       tool quirk (cross-topic → docs/tools.md)
 ```
 
-## 6. `[lesson]` 5-field schema (lessons.md per topic folder)
+## 6. Lesson schema (lessons.md per topic folder)
 
 ```markdown
-## <Symptom — observable error / behavior, becomes H2 cho FTS5 prefix>
+## <Symptom — observable error, H2 for FTS5>
 - **Tried**: <ordered attempts>
-- **Root cause**: <1 line; optional 5-Whys>
-- **Fix**: <working command / patch / config>
-- **Source**: <commit | file:line | URL>     # optional
+- **Root cause**: <1 line>
+- **Fix**: <working command/patch>
+- **Source**: <commit | file:line | URL>
 - **When**: 2026-05-04
 ```
 
-Append-at-top via `memL`. Một lessons.md PER TOPIC FOLDER (không per sub-aspect).
+Append-at-top via `memL`. One lessons.md per topic folder.
 
-## 7. Slug + wikilink scope
+## 7. Slugs & wikilinks
 
-- Slug unique **trong cùng workspace**. 2 ws có thể trùng slug.
-- `[[slug]]` → resolve trong active ws.
-- `[[ws:slug]]` → cross-workspace explicit. `[[shared:secrets]]` → shared registry.
-- Slug regex: `^[a-z0-9-]{1,60}$`. Conflict same ws → reject.
+- Slug unique within workspace. Regex: `^[a-z0-9-]{1,60}$`.
+- `[[slug]]` → active ws. `[[ws:slug]]` → cross-ws. `[[shared:secrets]]` → shared.
 - KHÔNG đổi slug đã publish (vỡ wikilinks). Đổi parents OK qua `/mem-restructure`.
 
 ## 8. Lifecycle
 
-- `status`: `draft → active → distilled → archived`.
-- File >800 dòng → `/mem-promote` split.
-- 6 tháng untouched + distilled → `<ws>/_archive/<slug>/`.
-- Workspace 6 tháng untouched → `/mem-workspace-archive`.
+`draft → active → distilled → archived`. File >800 dòng → `/mem-promote` split. 6 tháng untouched + distilled → archive.
 
-## 9. Lazy nesting + MOC
+## 9. Workflow
 
-- Default FLAT trong workspace. ≥5 topic chung domain → đề xuất nest. Max 3 cấp.
-- Mỗi folder có `_MAP.md` (auto qua `_moc.py`). `## Cross-links (manual)` NEVER overwritten.
-
-## 10. Recall scope
-
-- Default `recall.cross_workspace=false`: search active ws + `shared/`.
-- Wikilink follow: 1 hop default.
-- Skip lines `(superseded)` / expired `valid_until:`.
-
-## 11. Workflow
-
-1. Throughout: log raw vào `<ws>/journal/<today>.md` (`memj`).
-2. Repeating ≥2× → `memk` (skill: `<ws>/skills/<name>.md` hoặc `shared/skills/`).
-3. Bug / surprise → `memL <symptom> -- <tried> -- <root> -- <fix> [-- <source>]`.
-4. PreCompact → distill journal → topic-bound entries (active ws).
+1. Log raw → `journal/<today>.md` (`memj`).
+2. Repeating ≥2× → `memk` (skillify).
+3. Bug/surprise → `memL <symptom> -- <tried> -- <root> -- <fix>`.
+4. PreCompact → distill journal → topic entries.
 5. PostCompact → auto-sync pull-rebase-push.
-6. Weekly → `memr` (1-3 `[reflection]` mới).
-7. Research-first: no evidence → no implementation. `[ref]` phải có `Source:`.
+6. Weekly → `memr` (1-3 reflections).
+7. Research-first: no evidence → no implement. `[ref]` must have `Source:`.
 8. Tools-first: tra `shared/tools.md` + `<ws>/docs/tools.md` trước khi tự code.
 9. Verify before claim: no log/screenshot/test → no "done".
 
-## 12. Shortcut alias table
+## 10. Shortcuts
 
-Prefix ngay đầu prompt. **Capital-suffix là CASE-SENSITIVE** để tránh va lowercase variants.
+| Alias | Skill | | Alias | Skill |
+|---|---|---|---|---|
+| `mems` | mem-save | | `memx` | mem-reindex |
+| `memd` | mem-distill | | `memc` | mem-cost |
+| `memr` | mem-reflect | | `memp` | mem-prune |
+| `memk` | mem-skillify | | `memy` | mem-sync |
+| `memb` | mem-bootstrap | | `memg` | mem-config |
+| `memh` | mem-hyde-recall | | `memm` | mem-migrate-global |
+| `memj` | mem-journal | | `memT` | mem-topic |
+| `memI` | mem-install | | `memL` | mem-lesson |
+| `memC` | mem-sync-resolve | | | |
 
-| Lowercase | Capital | Skill |
-|---|---|---|
-| `mems` | — | mem-save |
-| `memd` | — | mem-distill |
-| `memr` | — | mem-reflect |
-| `memk` | — | mem-skillify |
-| `memb` | — | mem-bootstrap |
-| `memh` | — | mem-hyde-recall |
-| `memj` | — | mem-journal |
-| `memx` | — | mem-reindex |
-| `memc` | — | mem-cost |
-| `memp` | — | mem-prune |
-| `memy` | — | mem-sync |
-| `memg` | — | mem-config |
-| `memm` | — | mem-migrate-global |
-| — | `memT` | mem-topic |
-| — | `memI` | mem-install |
-| — | `memC` | mem-sync-resolve |
-| — | `memL` | mem-lesson |
+Capital-suffix is case-sensitive.
 
-## 13. Auto-sync flow
+## 11. Auto-sync
 
 ```
 SessionStart  → auto-sync.py --pull-only
 PreCompact    → auto-sync.py --commit-only
-PostCompact   → auto-sync.py --pull-rebase-push (AI conflict on collision)
+PostCompact   → auto-sync.py --pull-rebase-push
 ```
 
-`SYNC-CONFLICT.md` tồn tại → mỗi prompt nhắc `/mem-sync-resolve`. KHÔNG sửa marker tay.
+`SYNC-CONFLICT.md` exists → mỗi prompt nhắc `/mem-sync-resolve`. KHÔNG sửa markers tay.
 
-## 14. Guardrails (KHÔNG)
+## 12. Recall
 
-- KHÔNG commit secret value vào git. `shared/secrets.md` là POINTER only (env-var name + cách lấy).
+Default `cross_workspace=false`: search active ws + `shared/`. Wikilink follow: 1 hop. Skip `(superseded)` / expired `valid_until:`.
+
+## 13. Guardrails
+
+- KHÔNG commit secret values — `secrets.md` is pointer-only (env-var names).
 - KHÔNG skip bootstrap.
-- KHÔNG giữ entry mâu thuẫn — entry mới đúng → DELETE cũ (hoặc `(superseded)`).
+- KHÔNG giữ entry mâu thuẫn — mới đúng → DELETE cũ (hoặc `(superseded)`).
 - KHÔNG promote `[ref]` không có `Source:`.
 - KHÔNG sửa `SYNC-CONFLICT.md` markers tay.
-- KHÔNG nest >3 cấp dưới workspace root.
-- KHÔNG đổi slug đã publish.
-- KHÔNG ghi knowledge từ ws A vào ws B mà không declare cross.
-- Mỗi update knowledge → 1 commit `knowledge(<ws>/<slug>): mô tả` (auto bởi sync hook).
+- KHÔNG nest >3 levels. KHÔNG đổi slug đã publish.
+- KHÔNG ghi ws A knowledge vào ws B without cross declare.
+- Mỗi knowledge update → commit `knowledge(<ws>/<slug>): mô tả`.

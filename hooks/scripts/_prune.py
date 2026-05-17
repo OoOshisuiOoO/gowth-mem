@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
-from _home import docs_dir, gowth_home, topics_dir  # type: ignore
+from _home import docs_dir, gowth_home, list_workspaces, topics_dir  # type: ignore
 
 ENTRY_RE = re.compile(r"^\s*[-*]\s+\[")
 VALID_UNTIL_RE = re.compile(r"valid[_-]?until:\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
@@ -103,11 +103,11 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
     return (deleted, len(kept_entries))
 
 
-def collect_files() -> list[Path]:
+def collect_files(ws: str | None = None) -> list[Path]:
     out: list[Path] = []
     skip_names = {"_index.md", "_MAP.md", "lessons.md"}
     skip_subdirs = {"docs", "journal", "skills"}  # walked separately or never pruned
-    td = topics_dir()
+    td = topics_dir(ws)
     if td.is_dir():
         for p in td.rglob("*.md"):
             if not p.is_file() or p.name in skip_names:
@@ -119,28 +119,18 @@ def collect_files() -> list[Path]:
             if rel.parts and rel.parts[0] in skip_subdirs:
                 continue
             out.append(p)
-    dd = docs_dir()
+    dd = docs_dir(ws)
     if dd.is_dir():
         out.extend(p for p in dd.glob("*.md") if p.is_file())
     return sorted(out)
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-
-    gh = gowth_home()
-    if not gh.is_dir():
-        print(f"no ~/.gowth-mem directory; nothing to prune")
-        return 0
-
-    today_iso = date.today().isoformat()
+def _prune_workspace(ws: str | None, dry_run: bool, today_iso: str, gh: Path) -> tuple[int, int, list[tuple[str, int, int]]]:
     total_deleted = 0
     total_kept = 0
     affected: list[tuple[str, int, int]] = []
-    for f in collect_files():
-        deleted, kept = prune_file(f, args.dry_run, today_iso)
+    for f in collect_files(ws):
+        deleted, kept = prune_file(f, dry_run, today_iso)
         if deleted > 0:
             try:
                 rel = str(f.relative_to(gh))
@@ -149,13 +139,39 @@ def main() -> int:
             affected.append((rel, deleted, kept))
         total_deleted += deleted
         total_kept += kept
+    return total_deleted, total_kept, affected
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--all-workspaces", action="store_true",
+                     help="Prune all workspaces, not just the active one")
+    args = ap.parse_args()
+
+    gh = gowth_home()
+    if not gh.is_dir():
+        print(f"no ~/.gowth-mem directory; nothing to prune")
+        return 0
+
+    today_iso = date.today().isoformat()
+    workspaces = list_workspaces() if args.all_workspaces else [None]
+
+    total_deleted = 0
+    total_kept = 0
+    all_affected: list[tuple[str, int, int]] = []
+    for ws in workspaces:
+        d, k, a = _prune_workspace(ws, args.dry_run, today_iso, gh)
+        total_deleted += d
+        total_kept += k
+        all_affected.extend(a)
 
     prefix = "[dry-run] " if args.dry_run else ""
-    if not affected:
+    if not all_affected:
         print(f"{prefix}prune: nothing to drop. {total_kept} entries verified clean.")
         return 0
-    print(f"{prefix}prune: deleted {total_deleted} entries across {len(affected)} files. {total_kept} entries kept.")
-    for rel, d, k in affected:
+    print(f"{prefix}prune: deleted {total_deleted} entries across {len(all_affected)} files. {total_kept} entries kept.")
+    for rel, d, k in all_affected:
         print(f"  {rel}: -{d} entries (now {k})")
     return 0
 

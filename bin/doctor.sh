@@ -143,8 +143,10 @@ if [ ! -f "$EXPECTED_CACHE/.claude-plugin/plugin.json" ]; then
     exit 0
   fi
   # tar-pipe: portable copy with excludes (no rsync dep)
+  # Exclude dev artifacts that confuse Claude Code plugin discovery
   if ! tar -c -C "$MARKET_DIR" \
         --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' \
+        --exclude='.claude' --exclude='.omc' --exclude='.github' \
         . | tar -x -C "$EXPECTED_CACHE"; then
     warn "cache copy failed"
     exit 0
