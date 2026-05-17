@@ -53,6 +53,22 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("workspaces/<ws>/", text)
         self.assertNotIn("├── topics/", text)
 
+    def test_readme_describes_v3_topic_folder_layout(self):
+        text = (ROOT / "README.md").read_text()
+        # v3 layout markers: 00-README.md MOC + YYYY-MM-DD-<aspect>.md dated aspect
+        self.assertIn("00-README.md", text)
+        self.assertIn("YYYY-MM-DD", text)
+
+    def test_settings_template_carries_layout_version_3(self):
+        import json
+        p = ROOT / "templates" / "dot-gowth-mem" / "settings.example.v3.json"
+        self.assertTrue(p.is_file(), "settings.example.v3.json missing")
+        data = json.loads(p.read_text())
+        self.assertEqual(data.get("layout_version"), 3)
+        self.assertEqual(data.get("topic_layout", {}).get("mode"), "folder")
+        # Reserved subdirs include research/ in v3
+        self.assertIn("research", data.get("topic_layout", {}).get("reserved_subdirs", []))
+
     def test_no_command_references_flat_topics_path(self):
         cmds = ROOT / "commands"
         for md in cmds.glob("*.md"):
@@ -201,11 +217,12 @@ class MultiSignalTests(unittest.TestCase):
             self.assertAlmostEqual(score, 0.8, places=2)
 
     def test_multi_signal_score_with_history_boosts(self):
+        # v3 layout: topic = workspaces/<ws>/<slug>/00-README.md (MOC)
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             topic_dir = home / "workspaces" / "test" / "topic"
             topic_dir.mkdir(parents=True)
-            (topic_dir / "topic.md").write_text("- [ref] test entry\n")
+            (topic_dir / "00-README.md").write_text("# topic\n> TL;DR\n")
             env = os.environ.copy()
             env["GOWTH_MEM_HOME"] = str(home)
             code = (
@@ -214,8 +231,8 @@ class MultiSignalTests(unittest.TestCase):
                 "spec = importlib.util.spec_from_file_location('recall', 'hooks/scripts/recall-active.py');"
                 "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod);"
                 "now = time.time();"
-                "from pathlib import Path; p = Path('" + str(topic_dir / "topic.md") + "');"
-                "state = {'files': {'workspaces/test/topic/topic.md': {"
+                "from pathlib import Path; p = Path('" + str(topic_dir / "00-README.md") + "');"
+                "state = {'files': {'workspaces/test/topic/00-README.md': {"
                 "'count': 15, 'last_seen': now - 3600,"
                 "'query_hashes': ['a','b','c','d','e'],"
                 "'days_seen': ['2026-05-01','2026-05-02','2026-05-03']}}};"
