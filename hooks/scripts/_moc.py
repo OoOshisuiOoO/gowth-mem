@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore  # noqa: F401
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
@@ -221,7 +221,7 @@ def rebuild_workspace_moc(ws: str) -> Path:
         f"## Parent (auto)\n\n- [[../_MAP|workspaces]]\n\n"
         f"{manual}"
     )
-    atomic_write(moc_path, body)
+    safe_write(moc_path, body)
     return moc_path
 
 
@@ -346,7 +346,7 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
         except Exception:
             pass
 
-    atomic_write(readme, body)
+    safe_write(readme, body)
     return readme
 
 
@@ -409,7 +409,7 @@ def rebuild_workspaces_registry() -> Path:
         f"## Archived (auto)\n\n" + "\n".join(archived) + "\n\n"
         f"{manual}"
     )
-    atomic_write(moc_path, body)
+    safe_write(moc_path, body)
     return moc_path
 
 
@@ -451,7 +451,7 @@ def rebuild_shared_moc() -> Path:
         f"## Subfolders (auto)\n\n" + "\n".join(subfolders) + "\n\n"
         f"{manual}"
     )
-    atomic_write(moc_path, body)
+    safe_write(moc_path, body)
     return moc_path
 
 

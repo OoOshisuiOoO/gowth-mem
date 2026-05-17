@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore  # noqa: F401
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
@@ -497,11 +497,11 @@ def _execute_moves(moves: list[Move], dry_run: bool, timestamp: str) -> dict:
                 merged = _merge_bodies(m.dst, body, src_label, timestamp)
                 if len(merged.encode("utf-8")) > _MAX_MERGED_SIZE:
                     print(f"WARN: merged file > 200KB at {m.dst}", file=sys.stderr)
-                atomic_write(m.dst, merged)
+                safe_write(m.dst, merged)
                 counters["conflicts"] += 1
             else:
                 m.dst.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write(m.dst, body)
+                safe_write(m.dst, body)
 
             counters["executed"] += 1
             dst_seen[m.dst] = m

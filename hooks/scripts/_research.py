@@ -33,7 +33,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore  # noqa: F401
 from _home import active_workspace, gowth_home, workspace_dir  # type: ignore
 
 
@@ -160,7 +160,7 @@ def cmd_start(topic: str, ws: str, today: str | None = None) -> Path:
     rdir.mkdir(parents=True, exist_ok=True)
     locate = locate_path(ws, topic)
     if not locate.is_file():
-        atomic_write(locate, _locate_template(topic, today))
+        safe_write(locate, _locate_template(topic, today))
     return locate
 
 
@@ -255,7 +255,7 @@ def cmd_distill(topic: str, ws: str, today: str | None = None) -> dict:
         }
     distilled = distilled_path(ws, topic)
     if not distilled.is_file():
-        atomic_write(distilled, _distilled_template(topic, today, raw_notes))
+        safe_write(distilled, _distilled_template(topic, today, raw_notes))
     return quality_gate(ws, topic)
 
 

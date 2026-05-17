@@ -122,9 +122,12 @@ def render(fm: dict, body: str) -> str:
 
 
 def update(path: Path, **changes: Any) -> None:
-    """Read file, merge changes into frontmatter, atomic-write back."""
-    from _atomic import atomic_write  # local import: avoid cycle on bare import
+    """Read file, merge changes into frontmatter, atomic-write back.
+
+    Routes through `safe_write` so synced .md updates pass the privacy filter.
+    """
+    from _atomic import safe_write  # local import: avoid cycle on bare import
 
     fm, body = parse_file(path)
     fm.update(changes)
-    atomic_write(path, render(fm, body))
+    safe_write(path, render(fm, body))

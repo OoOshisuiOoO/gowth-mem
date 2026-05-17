@@ -28,7 +28,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import safe_write  # type: ignore
 from _audit import log_prune_delete  # type: ignore
 from _home import docs_dir, gowth_home, list_workspaces, topics_dir  # type: ignore
 
@@ -47,6 +47,14 @@ def jaccard(a: str, b: str) -> float:
 
 def prune_file(path: Path, dry_run: bool, today_iso: str,
                audit_rel: str | None = None) -> tuple[int, int]:
+    """First-write-wins for Jaccard dups (safer for integrity vs longer-wins;
+    a noisy paste containing a missed secret never overwrites a clean concise one).
+
+    Audit reasons:
+      - `expired`              valid_until in the past
+      - `superseded`           explicit (superseded|deprecated|obsolete) marker
+      - `duplicate-newer-dropped`  new entry is jaccard-dup of an earlier one
+    """
     try:
         text = path.read_text()
     except Exception:
@@ -56,7 +64,7 @@ def prune_file(path: Path, dry_run: bool, today_iso: str,
     kept_lines: list[str] = []
     kept_entries: list[str] = []
     deleted = 0
-    audit_entries: list[tuple[str, str]] = []  # (reason, entry_text)
+    audit_entries: list[tuple[str, str]] = []
 
     i = 0
     while i < len(lines):
@@ -80,24 +88,17 @@ def prune_file(path: Path, dry_run: bool, today_iso: str,
                 drop_reason = "superseded"
 
             if not drop:
+                # First-write-wins: if ANY earlier kept entry is jaccard-similar,
+                # drop the new one. Earlier writes survive — integrity preserved.
                 for prev in kept_entries:
                     if jaccard(entry_text, prev) >= 0.85:
-                        if len(entry_text) > len(prev):
-                            prev_block_lines = prev.split("\n")
-                            for prev_line in prev_block_lines:
-                                if prev_line in kept_lines:
-                                    kept_lines.remove(prev_line)
-                            kept_entries.remove(prev)
-                            deleted += 1
-                            audit_entries.append(("duplicate", prev))
-                        else:
-                            drop = True
-                            drop_reason = "duplicate"
-                            break
+                        drop = True
+                        drop_reason = "duplicate-newer-dropped"
+                        break
 
             if drop:
                 deleted += 1
-                audit_entries.append((drop_reason or "duplicate", entry_text))
+                audit_entries.append((drop_reason or "duplicate-newer-dropped", entry_text))
             else:
                 kept_lines.extend(entry_block)
                 kept_entries.append(entry_text)
@@ -108,7 +109,7 @@ def prune_file(path: Path, dry_run: bool, today_iso: str,
 
     new_text = "\n".join(kept_lines)
     if new_text != text and not dry_run:
-        atomic_write(path, new_text)
+        safe_write(path, new_text)
         if audit_rel:
             for reason, body in audit_entries:
                 log_prune_delete(audit_rel, reason, body)

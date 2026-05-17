@@ -46,6 +46,26 @@ _DEFAULT_GITIGNORE = (
 _REQUIRED_IGNORES = (".audit/", ".dedup-window.json")
 
 
+def _gitignore_has_entry(existing: str, entry: str) -> bool:
+    """Line-by-line membership: skip comments / negations / blank lines.
+
+    The previous `entry in existing` substring check skipped backfill when a
+    user comment contained the literal string (e.g. `# Maybe ignore .audit/
+    later`), which would leak audit logs to the remote. This walks lines
+    explicitly and matches the *normalized* entry only.
+    """
+    target = entry.strip()
+    if not target:
+        return False
+    for raw in existing.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        if line == target:
+            return True
+    return False
+
+
 def write_default_gitignore(gh: Path) -> None:
     """Write template on first install; on subsequent runs backfill missing
     privacy/audit entries idempotently (preserves user edits to other lines)."""
@@ -57,7 +77,7 @@ def write_default_gitignore(gh: Path) -> None:
         existing = gi.read_text(errors="ignore")
     except Exception:
         return
-    missing = [e for e in _REQUIRED_IGNORES if e not in existing]
+    missing = [e for e in _REQUIRED_IGNORES if not _gitignore_has_entry(existing, e)]
     if not missing:
         return
     additions = "".join(f"{e}\n" for e in missing)

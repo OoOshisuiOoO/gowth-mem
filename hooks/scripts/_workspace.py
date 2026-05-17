@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore  # noqa: F401
 from _home import (  # type: ignore
     active_workspace,
     clear_session_workspace,
@@ -288,7 +288,7 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
     ]
     for p, tpl in pairs:
         if not p.exists():
-            atomic_write(p, tpl.format(**fmt))
+            safe_write(p, tpl.format(**fmt))
 
     return ws_path
 

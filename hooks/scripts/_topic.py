@@ -43,8 +43,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
-from _privacy import sanitize  # type: ignore
+from _atomic import safe_write  # type: ignore
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
@@ -229,8 +228,7 @@ def ensure_topic_folder(slug: str, ws: str | None = None,
         today = date.today().isoformat()
         nice_title = title or slug.replace("-", " ").title()
         body = _render_readme(topic_type, slug, nice_title, today, parents, summary)
-        cleaned, _ = sanitize(body)
-        atomic_write(readme, cleaned)
+        safe_write(readme, body)
 
     return resolved
 

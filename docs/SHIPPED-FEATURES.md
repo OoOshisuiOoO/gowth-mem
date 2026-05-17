@@ -94,6 +94,30 @@ Adopted from [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) (4-
 
 31. ✅ **gitignore backfill** — `_sync.write_default_gitignore()` now idempotently appends `.audit/` and `.dedup-window.json` to existing user gitignores while preserving user edits. New installs get full template.
 
+### Shipped v3.1.1 — code-review + security-review hardening
+
+After dual-track review (`code-reviewer` REQUEST CHANGES, `security-reviewer` MEDIUM-risk) on v3.1, applied all P1 + agreed P2 + H1/H2/M1/M2/M3/M4/L2/L3 findings:
+
+32. ✅ **`_atomic.safe_write()` chokepoint** — single function that sanitizes ALL synced `.md`/`.markdown` writes under `workspaces/` and `shared/`. Replaces ad-hoc `sanitize(); atomic_write()` patterns at 9 call sites (`_topic`, `_lesson`, `_moc`×4, `_research`×2, `_workspace`, `_migrate_v3`×2, `_frontmatter`). Non-synced paths (state.json, config.json, index.db) bypass sanitize entirely. Caller-visible `INFO: redacted N secret(s)` on stderr when n>0.
+
+33. ✅ **Expanded secret pattern catalog** — `_privacy._PATTERNS` now covers GitHub fine-grained PAT (`github_pat_…`), GitLab (`glpat-…`), npm, PyPI, OpenAI project keys (`sk-proj-…`, ordered BEFORE generic `sk-`), Slack webhooks (`hooks.slack.com/services/…`), Discord bot tokens, SendGrid (`SG.<22>.<43>`), Twilio SID, database URL credentials (`scheme://user:pass@host`), and HTTP `Bearer <token>` header (whitespace separator, dedicated pattern since kv-secret requires `:` / `=`). GitHub PAT length cap loosened to `{36,255}` to survive token format changes.
+
+34. ✅ **Tightened kv-secret value class** — `[A-Za-z0-9_\-\.+/=]{12,}` excludes URL-fragment chars (`&?#/`) and prose punctuation; ≥12 chars reduces false-positives on short identifiers like `password=abc`. Vocab expanded: `bearer`, `refresh_token`, `client_secret`, `session_token`, `credentials`, `passphrase`, `dsn`, `connection_string`.
+
+35. ✅ **Fail-OPEN with surfaced bypass (M3)** — `_privacy.sanitize()` returns `(text, -1)` sentinel on regex failure AND emits stderr warning + `.audit/sanitize-failures.log` JSONL line. Writes still proceed (never lose user data) but silent regressions become visible. `sanitize(None)` contract changed to return `("", 0)` for caller safety.
+
+36. ✅ **First-write-wins dedup-prune rule (M4)** — `_prune.py` Jaccard ≥0.85 deduplication now keeps the FIRST entry (chronologically earlier, audit-stable) and drops later duplicates with reason `duplicate-newer-dropped`. Fixed iteration-mutation bug (was iterating `kept` while appending to it).
+
+37. ✅ **Audit log permission hardening (M1)** — `_audit._open_log_secure()` chmods `.audit/` parent to `0o700`, opens log with `O_CREAT|O_WRONLY|O_APPEND` mode `0o600`, post-open `fchmod(0o600)` to guarantee perms even when umask is permissive. `f.flush() + os.fsync()` per write to survive crashes.
+
+38. ✅ **Dedup window structural self-heal (M2)** — `_dedup._load()` transparently recovers from poisoned `.dedup-window.json`: non-dict root → fresh, non-dict `entries` → empty, non-string keys / non-numeric values skipped, non-numeric `window_seconds` → default. Previously a single corrupt write would silently disable dedup for the install lifetime.
+
+39. ✅ **Line-by-line gitignore membership (P1)** — `_sync._gitignore_has_entry()` walks lines, skips `#` comments and `!` negations, matches normalized entries. Fixes substring false-positive: a user comment containing `# Maybe ignore .audit/ later` no longer bypasses the privacy backfill.
+
+40. ✅ **Quoted heredocs + clean-room install hardening** — `bin/test-install.sh` heredocs are now `<<'PY'` (no shell expansion / injection); paths passed via `GOWTH_SCRIPTS`/`GOWTH_TMP` env vars. Added: comment-guard gitignore test, perm verification (`0o700`/`0o600`), dedup self-heal poison-recovery test.
+
+Test coverage: 102/102 unit tests + 6/6 `bin/test-install.sh` steps green (verified parallel). New tests in `test_privacy_dedup_audit.py`: 8 new privacy shapes, `AuditPermissionsTests`, `DedupSelfHealTests` (3 poison shapes), `SafeWriteTests`, `PruneFirstWriteWinsTests`, extended `GitignoreBackfillTests` (comment-only mention + negation).
+
 ### Tier 4 — out of scope
 
 12. RAPTOR / GraphRAG / HippoRAG — handled by claude-obsidian's wiki-fold + lint, or future plugin.

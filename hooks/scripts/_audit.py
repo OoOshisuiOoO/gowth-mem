@@ -7,13 +7,21 @@ tree (audit dir is gitignored).
 
 Each line:
     {"ts": "<iso8601>", "op": "prune-delete", "file": "<rel>",
-     "reason": "<superseded|expired|duplicate>", "preview": "<<=80 chars>"}
+     "reason": "<superseded|expired|duplicate-newer-dropped>",
+     "preview": "<<=80 chars>"}
+
+Permissions:
+  - `.audit/` directory: `0700` (owner-only) — previews may contain leaked
+    content that the privacy filter missed; protect from other local users.
+  - `prune-YYYY-MM.log`: `0600` — same reasoning, also lifted from stdlib
+    `tempfile.mkstemp` default.
 
 Fail open: any IO failure is swallowed (the prune itself must always succeed).
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -39,6 +47,23 @@ def _preview(text: str) -> str:
     return one_line[:PREVIEW_MAX]
 
 
+def _open_log_secure(path: Path):
+    """Open the log file in append mode with 0600 perms; survives a pre-existing
+    file with relaxed perms by chmod'ing on open."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except Exception:
+        pass
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except Exception:
+        pass
+    # buffering=1 → line-buffered; survives a crash mid-stream
+    return os.fdopen(fd, "a", encoding="utf-8", buffering=1)
+
+
 def log_prune_delete(rel_path: str, reason: str, entry_text: str) -> None:
     """Append one audit line for a prune deletion. Silent on failure."""
     try:
@@ -49,9 +74,12 @@ def log_prune_delete(rel_path: str, reason: str, entry_text: str) -> None:
             "reason": reason,
             "preview": _preview(entry_text),
         }, ensure_ascii=False)
-        d = _audit_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        with _current_log().open("a", encoding="utf-8") as f:
+        with _open_log_secure(_current_log()) as f:
             f.write(line + "\n")
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except Exception:
+                pass
     except Exception:
         pass

@@ -40,17 +40,44 @@ def _digest(text: str) -> str:
     return hashlib.sha256(_normalize(text).encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _fresh() -> dict:
+    return {"window_seconds": DEFAULT_WINDOW_SECONDS, "entries": {}}
+
+
 def _load() -> dict:
+    """Read the window file with structural self-healing.
+
+    Any of: missing file, JSON parse failure, non-dict root, non-dict `entries`,
+    non-numeric values → returns a fresh empty window. A poisoned file (e.g.
+    `entries` as a list, TTL as a string) used to silently disable dedup for
+    the lifetime of the install; now it's transparently repaired on next write.
+    """
     p = _window_path()
     if not p.is_file():
-        return {"window_seconds": DEFAULT_WINDOW_SECONDS, "entries": {}}
+        return _fresh()
     try:
         d = json.loads(p.read_text())
-        d.setdefault("window_seconds", DEFAULT_WINDOW_SECONDS)
-        d.setdefault("entries", {})
-        return d
+        if not isinstance(d, dict):
+            return _fresh()
+        ents = d.get("entries")
+        if not isinstance(ents, dict):
+            ents = {}
+        clean_ents = {}
+        for k, v in ents.items():
+            if not isinstance(k, str):
+                continue
+            try:
+                clean_ents[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+        ws = d.get("window_seconds")
+        try:
+            window = float(ws) if ws is not None else DEFAULT_WINDOW_SECONDS
+        except (TypeError, ValueError):
+            window = DEFAULT_WINDOW_SECONDS
+        return {"window_seconds": window, "entries": clean_ents}
     except Exception:
-        return {"window_seconds": DEFAULT_WINDOW_SECONDS, "entries": {}}
+        return _fresh()
 
 
 def _prune_expired(d: dict, now: float) -> dict:
