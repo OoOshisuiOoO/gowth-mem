@@ -121,7 +121,7 @@ def line_is_temporal_invalid(line: str, today_iso: str) -> bool:
     return False
 
 
-def layer_score(p: Path) -> int:
+def layer_score(p: Path, ws: str | None = None) -> int:
     """Tier score by path layout (v3.0, plan F16).
 
     v3 inside-topic-folder scoring:
@@ -129,7 +129,12 @@ def layer_score(p: Path) -> int:
       - `YYYY-MM-DD-<aspect>.md`    → 90 if dated today, else 70 (recency boost)
       - `lessons.md`                → 75 (folder ledger)
       - other files inside folder   → 60
+
+    `ws` is accepted for caller convenience (per-workspace tier overrides may
+    be added later) but is currently unused — scoring derives entirely from
+    path layout relative to `gowth_home()`.
     """
+    del ws  # reserved for future per-workspace tier overrides
     gh = gowth_home()
     try:
         rel = p.relative_to(gh)

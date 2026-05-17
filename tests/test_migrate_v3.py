@@ -113,11 +113,15 @@ class MigrateV3Tests(unittest.TestCase):
             # Local has no origin remote here, but layout_version=3 should still cause
             # the script to skip unless --force.
             r2 = _run_migrate(home)
-            self.assertIn(r2.get("status"), ("already_v3_on_remote", "ok", "dry_run"))
+            # Without --force, second run must short-circuit on already_v3 or
+            # already_v3_on_remote (F2). dry_run/ok are NOT valid here.
+            self.assertIn(r2.get("status"),
+                          ("already_v3", "already_v3_on_remote"), r2)
             # When --force is passed, it should run again and create a NEW backup.
-            backups_before = sorted((home / "shared" / "backup-v3").glob("v2-pre-v3-*"))
+            backup_root = home / ".backup"
+            backups_before = sorted(backup_root.glob("v2-pre-v3-*"))
             r3 = _run_migrate(home, "--force")
-            backups_after = sorted((home / "shared" / "backup-v3").glob("v2-pre-v3-*"))
+            backups_after = sorted(backup_root.glob("v2-pre-v3-*"))
             self.assertEqual(r3.get("status"), "ok", r3)
             # Rolling-2 window: at most 2 backups retained.
             self.assertLessEqual(len(backups_after), 2,
@@ -129,7 +133,7 @@ class MigrateV3Tests(unittest.TestCase):
             _install_fixture(home)
             _git_init(home)
             report = _run_migrate(home)
-            backup = report.get("backup_dir", "")
+            backup = report.get("backup", "")
             # F1: name pattern v2-pre-v3-YYYYMMDDTHHMMSSZffffff (microsecond).
             self.assertRegex(
                 Path(backup).name,

@@ -45,24 +45,32 @@ class TopicRouteV3Tests(unittest.TestCase):
                 "import sys; sys.path.insert(0, 'hooks/scripts');\n"
                 "from _topic import route\n"
                 "from _home import workspace_dir\n"
-                "p = route('database query optimization PostgreSQL index scan',"
+                "slug, p, hint = route('database query optimization PostgreSQL index scan',"
                 " ws='ws1')\n"
-                "assert p.is_file(), f'route did not create file: {p}'\n"
+                "# Contract: route() returns the dated-aspect path; folder + 00-README\n"
+                "# are created, but the aspect file itself is written by the caller.\n"
+                "assert p.parent.is_dir(), f'route did not create folder: {p.parent}'\n"
                 "assert p.parent.name not in ('docs','journal','skills','research'), p\n"
                 "readme = p.parent / '00-README.md'\n"
                 "assert readme.is_file(), f'00-README.md missing: {readme}'\n"
                 "assert '-' in p.name and p.name.endswith('.md'), p.name\n"
+                "assert p.name[:10].count('-') == 2, p.name  # YYYY-MM-DD- prefix\n"
                 "print('ok=' + str(p))\n"
             )
             out = _run_in_home(code, home)
             self.assertIn("ok=", out.stdout)
-            # The dated aspect filename must start with today's ISO date.
+            # Folder + 00-README.md must exist (aspect file written by caller).
             wsd = home / "workspaces" / "ws1"
             self.assertTrue(wsd.is_dir())
             today = date.today().isoformat()
-            # Walk and find at least one YYYY-MM-DD-<aspect>.md
-            dated = list(wsd.rglob(f"{today}-*.md"))
-            self.assertTrue(dated, f"no dated aspect created: {list(wsd.rglob('*.md'))}")
+            # The path printed by route() must carry today's ISO prefix.
+            printed = [ln for ln in out.stdout.splitlines() if ln.startswith("ok=")][0]
+            self.assertIn(f"/{today}-", printed,
+                          f"route() returned non-dated path: {printed}")
+            # At least one 00-README.md must exist under the workspace.
+            readmes = list(wsd.rglob("00-README.md"))
+            self.assertTrue(readmes,
+                            f"no 00-README created: {list(wsd.rglob('*.md'))}")
 
     def test_ensure_topic_folder_returns_folder_not_file(self):
         with tempfile.TemporaryDirectory() as td:
@@ -118,8 +126,9 @@ class TopicRouteV3Tests(unittest.TestCase):
             code = (
                 "import sys; sys.path.insert(0, 'hooks/scripts');\n"
                 "from _topic import route\n"
-                "p = route('[secret-ref] STARROCKS_BE_TOKEN', ws='ws1')\n"
+                "slug, p, hint = route('[secret-ref] STARROCKS_BE_TOKEN', ws='ws1')\n"
                 "assert p.name == 'secrets.md' and 'shared' in str(p), p\n"
+                "assert slug == 'secrets', slug\n"
             )
             _run_in_home(code, home)
 
@@ -129,7 +138,7 @@ class TopicRouteV3Tests(unittest.TestCase):
             code = (
                 "import sys; sys.path.insert(0, 'hooks/scripts');\n"
                 "from _topic import route\n"
-                "p = route('[skill-ref] kubectl-debug', ws='ws1')\n"
+                "slug, p, hint = route('[skill-ref] kubectl-debug', ws='ws1')\n"
                 "assert 'skills' in str(p) and p.name.endswith('.md'), p\n"
             )
             _run_in_home(code, home)

@@ -366,13 +366,36 @@ def _git_log_subject(gh: Path, branch: str) -> str:
         return ""
 
 
-def _git_fetch_ff(gh: Path, branch: str) -> bool:
-    """STEP 7 F9 fix: fetch + merge --ff-only. True if up-to-date or fast-forwarded."""
+def _git_has_origin(gh: Path) -> bool:
+    """True if `origin` remote is configured (else F9 fetch+ff is N/A)."""
     try:
-        subprocess.run(
+        r = subprocess.run(
+            ["git", "-C", str(gh), "remote", "get-url", "origin"],
+            capture_output=True, timeout=5, check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _git_fetch_ff(gh: Path, branch: str) -> bool:
+    """STEP 7 F9 fix: fetch + merge --ff-only. True if up-to-date or fast-forwarded.
+
+    Returns True (no-op) when origin is not configured — local-only repos are not
+    "stale", they simply have no remote to reconcile against.
+    """
+    if not _git_has_origin(gh):
+        return True
+    try:
+        fr = subprocess.run(
             ["git", "-C", str(gh), "fetch", "origin", branch],
             capture_output=True, timeout=30, check=False,
         )
+        if fr.returncode != 0:
+            # Fetch failed (network down, branch missing on remote, etc.). Do not
+            # block a local write — caller can re-run sync later. Conservative:
+            # treat as no-op here so we don't trap users mid-migration.
+            return True
         r = subprocess.run(
             ["git", "-C", str(gh), "merge", "--ff-only", f"origin/{branch}"],
             capture_output=True, timeout=15, check=False,
