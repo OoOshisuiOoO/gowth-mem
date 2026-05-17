@@ -35,25 +35,30 @@ no contradiction detection. See `.claude/research/product-architecture.md` for f
 4. **Simplicity** — Pure stdlib Python 3.9+ in hooks. SQLite for indexing. No pip deps in runtime path.
 5. **Cross-machine sync** — Git-based, conflict-aware, token-secure via HTTP header (never in URL).
 
-## Architecture (v2.7+)
+## Architecture (v3.0+)
 
 ```
 ~/.gowth-mem/
-├── shared/                   cross-workspace knowledge
-│   ├── AGENTS.md             global operating rules
-│   ├── secrets.md            pointers only (env-var names)
-│   ├── tools.md              tool quirks
-│   └── skills/<slug>.md      reusable workflows
-├── workspaces/<ws>/          per-workspace knowledge
+├── shared/                         cross-workspace knowledge
+│   ├── AGENTS.md                   global operating rules
+│   ├── secrets.md                  pointers only (env-var names)
+│   ├── tools.md                    tool quirks
+│   └── skills/<slug>.md            reusable workflows
+├── workspaces/<ws>/                per-workspace knowledge
 │   ├── docs/{handoff,exp,ref,tools,files}.md
 │   ├── journal/<date>.md
 │   ├── skills/<slug>.md
-│   └── <slug>/<slug>.md      topic files
-├── settings.json             synced behavior config
-├── config.json               local-only (gitignored): remote, branch, token
-├── state.json                SRS data (gitignored)
-├── index.db                  FTS5 + optional sqlite-vec (gitignored)
-└── .locks/                   fcntl lock files (gitignored)
+│   ├── research/<topic>/           deep-research scratch (raw/ + distilled.md)
+│   └── <slug>/                     v3 topic folder
+│       ├── 00-README.md            MOC (auto-rebuilt)
+│       ├── YYYY-MM-DD-<aspect>.md  dated aspect (route() writes here)
+│       └── lessons.md              per-topic ledger
+├── settings.json                   synced behavior (layout_version: 3)
+├── config.json                     local-only (gitignored): remote, branch, token
+├── state.json                      SRS data (gitignored)
+├── index.db                        FTS5 + optional sqlite-vec (gitignored)
+├── .backup/v2-pre-v3-<utc>/        migration snapshots, rolling-2 (gitignored)
+└── .locks/                         fcntl lock files (gitignored)
 ```
 
 ## Key Decisions
@@ -121,3 +126,4 @@ See `RESEARCH.md` § F for roadmap with `✅` markers. Key shipped items:
 - **v2.8**: Topic-type templates (10 vocabulary), `ensure_topic` dispatch
 - **v2.9**: OpenClaw dreaming pipeline (staged consolidation + multi-signal recall + contradiction lint)
 - **v2.10**: Deep-research workflow commands (`/mem-research-start`, `/mem-research-distill`, `/mem-research-status`), AGENTS.md rules moved to SessionStart-only (was duplicated every turn), cleanup stale files (mem-init stub, mem-migrate skill, mem-recaller agent, v1.0 settings template)
+- **v3.0**: Topic-folder + dated-aspect layout (`<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}`); `_topic.route()` always returns a dated aspect path; 6-tier wikilink fallback for multi-machine partial migrations; F16 layer_score buckets (90 today / 80 MOC / 75 lessons / 70 older / 65 research / 40 shared-skills); 7-step `_migrate_v3.py` pipeline with microsecond-resolution backups, `origin/<branch>` short-circuit, fetch+ff-only safety; rolling-2 backup window; `bin/rollback-v3.sh` non-destructive restore; `research/` added to reserved subdirs

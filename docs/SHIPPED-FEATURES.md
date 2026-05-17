@@ -62,6 +62,24 @@ After studying [MemPalace](https://github.com/MemPalace/mempalace) (their `mempa
 
 Note on MemPalace storage: their plugin DOES use ChromaDB embeddings under the hood (verified from `mempalace/searcher.py` + plugin manifest keywords `chromadb`). What's distinctive is they store **verbatim text** with embeddings as the index — no summarization/paraphrasing. The "no manual skill" pattern was the actual lesson worth porting.
 
+### Shipped v3.0 — topic-folder + dated-aspect layout
+
+After studying OpenClaw's `memory/<topic>/` folder pattern + Generative Agents' episodic-memory-per-day, shipped a structural overhaul:
+
+20. ✅ **v3 topic-folder layout** — `<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}` replaces v2.4 `<slug>/<slug>.md`. `00-README.md` is the topic MOC (auto-rebuilt from frontmatter); dated aspects are append-only per-day notes; `lessons.md` is the per-topic ledger.
+
+21. ✅ **`_topic.route()` returns dated aspect** — every memory write lands in `YYYY-MM-DD-<aspect>.md`, never `00-README.md`. Default aspect slug `note` when keyword extraction yields nothing. `derive_topic_slug()` available for callers that need the slug without spawning a file.
+
+22. ✅ **6-tier wikilink resolution** — `<ws>/<slug>/00-README.md` (v3) → `<ws>/<slug>/<slug>.md` (v2.4 fallback) → `<ws>/<slug>.md` (v2.3 flat) → `<ws>/lessons.md` → `shared/<key>.md` → `[[ws:slug]]` cross-workspace. Multi-machine partial-migration safe.
+
+23. ✅ **Layer-score buckets** — recall scores by path layout: today's dated aspect = 90, MOC = 80, lessons = 75, older dated = 70, research/ = 65, other in-folder = 60, shared/skills = 40.
+
+24. ✅ **7-step migration pipeline** `_migrate_v3.py` — snapshot → classify → execute → verify → cleanup → rebuild metadata → bump+commit. Microsecond-resolution UTC backup stamps; short-circuit on repeat; `_atomic.atomic_write` guarantees parent.mkdir; fetch + ff-only before STEP 7 commit (graceful no-op when no remote configured).
+
+25. ✅ **Rolling-2 backup window** — keep newest 2 backups; demote oldest after ≥24h. `bin/rollback-v3.sh` restores from any snapshot non-destructively (current state staged under `.backup/rolled-back-<utc>/` first).
+
+26. ✅ **Reserved subdirs include `research/`** — `docs|journal|skills|research` blocked as topic slugs; `readme|lessons|00-readme` blocked as aspect slugs.
+
 ### Tier 4 — out of scope
 
 12. RAPTOR / GraphRAG / HippoRAG — handled by claude-obsidian's wiki-fold + lint, or future plugin.

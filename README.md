@@ -12,30 +12,65 @@ Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Ag
 
 ```text
 ~/.gowth-mem/
-├── shared/                   cross-workspace knowledge
-│   ├── AGENTS.md             global operating rules
+├── shared/                                    cross-workspace knowledge
+│   ├── AGENTS.md                              global operating rules
 │   ├── _MAP.md
 │   ├── files.md
-│   ├── secrets.md            pointers only; never real secret values
+│   ├── secrets.md                             pointers only; never real secret values
 │   ├── tools.md
 │   └── skills/<slug>.md
-├── workspaces/<ws>/          active workspace-scoped knowledge
-│   ├── AGENTS.md             workspace rules
+├── workspaces/<ws>/                           active workspace-scoped knowledge
+│   ├── AGENTS.md                              workspace rules
 │   ├── workspace.json
 │   ├── _MAP.md
 │   ├── docs/{handoff,exp,ref,tools,files}.md
 │   ├── journal/<date>.md
 │   ├── skills/<slug>.md
-│   └── <slug>/<slug>.md      topic folder note
-├── settings.json             synced behavior settings
-├── config.json               remote/branch/token config; gitignored
-├── state.json                SRS data; gitignored
-├── index.db                  FTS5 + optional sqlite-vec index; gitignored
-├── .locks/                   fcntl lock files; gitignored
-└── .git/                     sync repository
+│   ├── research/<topic>/                      deep-research workspace (raw/ + distilled.md)
+│   └── <slug>/                                v3 topic folder
+│       ├── 00-README.md                       MOC: TL;DR + Aspects (auto-rebuilt) + Cross-links
+│       ├── YYYY-MM-DD-<aspect>.md             dated aspect note (append-only, written by route())
+│       └── lessons.md                         per-topic 5-field bug/lesson ledger
+├── settings.json                              synced behavior settings (layout_version: 3)
+├── config.json                                remote/branch/token config; gitignored
+├── state.json                                 SRS data; gitignored
+├── index.db                                   FTS5 + optional sqlite-vec index; gitignored
+├── .locks/                                    fcntl lock files; gitignored
+├── .backup/v2-pre-v3-<utc>/                   migration snapshots (rolling-2); gitignored
+└── .git/                                      sync repository
 ```
 
-Topic slugs are unique inside a workspace. `[[slug]]` resolves within the active workspace, `[[ws:slug]]` resolves cross-workspace, and `[[shared:secrets]]` resolves shared registries.
+Topic slugs are unique inside a workspace. v3 wikilink resolution falls back through six layers: `<ws>/<slug>/00-README.md` (v3), `<ws>/<slug>/<slug>.md` (v2.4 fallback), `<ws>/<slug>.md` (v2.3 flat), `<ws>/lessons.md`, `shared/<key>.md`, and cross-workspace `[[ws:slug]]`. New writes always land in the v3 dated-aspect layout.
+
+### Upgrading from v2.x
+
+`/mem-install` detects `layout_version < 3` and offers `/mem-migrate-v3`:
+
+```text
+/mem-migrate-v3              # dry-run is default — preview the move plan
+/mem-migrate-v3 --force      # execute: snapshot → classify → execute → verify
+```
+
+The 7-step pipeline snapshots every workspace into `.backup/v2-pre-v3-<utc>/`,
+classifies each file (v2.4 landing → `00-README.md`, sub-aspect → dated aspect,
+v2.3 flat → folder promote, `lessons.md` kept verbatim, reserved subdirs
+untouched), executes atomic moves, verifies body sha256, deletes originals,
+rebuilds metadata, then bumps `settings.layout_version` to `3` and creates a
+single `v3 migration <utc>` commit. Rolling-window keeps the latest 2 backups.
+
+### Rollback
+
+If anything looks wrong after a migration, restore from the most recent
+snapshot:
+
+```bash
+bash bin/rollback-v3.sh                       # restore newest .backup/v2-pre-v3-*
+bash bin/rollback-v3.sh v2-pre-v3-20260517T105453Z146941   # explicit snapshot
+```
+
+Rollback is non-destructive — it stages the current workspaces under
+`.backup/rolled-back-<utc>/` before restoring, then resets `layout_version` to
+`2` and prints next-step instructions.
 
 ## Install
 
@@ -136,6 +171,7 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-sync` | `memy` | Manual sync |
 | `/mem-sync-resolve` | `memC` | AI-mediated conflict resolution |
 | `/mem-migrate-global` | `memm` | Import older per-workspace `.gowth-mem/` data |
+| `/mem-migrate-v3` | — | Promote `~/.gowth-mem/` from v2.x to v3 topic-folder layout (7-step pipeline, dry-run default, rolling-2 backup) |
 | `/mem-topic` | `memT` | List, inspect, or route topics |
 | `/mem-save` | `mems` | Save entry to a topic |
 | `/mem-distill` | `memd` | Journal to topics |
@@ -205,7 +241,7 @@ Set `GOWTH_MEM_DEBUG=1` to write hook diagnostics to `~/.gowth-mem/logs/hooks.lo
 
 ## Settings
 
-`~/.gowth-mem/settings.json` controls auto-sync, active workspace behavior, topic routing, recall limits, embedding provider, and conflict resolution mode. See `templates/dot-gowth-mem/settings.example.v2.json` for the current schema.
+`~/.gowth-mem/settings.json` controls auto-sync, active workspace behavior, topic routing, recall limits, embedding provider, and conflict resolution mode. v3.0 adds `layout_version: 3`, `topic_layout.mode: folder`, `topic_layout.reserved_subdirs` (including `research`), `recall.layer_scores` for per-tier tuning, and `migration.v3_backup_keep: 2`. See `templates/dot-gowth-mem/settings.example.v3.json` for the current schema.
 
 ## What this is not
 
