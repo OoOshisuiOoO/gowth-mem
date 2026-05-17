@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
+from _privacy import sanitize  # type: ignore
 from _home import (  # type: ignore
     TOPIC_LESSONS,
     active_workspace,
@@ -98,7 +99,8 @@ def append_lesson(
     else:
         new = HEADER + entry
 
-    atomic_write(target, new)
+    cleaned, _ = sanitize(new)
+    atomic_write(target, cleaned)
     return target
 
 

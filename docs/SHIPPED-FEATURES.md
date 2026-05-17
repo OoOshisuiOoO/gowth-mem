@@ -80,6 +80,20 @@ After studying OpenClaw's `memory/<topic>/` folder pattern + Generative Agents' 
 
 26. ✅ **Reserved subdirs include `research/`** — `docs|journal|skills|research` blocked as topic slugs; `readme|lessons|00-readme` blocked as aspect slugs.
 
+### Shipped v3.1 — agentmemory-derived hardening
+
+Adopted from [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) (4-tier consolidation + auto-capture + privacy-first). Subset selected by scope: anything requiring Node/MCP/server infra is out of scope for our pure-stdlib hooks.
+
+27. ✅ **`_privacy.sanitize()` regex filter** — redacts AWS / GitHub PAT (ghp, gho, ghu, ghs, ghr) / OpenAI (`sk-…`) / Anthropic (`sk-ant-…`) / Slack / Google / Stripe / JWT / SSH-private / generic `password|token|secret|api_key|…=value` shapes to `[REDACTED:<kind>]`. Also strips `<private>…</private>` blocks (any case, multiline) → `[REDACTED:private-block]`. Fails open on any internal exception (never blocks a write).
+
+28. ✅ **Sanitize wired into write paths** — `_topic.py` (`ensure_topic_folder` 00-README write), `_lesson.py` (lessons.md append) sanitize their final body before `atomic_write`. Templates pass through unchanged; user-typed `summary`/`tried`/`fix`/`root` get scrubbed.
+
+29. ✅ **`_dedup.py` short-window dedup** — SHA-256 of whitespace-normalized text against rolling 5-minute window (`~/.gowth-mem/.dedup-window.json`). Atomic `check_and_record()` for the journal/lesson auto-write path. Per-entry TTL expiry on every read. fcntl-locked; fails open on contention.
+
+30. ✅ **`_audit.log_prune_delete()` JSONL audit** — `_prune.py` now writes one line per deletion to `~/.gowth-mem/.audit/prune-<YYYY-MM>.log` with `{ts, op, file, reason ∈ {expired, superseded, duplicate}, preview ≤80ch}`. Dry-run skips audit. Gitignored (per-machine signal).
+
+31. ✅ **gitignore backfill** — `_sync.write_default_gitignore()` now idempotently appends `.audit/` and `.dedup-window.json` to existing user gitignores while preserving user edits. New installs get full template.
+
 ### Tier 4 — out of scope
 
 12. RAPTOR / GraphRAG / HippoRAG — handled by claude-obsidian's wiki-fold + lint, or future plugin.

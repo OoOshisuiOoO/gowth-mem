@@ -28,23 +28,41 @@ from _home import conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
 
 
+_DEFAULT_GITIGNORE = (
+    "# ~/.gowth-mem internal — gitignored (per-machine)\n"
+    "config.json\n"
+    "state.json\n"
+    "index.db\n"
+    "index.db-shm\n"
+    "index.db-wal\n"
+    ".locks/\n"
+    ".audit/\n"
+    ".dedup-window.json\n"
+    "__pycache__/\n"
+    "*.pyc\n"
+    "SYNC-CONFLICT.md\n"
+)
+
+_REQUIRED_IGNORES = (".audit/", ".dedup-window.json")
+
+
 def write_default_gitignore(gh: Path) -> None:
+    """Write template on first install; on subsequent runs backfill missing
+    privacy/audit entries idempotently (preserves user edits to other lines)."""
     gi = gh / ".gitignore"
-    if gi.is_file():
+    if not gi.is_file():
+        atomic_write(gi, _DEFAULT_GITIGNORE)
         return
-    atomic_write(
-        gi,
-        "# ~/.gowth-mem internal — gitignored (per-machine)\n"
-        "config.json\n"
-        "state.json\n"
-        "index.db\n"
-        "index.db-shm\n"
-        "index.db-wal\n"
-        ".locks/\n"
-        "__pycache__/\n"
-        "*.pyc\n"
-        "SYNC-CONFLICT.md\n",
-    )
+    try:
+        existing = gi.read_text(errors="ignore")
+    except Exception:
+        return
+    missing = [e for e in _REQUIRED_IGNORES if e not in existing]
+    if not missing:
+        return
+    additions = "".join(f"{e}\n" for e in missing)
+    sep = "" if existing.endswith("\n") else "\n"
+    atomic_write(gi, f"{existing}{sep}{additions}")
 
 
 def main() -> int:

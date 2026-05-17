@@ -29,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
+from _audit import log_prune_delete  # type: ignore
 from _home import docs_dir, gowth_home, list_workspaces, topics_dir  # type: ignore
 
 ENTRY_RE = re.compile(r"^\s*[-*]\s+\[")
@@ -44,7 +45,8 @@ def jaccard(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
-def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
+def prune_file(path: Path, dry_run: bool, today_iso: str,
+               audit_rel: str | None = None) -> tuple[int, int]:
     try:
         text = path.read_text()
     except Exception:
@@ -54,6 +56,7 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
     kept_lines: list[str] = []
     kept_entries: list[str] = []
     deleted = 0
+    audit_entries: list[tuple[str, str]] = []  # (reason, entry_text)
 
     i = 0
     while i < len(lines):
@@ -67,11 +70,14 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
             entry_text = "\n".join(entry_block)
 
             drop = False
+            drop_reason = ""
             m = VALID_UNTIL_RE.search(entry_text)
             if m and m.group(1) < today_iso:
                 drop = True
+                drop_reason = "expired"
             elif SUPERSEDED_RE.search(entry_text):
                 drop = True
+                drop_reason = "superseded"
 
             if not drop:
                 for prev in kept_entries:
@@ -83,12 +89,15 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
                                     kept_lines.remove(prev_line)
                             kept_entries.remove(prev)
                             deleted += 1
+                            audit_entries.append(("duplicate", prev))
                         else:
                             drop = True
+                            drop_reason = "duplicate"
                             break
 
             if drop:
                 deleted += 1
+                audit_entries.append((drop_reason or "duplicate", entry_text))
             else:
                 kept_lines.extend(entry_block)
                 kept_entries.append(entry_text)
@@ -100,6 +109,9 @@ def prune_file(path: Path, dry_run: bool, today_iso: str) -> tuple[int, int]:
     new_text = "\n".join(kept_lines)
     if new_text != text and not dry_run:
         atomic_write(path, new_text)
+        if audit_rel:
+            for reason, body in audit_entries:
+                log_prune_delete(audit_rel, reason, body)
     return (deleted, len(kept_entries))
 
 
@@ -130,12 +142,13 @@ def _prune_workspace(ws: str | None, dry_run: bool, today_iso: str, gh: Path) ->
     total_kept = 0
     affected: list[tuple[str, int, int]] = []
     for f in collect_files(ws):
-        deleted, kept = prune_file(f, dry_run, today_iso)
+        try:
+            rel = str(f.relative_to(gh))
+        except ValueError:
+            rel = str(f)
+        audit_rel = None if dry_run else rel
+        deleted, kept = prune_file(f, dry_run, today_iso, audit_rel=audit_rel)
         if deleted > 0:
-            try:
-                rel = str(f.relative_to(gh))
-            except ValueError:
-                rel = str(f)
             affected.append((rel, deleted, kept))
         total_deleted += deleted
         total_kept += kept
