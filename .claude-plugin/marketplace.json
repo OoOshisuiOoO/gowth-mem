@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "gowth-mem",
-      "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, hybrid FTS5+vector recall.",
-      "version": "3.2.0",
+      "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v3.4: tag-aware FTS5 dedup, /mem-dream consolidation (Light/REM/Deep), /mem-recall, consolidated hooks. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, deterministic FTS5 BM25 recall (no LLM in vector path).",
+      "version": "3.4.0",
       "author": {
         "name": "duynguyen"
       },
@@ -33,5 +33,5 @@
       ]
     }
   ],
-  "version": "3.2.0"
+  "version": "3.4.0"
 }
