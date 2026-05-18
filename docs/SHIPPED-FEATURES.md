@@ -155,7 +155,7 @@ Grounded in three deep-research passes saved to `.claude/research/v3.4-{brain-me
 
 53. ✅ **`/mem-dream` skill** — new `hooks/scripts/_dream.py` orchestrator wraps `_consolidate.py`'s three phases (`light_phase`/`rem_phase`/`deep_phase`). Per-workspace file lock prevents concurrent runs. `--dry-run`, `--no-light`/`--no-rem`/`--no-deep`, `--ws` flags. Progress to stderr, JSON to stdout. Maps onto biological sleep consolidation: SWS replay+prune (Light), counterfactual cross-topic synthesis (REM), schema abstraction (Deep).
 
-54. ✅ **Command surface pruning (33→27)** — deleted `/mem-bootstrap`, `/mem-flush`, `/mem-workspace-create`, `/mem-workspace-archive`, `/mem-workspace-list`, `/mem-workspace-map` (auto-run via hooks; subcommands collapsed into `/mem-workspace [<verb>]` parent). `commands/mem-recall.md` added to match `_query.py` CLI surface. README + CLAUDE.md updated.
+54. ✅ **Command surface pruning (33→28)** — deleted `/mem-bootstrap`, `/mem-flush`, `/mem-workspace-create`, `/mem-workspace-archive`, `/mem-workspace-list`, `/mem-workspace-map` (auto-run via hooks; subcommands collapsed into `/mem-workspace [<verb>]` parent). `commands/mem-recall.md` added to match `_query.py` CLI surface. README + CLAUDE.md updated.
 
 55. ✅ **v3.4 post-critic patches**:
     - **P0**: `is_duplicate()` wired into `_lesson.append_lesson` and new `_topic.append_entry(content, ws)` helper (CLI: `--append`).

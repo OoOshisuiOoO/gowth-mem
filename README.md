@@ -16,7 +16,7 @@ v3.4 cuts hook token waste, makes the 7-type schema actually queryable, and ship
 - **Cross-file, tag-aware SHA-256 dedup** (`_dedup.py`) — write-time hash over `(tag, normalized_content)` blocks `[decision] foo` duplicates across files and sessions, but allows `[exp] foo` (different tag = different fact). Fixes the "ghi vào nhưng không dùng được" symptom.
 - **`/mem-recall --type=<tag>` retrieval** — new `_query.query_by_type(ws, tag, query)` pre-filters by tag before BM25 ranking. Schema is now first-class, not a formatting hint.
 - **`/mem-dream` skill** — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
-- **Command surface pruning (33→27)** — deleted `/mem-bootstrap` and `/mem-flush` (auto-run via hooks now). Five workspace commands collapsed into one `/mem-workspace [<verb>]` parent — the four subcommand stubs (`-create`, `-archive`, `-list`, `-map`) were also removed.
+- **Command surface pruning (33→28)** — deleted `/mem-bootstrap` and `/mem-flush` (auto-run via hooks now), plus the four `/mem-workspace-*` subcommand stubs (`-create`, `-archive`, `-list`, `-map`) collapsed into one `/mem-workspace [<verb>]` parent. Net of the new `/mem-recall` and `/mem-dream` docs: 33 - 6 + 1 = 28.
 
 ### What's still in v3.3
 
