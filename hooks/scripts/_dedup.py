@@ -145,10 +145,15 @@ def _prune_expired(d: dict, now: float) -> dict:
 
 
 def seen_recently(text: str) -> bool:
-    """Return True if *text* (normalized) was recorded within the window."""
+    """Return True if *text* (normalized) was recorded within the window.
+
+    v3.4: uses the same tag-aware digest as check_and_record so the read side
+    matches the write side (untagged text uses tag="").
+    """
     if not isinstance(text, str) or not text.strip():
         return False
-    digest = _digest(text)
+    tag = _extract_tag(text)
+    digest = _tag_digest(tag, text)
     try:
         with file_lock("dedup", timeout=1.0):
             d = _prune_expired(_load(), time.time())
@@ -158,10 +163,15 @@ def seen_recently(text: str) -> bool:
 
 
 def record(text: str) -> None:
-    """Add *text* to the window (silently no-ops on lock contention)."""
+    """Add *text* to the window (silently no-ops on lock contention).
+
+    v3.4: uses tag-aware digest so paired seen_recently()/check_and_record()
+    lookups hit the same entry regardless of which writer recorded it.
+    """
     if not isinstance(text, str) or not text.strip():
         return
-    digest = _digest(text)
+    tag = _extract_tag(text)
+    digest = _tag_digest(tag, text)
     now = time.time()
     try:
         with file_lock("dedup", timeout=1.0):
