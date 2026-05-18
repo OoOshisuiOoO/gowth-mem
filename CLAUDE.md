@@ -84,6 +84,9 @@ Distilled insights in `.claude/research/`:
 - `architecture-decisions.md` — 10 ADRs with rationale and trade-offs
 - `memory-systems.md` — what we adopted from 12 systems and why
 - `retrieval-algorithms.md` — 8 implemented algorithms, 3-tier degradation, embedding model choice
+- `v3.4-brain-memory.md` — biology→arch translation (CLS theory, pattern separation, schema theory, reconsolidation, Ebbinghaus, sleep consolidation)
+- `v3.4-llm-memory-systems.md` — 2025-2026 survey of mem0, Zep, HippoRAG, Letta, A-MEM, Cognee, LangMem; 7 convergent best practices
+- `v3.4-hook-patterns.md` — Claude Code hook efficiency canon (claude-mem reference + 5 actionable patterns)
 
 **5 convergent patterns** across mem0, Letta, Zep, Cognee, Anthropic, LangMem, LlamaIndex, MemoRAG, HippoRAG, Generative Agents, Voyager, Reflexion:
 
@@ -127,3 +130,5 @@ See `RESEARCH.md` § F for roadmap with `✅` markers. Key shipped items:
 - **v2.9**: OpenClaw dreaming pipeline (staged consolidation + multi-signal recall + contradiction lint)
 - **v2.10**: Deep-research workflow commands (`/mem-research-start`, `/mem-research-distill`, `/mem-research-status`), AGENTS.md rules moved to SessionStart-only (was duplicated every turn), cleanup stale files (mem-init stub, mem-migrate skill, mem-recaller agent, v1.0 settings template)
 - **v3.0**: Topic-folder + dated-aspect layout (`<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}`); `_topic.route()` always returns a dated aspect path; 6-tier wikilink fallback for multi-machine partial migrations; F16 layer_score buckets (90 today / 80 MOC / 75 lessons / 70 older / 65 research / 40 shared-skills); 7-step `_migrate_v3.py` pipeline with microsecond-resolution backups, `origin/<branch>` short-circuit, fetch+ff-only safety; rolling-2 backup window; `bin/rollback-v3.sh` non-destructive restore; `research/` added to reserved subdirs
+- **v3.2**: deterministic-only retrieval (no LLM in vector path), 4-tier weighted context planner, rtk-style pre-storage compression, heuristic contradiction lint, char-trigram Jaccard fuzzy fallback
+- **v3.4**: hook consolidation (shell pre-check on UserPromptSubmit, merged SessionStart/PreCompact, externalized auto-journal REASON, settings-tunable cadence, subagent-skip via env+hook_event_name+in_loop+agent_type); tag-aware FTS5 (`tag TEXT` indexed column + idempotent migration under `file_lock("index-migrate")` + cross-file SHA-1 dedup wired into `_lesson.append_lesson` and `_topic.append_entry`); `/mem-dream` skill wrapping `_consolidate.py` three phases (Light/REM/Deep) with per-workspace state filtering; command surface pruning (33→27 — removed `mem-bootstrap`, `mem-flush`, and 4 `mem-workspace-*` subcommand stubs); `/mem-recall` slash command + `_query.query_by_type(ws, tag, query)` API. Grounded in `.claude/research/v3.4-{brain-memory, llm-memory-systems, hook-patterns}.md`.

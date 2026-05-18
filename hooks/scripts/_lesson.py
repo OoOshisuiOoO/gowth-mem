@@ -30,9 +30,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import safe_write  # type: ignore
+from _dedup import is_duplicate  # type: ignore
 from _home import (  # type: ignore
     TOPIC_LESSONS,
     active_workspace,
+    workspace_dir,
 )
 from _topic import derive_topic_slug, resolve_topic_folder  # type: ignore
 
@@ -76,6 +78,11 @@ def append_lesson(
 
     routing_text = " ".join(filter(None, [symptom, tried, root_cause, fix]))
     target = _resolve_target(ws, topic, routing_text)
+
+    # v3.4: cross-file dedup — skip if (tag, content) already indexed.
+    # Lessons live under the [exp] tag in _index.py's chunking model.
+    if is_duplicate(workspace_dir(ws), "exp", routing_text):
+        return target
 
     heading = f"## [{today}] {_truncate(symptom)}\n"
     body_lines = [

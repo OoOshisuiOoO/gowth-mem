@@ -44,6 +44,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import safe_write  # type: ignore
+from _dedup import _extract_tag, is_duplicate  # type: ignore
 from _frontmatter import parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
@@ -382,6 +383,32 @@ def route(content: str, ws: str | None = None,
     return (new_slug, _today_aspect_path(folder, aspect_slug), section_hint)
 
 
+def append_entry(content: str, ws: str | None = None,
+                 settings: dict | None = None) -> tuple[Path, bool]:
+    """v3.4: route + cross-file dedup + atomic append. Returns (path, written).
+
+    This is the Python write path for routed topic entries. Callers that
+    previously used `route()` + raw write should switch to this helper so
+    `is_duplicate(ws_root, tag, content)` actually blocks cross-file repeats.
+
+    `written` is False when dedup rejected the entry; the path is still
+    returned so callers can log it. Section heading injection is left to
+    the caller (matches existing route() contract).
+    """
+    ws = ws or active_workspace()
+    slug, target, _section = route(content, ws=ws, settings=settings)
+    tag = _extract_tag(content)
+    if tag and is_duplicate(workspace_dir(ws), tag, content):
+        return target, False
+    if target.is_file():
+        existing = target.read_text(errors="ignore")
+        body = existing.rstrip() + "\n" + content.rstrip() + "\n"
+    else:
+        body = content.rstrip() + "\n"
+    safe_write(target, body)
+    return target, True
+
+
 def _derive_skill_slug(content: str) -> str | None:
     """Pull `[skill-ref:<slug>]` or fall back to first distinctive keyword."""
     m = re.search(r"\[skill-ref:([a-z0-9][a-z0-9-]{0,59})\]", content)
@@ -443,6 +470,7 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--route")
+    ap.add_argument("--append", help="route + cross-file dedup + atomic append (v3.4)")
     ap.add_argument("--ws")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--ensure")
@@ -455,6 +483,9 @@ if __name__ == "__main__":
     if args.route:
         slug, path, section = route(args.route, ws=args.ws)
         print(f"{slug}\t{path}\t{section or ''}")
+    elif args.append:
+        path, written = append_entry(args.append, ws=args.ws)
+        print(f"{path}\t{'written' if written else 'duplicate'}")
     elif args.list:
         for t in list_topics(args.ws):
             print(f"{t['slug']:30s} {t['status']:10s} {t['last_touched']:10s} {t['title']}")

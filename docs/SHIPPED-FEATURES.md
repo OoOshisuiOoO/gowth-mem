@@ -133,8 +133,48 @@ After 4 months of v0.7/v0.6 on-prompt magic in production, the per-turn token co
 Hook entrypoints: 8 → 5 (`bootstrap-load`, `auto-journal`, `precompact-flush`, `conflict-detect`, `auto-sync`).
 Test coverage: 94/94 unit tests + 6/6 `bin/test-install.sh` steps green (was 102/102; 8 tests removed alongside their subjects — `test_multi_aspect_recall_v3.py` deleted entirely, 3 `MultiSignalTests` methods excised from `test_regressions.py`).
 
+### Shipped v3.4 — hook waste cut, schema first-class, dreaming UX
+
+Grounded in three deep-research passes saved to `.claude/research/v3.4-{brain-memory, llm-memory-systems, hook-patterns}.md`. Two convergent observations: (1) the 7-type tag was a formatting hint, never a schema constraint — duplicates of `[decision] foo` survived because dedup was content-only and within-300s only; (2) hooks burned 20-30k tokens/day on the auto-journal REASON and per-prompt conflict-detect Python startup. Both fixed without breaking v3.3 deterministic-only retrieval.
+
+45. ✅ **Shell pre-check on UserPromptSubmit** — `conflict-detect.sh` wraps `conflict-detect.py`; uses bash `test -f` against `SYNC-CONFLICT.md` and `exit 0` silent on the 99% no-conflict path. Python startup eliminated from the hot path.
+
+46. ✅ **Merged SessionStart and PreCompact hooks** — `session-start.sh` and `precompact.sh` collapse two-entry matchers each into a single command. SessionStart branches on `source` field (`startup` / `compact` → bootstrap; always: `auto-sync --pull-only` in background). PreCompact preserves HARD-BLOCK exit-2 semantics from `precompact-flush.py` even when chaining `auto-sync --commit-only` afterward.
+
+47. ✅ **Externalized auto-journal REASON** — moved 3 KB instructions block to `templates/auto-journal-instructions.md`. Stop hook now injects a ~400 char pointer instead. Saves ~20-30k tokens/day on heavy-usage sessions.
+
+48. ✅ **Tunable auto-journal cadence** — `auto_journal.journal_every` (default 10) and `auto_journal.auto_journal_enabled` (default true) in `~/.gowth-mem/settings.json` replace hardcoded modulo. Read via `_read_journal_settings()`.
+
+49. ✅ **Subagent auto-skip** — `auto-journal.py` exits 0 silently when env `CLAUDE_SUBAGENT` is set OR stdin JSON carries `agent_type=="subagent"`. Prevents double-journaling under ralph/ultrawork/autopilot flows.
+
+50. ✅ **Tag-aware FTS5 schema** — `chunks` and `chunks_fts` gain a `tag TEXT` indexed column. `_migrate_tag_column()` in `_index.py` runs idempotent `ALTER TABLE` + SQL-CASE backfill from leading `[tag]` regex + FTS5 rebuild. `KNOWN_TAGS` set drops unknown tags to `''`.
+
+51. ✅ **Cross-file, tag-aware dedup wired into write path** — `_dedup._tag_digest(tag, content)` hashes over `tag\x00normalized_content` for the 300s hot-path window. `is_duplicate(ws_root, tag, content)` queries the index DB for ANY matching `(tag, hash)` row across all files using the same SHA-1[:16] hash `_index.py` stores. **v3.4 post-critic patch**: now called from `_lesson.append_lesson` and the new `_topic.append_entry(content, ws)` helper (CLI: `python3 _topic.py --append "..."`), so duplicate rejection actually fires on the Python write path — not just available as a helper. Preserves "[decision] foo" + "[exp] foo" as legitimate distinct facts; blocks "[decision] foo" + "[decision] foo" across files and sessions.
+
+52. ✅ **`/mem-recall --type=<tag>` retrieval** — new `_query.query_by_type(ws, tag, query, limit)` API pre-filters chunks by tag before BM25 ranking. CLI entry via `python3 hooks/scripts/_query.py --ws X --type decision --query foo`. Empty tag = no filter (v3.3 BM25 behavior preserved).
+
+53. ✅ **`/mem-dream` skill** — new `hooks/scripts/_dream.py` orchestrator wraps `_consolidate.py`'s three phases (`light_phase`/`rem_phase`/`deep_phase`). Per-workspace file lock prevents concurrent runs. `--dry-run`, `--no-light`/`--no-rem`/`--no-deep`, `--ws` flags. Progress to stderr, JSON to stdout. Maps onto biological sleep consolidation: SWS replay+prune (Light), counterfactual cross-topic synthesis (REM), schema abstraction (Deep).
+
+54. ✅ **Command surface pruning (33→27)** — deleted `/mem-bootstrap`, `/mem-flush`, `/mem-workspace-create`, `/mem-workspace-archive`, `/mem-workspace-list`, `/mem-workspace-map` (auto-run via hooks; subcommands collapsed into `/mem-workspace [<verb>]` parent). `commands/mem-recall.md` added to match `_query.py` CLI surface. README + CLAUDE.md updated.
+
+55. ✅ **v3.4 post-critic patches**:
+    - **P0**: `is_duplicate()` wired into `_lesson.append_lesson` and new `_topic.append_entry(content, ws)` helper (CLI: `--append`).
+    - **P1**: `_dream._filter_state_to_ws(state, ws)` restricts `state["files"]` to `workspaces/<ws>/` so `--ws=X` actually filters.
+    - **P1**: `auto-journal._is_subagent` detects `hook_event_name == "SubagentStop"`, `data.get("in_loop")`, `agent_type == "subagent"`, and `CLAUDE_SUBAGENT` env.
+    - **P1**: `_build_reason()` dead args dropped (`prune_summary`, `consolidation_summary`, `ws_list_str`) — pointer-only stays ≤400 chars.
+    - **P2**: `_migrate_tag_column` wrapped in `file_lock("index-migrate", timeout=10)` to serialize concurrent migration.
+
+Test coverage: 201/201 unit tests green (was 94/94 at end of v3.2; added test_hook_wrappers.py [10], test_index_tag_column.py [11], test_dedup_tag_aware.py [10], test_query_by_type.py [21], test_dream.py [6]; subtotal new = 58). Compile clean across all `hooks/scripts/*.py`.
+
+Hook entrypoints: 5 → 5 (same count, but shell wrappers gate Python invocation; effective per-prompt overhead down ≥95% on no-conflict path).
+
+Reference plugins consulted: claude-mem (thedotmack), claude-code-rewind, superpowers, oh-my-claudecode. Memory systems consulted: HippoRAG v1/v2, MemoRAG, Letta/MemGPT, Cognee, mem0, Zep/Graphiti, OpenAI Memory, Anthropic contextual retrieval, LangMem, A-MEM.
+
 ### Tier 4 — out of scope
 
 12. RAPTOR / GraphRAG / HippoRAG — handled by claude-obsidian's wiki-fold + lint, or future plugin.
 13. AutoCompressor / gist tokens — needs custom model, defer.
 14. ColBERT / ColPali — overkill for markdown vault.
+15. Entity/relation KG (HippoRAG/Zep pattern) — deferred from v3.4; needs entity extractor which would break deterministic-only rule. Re-evaluate for v3.5.
+16. FSRS upgrade from SM-2-lite — backlogged for v3.5; SM-2-lite sufficient for current scale.
+17. Two-factor synaptic edge weights (gemini deep-research finding) — defers with KG work.

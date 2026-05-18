@@ -50,8 +50,21 @@ from _home import (  # type: ignore
     shared_dir,
     workspace_dir,
 )
+from _lock import file_lock  # type: ignore
 
 CHUNK_SIZE = 1500
+
+TAG_RE = re.compile(r"^\[([a-z-]+)\]\s*")
+KNOWN_TAGS = {"decision", "exp", "ref", "tool", "reflection", "skill-ref", "secret-ref"}
+
+
+def _extract_tag(content: str) -> str:
+    """Return the leading [tag] marker value, or '' if absent/unknown."""
+    m = TAG_RE.match(content.lstrip())
+    if not m:
+        return ""
+    tag = m.group(1)
+    return tag if tag in KNOWN_TAGS else ""
 
 
 def split_chunks(text: str) -> list[tuple[str, str]]:
@@ -127,7 +140,96 @@ def _collect_sources() -> list[tuple[str, Path]]:
     return out
 
 
+def _migrate_tag_column(db: sqlite3.Connection) -> None:
+    """Idempotent: add `tag TEXT` to chunks if absent, backfill from content,
+    rebuild chunks_fts to include tag column.
+
+    Safe to call on an already-migrated DB — all ALTER/DROP/CREATE use IF
+    NOT EXISTS / column-existence checks so repeated runs are no-ops.
+
+    v3.4: wrapped in `file_lock("index-migrate")` so two `_index.py` processes
+    can't race the ALTER/UPDATE/DROP-CREATE-INSERT sequence. Lock falls open
+    on timeout (best-effort serialization; SQLite WAL handles the rest).
+    """
+    try:
+        lock_cm = file_lock("index-migrate", timeout=10.0)
+    except Exception:
+        lock_cm = None
+    if lock_cm is not None:
+        with lock_cm:
+            _migrate_tag_column_inner(db)
+    else:
+        _migrate_tag_column_inner(db)
+
+
+def _migrate_tag_column_inner(db: sqlite3.Connection) -> None:
+    """See `_migrate_tag_column`. Body extracted so the lock wrapper stays thin."""
+    # Check whether 'tag' column already exists.
+    cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+    if "tag" not in cols:
+        db.execute("ALTER TABLE chunks ADD COLUMN tag TEXT NOT NULL DEFAULT ''")
+        # Backfill existing rows from their content.
+        db.execute("""
+            UPDATE chunks SET tag = (
+                CASE
+                    WHEN SUBSTR(LTRIM(content), 1, 1) = '['
+                        AND INSTR(LTRIM(content), ']') > 1
+                    THEN
+                        LOWER(SUBSTR(
+                            LTRIM(content),
+                            2,
+                            INSTR(LTRIM(content), ']') - 2
+                        ))
+                    ELSE ''
+                END
+            )
+        """)
+        # Nullify tag values that are not in KNOWN_TAGS (store as '').
+        known = "','".join(KNOWN_TAGS)
+        db.execute(f"UPDATE chunks SET tag = '' WHERE tag NOT IN ('{known}')")
+        db.commit()
+
+    # Create tag index if absent (safe after column is guaranteed to exist).
+    db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tag ON chunks(tag)")
+    db.commit()
+
+    # Rebuild chunks_fts to include tag column if it doesn't have it.
+    # Detect by querying the fts5 table schema.
+    fts_cols = set()
+    try:
+        # FTS5 shadow table: chunks_fts_content holds the indexed columns.
+        fts_info = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='chunks_fts' AND type='table'"
+        ).fetchone()
+        if fts_info and fts_info[0]:
+            fts_cols = set(re.findall(r"\b(\w+)\b", fts_info[0]))
+    except Exception:
+        pass
+
+    needs_fts_rebuild = "tag" not in fts_cols
+    if needs_fts_rebuild:
+        # Drop old FTS table and recreate with both tag + content columns.
+        try:
+            db.execute("DROP TABLE IF EXISTS chunks_fts")
+        except Exception:
+            pass
+        db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+            "tag, content, content='chunks', content_rowid='id', tokenize='unicode61')"
+        )
+        # Repopulate FTS from chunks table.
+        db.execute(
+            "INSERT INTO chunks_fts(rowid, tag, content) "
+            "SELECT id, tag, content FROM chunks"
+        )
+        db.commit()
+
+
 def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> None:
+    # NOTE: idx_chunks_tag is NOT created here because the old `chunks` table may
+    # already exist without the `tag` column. _migrate_tag_column() adds the column
+    # first, then creates the index idempotently. This keeps _ensure_schema safe to
+    # call on both fresh DBs and pre-v3.4 DBs.
     db.executescript("""
     CREATE TABLE IF NOT EXISTS chunks (
         id INTEGER PRIMARY KEY,
@@ -135,7 +237,8 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
         heading TEXT,
         content TEXT NOT NULL,
         mtime REAL NOT NULL,
-        hash TEXT NOT NULL
+        hash TEXT NOT NULL,
+        tag TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
 
@@ -155,8 +258,10 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
     """)
     db.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-        "content, content='chunks', content_rowid='id', tokenize='unicode61')"
+        "tag, content, content='chunks', content_rowid='id', tokenize='unicode61')"
     )
+    # Run migration in case DB was created by older code without tag column.
+    _migrate_tag_column(db)
     if use_vec:
         sqlite_vec.load(db)  # type: ignore
         db.execute(
@@ -299,11 +404,12 @@ def main() -> int:
         db.execute("DELETE FROM chunks WHERE path=?", (rel,))
         for heading, content in split_chunks(text):
             h = hashlib.sha1(content.encode()).hexdigest()[:16]
+            tag = _extract_tag(content)
             cid = db.execute(
-                "INSERT INTO chunks (path, heading, content, mtime, hash) VALUES (?, ?, ?, ?, ?)",
-                (rel, heading, content, mtime, h),
+                "INSERT INTO chunks (path, heading, content, mtime, hash, tag) VALUES (?, ?, ?, ?, ?, ?)",
+                (rel, heading, content, mtime, h, tag),
             ).lastrowid
-            db.execute("INSERT INTO chunks_fts(rowid, content) VALUES (?, ?)", (cid, content))
+            db.execute("INSERT INTO chunks_fts(rowid, tag, content) VALUES (?, ?, ?)", (cid, tag, content))
             if use_vec:
                 vec = embed_one(content)
                 if vec:

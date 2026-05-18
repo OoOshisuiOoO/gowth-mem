@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/bootstrap-load.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py\" --pull-only --quiet"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start.sh\""
           }
         ]
       }
@@ -21,11 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/precompact-flush.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py\" --commit-only --quiet"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/precompact.sh\""
           }
         ]
       }
@@ -47,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/conflict-detect.py\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/conflict-detect.sh\""
           }
         ]
       }

@@ -4,9 +4,23 @@ A Claude Code plugin for **persistent, topic-organized memory** synced across ma
 
 Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Agents, Voyager, Reflexion, Anthropic contextual retrieval, SM-2 spaced repetition, **OpenClaw "dreaming" staged consolidation**, **agentmemory 4-tier taxonomy**, and **rtk pre-storage compression**. See [`RESEARCH.md`](RESEARCH.md).
 
-## What's new in v3.3
+## What's new in v3.4
 
-v3.3 is the **deterministic-only retrieval** release. No external embedding API is called in the runtime path; recall, ranking, fuzzy match, and context planning all run on pure-stdlib Python + SQLite FTS5.
+v3.4 cuts hook token waste, makes the 7-type schema actually queryable, and ships the missing dreaming UX. Grounded in three deep-research passes (`.claude/research/v3.4-*.md`): biology→arch translation (CLS theory, pattern separation, sleep consolidation, Ebbinghaus, reconsolidation), latest LLM memory systems (mem0, Zep, HippoRAG, Letta, A-MEM), and Claude Code hook efficiency patterns.
+
+- **Shell pre-check on `UserPromptSubmit`** — `conflict-detect.sh` checks for `SYNC-CONFLICT.md` in pure bash; Python only fires on the 1% of prompts where a conflict actually exists. Cuts ≥1.9 KB of Python startup per prompt.
+- **Merged SessionStart and PreCompact hooks** — `session-start.sh` and `precompact.sh` collapse the two-entry matchers into a single command each, branching on the `source` field. Preserves HARD-BLOCK semantics.
+- **Externalized auto-journal instructions** — the 3 KB `REASON` block now lives in `templates/auto-journal-instructions.md`; the `Stop` hook injects a short pointer (~400 chars). Saves 20-30k tokens/day on heavy sessions. Subagent context (env `CLAUDE_SUBAGENT` or stdin `agent_type=subagent`) auto-skips.
+- **Tunable cadence** — `auto_journal.journal_every` and `auto_journal.auto_journal_enabled` in `settings.json` replace the hardcoded every-10-turns.
+- **Tag-aware FTS5 schema** — `chunks` and `chunks_fts` gain a `tag TEXT` column. Existing DBs auto-migrate (`ALTER TABLE` + backfill from leading `[tag]` marker). `KNOWN_TAGS = {decision, exp, ref, tool, reflection, skill-ref, secret-ref}`; unknown tags stored as empty string.
+- **Cross-file, tag-aware SHA-256 dedup** (`_dedup.py`) — write-time hash over `(tag, normalized_content)` blocks `[decision] foo` duplicates across files and sessions, but allows `[exp] foo` (different tag = different fact). Fixes the "ghi vào nhưng không dùng được" symptom.
+- **`/mem-recall --type=<tag>` retrieval** — new `_query.query_by_type(ws, tag, query)` pre-filters by tag before BM25 ranking. Schema is now first-class, not a formatting hint.
+- **`/mem-dream` skill** — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
+- **Command surface pruning (33→27)** — deleted `/mem-bootstrap` and `/mem-flush` (auto-run via hooks now). Five workspace commands collapsed into one `/mem-workspace [<verb>]` parent — the four subcommand stubs (`-create`, `-archive`, `-list`, `-map`) were also removed.
+
+### What's still in v3.3
+
+v3.3's **deterministic-only retrieval** stays in force: no external embedding API in the runtime path. v3.4 builds on this, not against it.
 
 - **No LLM in the vector path.** Embedding calls (`_embed.py`) are gated behind explicit opt-in `GOWTH_MEM_USE_LLM_EMBED=1`. Default: FTS5 BM25 + char-trigram Jaccard fuzzy fallback.
 - **4-tier weighted context planner** (`_budget.py`, agentmemory-inspired) — classifies every file as `working / episodic / semantic / procedural`, combines tier weight + char-ngram Jaccard relevance + Ebbinghaus 14-day recency decay, and greedy-fills a token budget. Stable prefix (shared AGENTS/secrets/tools + workspace AGENTS/handoff + today's journal) always loads first for Anthropic prompt-cache hits.
@@ -184,8 +198,9 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-distill` | `memd` | Journal to topics |
 | `/mem-reflect` | `memr` | Generate reflections |
 | `/mem-skillify` | `memk` | Extract reusable workflows |
-| `/mem-bootstrap` | `memb` | Print workspace / doing / next / blocker |
 | `/mem-journal` | `memj` | Open today's journal |
+| `/mem-recall` | — | v3.4 — deterministic FTS5 BM25 recall with optional `--type=<tag>` pre-filter (decision/exp/ref/tool/reflection/skill-ref/secret-ref) |
+| `/mem-dream` | — | v3.4 — run Light/REM/Deep consolidation across a workspace (wraps `_consolidate.py`); supports `--ws`, `--dry-run`, per-phase skip flags |
 | `/mem-reindex` | `memx` | Rebuild SQLite FTS5 + optional vector index |
 | `/mem-cost` | `memc` | Estimate bootstrap token footprint |
 | `/mem-prune` | `memp` | Remove outdated, superseded, or duplicate entries |
@@ -194,14 +209,9 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-research-start <topic>` | — | Scaffold deep-research topic (`research/<topic>/raw/_locate.md` source-code map template) |
 | `/mem-research-distill <topic>` | — | Scaffold `distilled.md` (TL;DR / Architecture / Key facts / Code anchors / Delta / Open questions) + run quality gate (<800 words, every raw note has source ref) |
 | `/mem-research-status` | — | List research topics + state (pending / in-progress / distilled) |
-| `/mem-workspace` | — | Show or switch active workspace |
-| `/mem-workspace-create` | — | Scaffold new workspace |
-| `/mem-workspace-list` | — | List all workspaces |
-| `/mem-workspace-archive` | — | Archive workspace to `_archive/` |
-| `/mem-workspace-map` | — | Add/remove cwd-glob → workspace mapping |
+| `/mem-workspace [<verb> [args]]` | — | Workspace management — list (default), create, archive, map |
 | `/mem-promote` | — | Promote topic to Obsidian wiki (requires claude-obsidian) |
 | `/mem-restructure` | — | Reorganize topics (move slugs, rebuild MOCs) |
-| `/mem-flush` | — | Manual pre-compact flush reminder |
 | `/mem-lint` | — | v3.3 — heuristic contradiction scan across `[ref]/[decision]/[tool]` lines (polarity-pair mismatches sharing >=3 keywords). Read-only. |
 | `/mem-compress` | — | v3.3 — rtk-style pre-storage compression (collapse 3+ identical lines + merge `key: value` runs). Deterministic, idempotent. |
 | `/mem-budget` | — | v3.3 — preview 4-tier weighted context plan for a query (working/episodic/semantic/procedural + Ebbinghaus decay) within a char budget. |
@@ -357,8 +367,9 @@ memx                    # build local index
 | `/mem-distill` | `memd` | Journal → topics |
 | `/mem-reflect` | `memr` | Sinh reflection |
 | `/mem-skillify` | `memk` | Extract workflow tái dùng |
-| `/mem-bootstrap` | `memb` | 3 dòng: doing / next / blocker |
 | `/mem-journal` | `memj` | Mở journal hôm nay |
+| `/mem-recall` | — | v3.4 — FTS5 BM25 recall + tuỳ chọn `--type=<tag>` lọc theo 7-type schema |
+| `/mem-dream` | — | v3.4 — chạy Light/REM/Deep consolidation (`_consolidate.py`); hỗ trợ `--ws`, `--dry-run`, skip từng phase |
 | `/mem-reindex` | `memx` | Rebuild SQLite FTS5+vec |
 | `/mem-cost` | `memc` | Estimate token footprint của bootstrap |
 | `/mem-prune` | `memp` | Active DELETE outdated/superseded/duplicate |
@@ -368,7 +379,7 @@ memx                    # build local index
 | `/mem-compress` | — | v3.3 — nén rtk-style trước khi ghi (gộp 3+ dòng giống nhau + merge `key: value` chung key). Idempotent. |
 | `/mem-budget` | — | v3.3 — preview kế hoạch context 4-tier (working/episodic/semantic/procedural + Ebbinghaus decay) trong char budget. |
 
-Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-bootstrap`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp.
+Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-recall`, `/mem-dream`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp. `/mem-bootstrap` và `/mem-flush` đã bị xoá ở v3.4 (auto-run qua hook).
 
 ### 7-type schema (line-level prefix trong topic file)
 

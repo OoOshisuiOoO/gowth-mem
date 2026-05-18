@@ -8,6 +8,10 @@
     "on_post_compact": true,
     "on_stop_every_n_turns": 10
   },
+  "auto_journal": {
+    "journal_every": 10,
+    "auto_journal_enabled": true
+  },
   "workspace": {
     "default": "default",
     "auto_detect_from_cwd": true,

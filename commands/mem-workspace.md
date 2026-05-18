@@ -1,45 +1,37 @@
 ---
-description: Show or switch the active gowth-mem workspace for this session
-argument-hint: "[workspace-name]"
+description: Workspace management — list, create, archive, map
+argument-hint: "[<verb> [args]]"
 ---
 
 # /mem-workspace
 
-Without args: show the currently active workspace.
-With `<name>`: switch the active workspace for this session (writes a session-scoped override file).
+Unified workspace commands. No args shows active workspace and lists all workspaces.
+
+## Subcommands
+
+| Command | Purpose |
+|---------|---------|
+| `/mem-workspace` | Show active workspace (default) |
+| `/mem-workspace <name>` | Switch active workspace for this session |
+| `/mem-workspace --clear` | Clear session override and use config default |
+| `/mem-workspace create <name>` | Scaffold new workspace from v3 skeleton |
+| `/mem-workspace archive <name>` | Archive a workspace (move to `_archive/`) |
+| `/mem-workspace list` | List all active workspaces (default, same as no args) |
+| `/mem-workspace map <glob> <name>` | Map cwd glob to workspace (auto-detect on SessionStart) |
+| `/mem-workspace map --remove <glob>` | Remove a workspace mapping |
 
 ## Resolution order (read-only)
 
-The active workspace is computed at every hook invocation as:
+When determining the active workspace at session start:
 
 1. Env `GOWTH_WORKSPACE=<name>`
-2. Session-scoped `.session-workspace` file (set by this command)
+2. Session-scoped `.session-workspace` file (set by `/mem-workspace <name>`)
 3. `config.json.workspace_map` glob match against `$PWD`
 4. `config.json.active_workspace`
 5. `"default"`
 
-## Steps
-
-```bash
-ARG="$1"
-
-if [ -z "$ARG" ]; then
-  python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" active
-  python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" list
-  exit 0
-fi
-
-if [ "$ARG" = "--clear" ]; then
-  python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" clear
-  exit 0
-fi
-
-# Switch
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" switch "$ARG"
-```
-
 ## Notes
 
-- Switching is **session-scoped**, persisted via `~/.gowth-mem/.session-workspace`. Survives across `/compact` and continues until you run `/mem-workspace --clear` or remove the file.
-- To set a permanent default, edit `~/.gowth-mem/config.json` `active_workspace` field instead.
-- To map a directory glob to a workspace (e.g. `cd /Volumes/Data/Git/bot/AI-trade` → `trade`), use `/mem-workspace-map`.
+- Switching is **session-scoped**, persisted via `~/.gowth-mem/.session-workspace`. Survives `/compact` until cleared via `--clear`.
+- To set a permanent default, edit `~/.gowth-mem/config.json` `active_workspace` field.
+- For detailed subcommand documentation, see `/mem-workspace-create`, `/mem-workspace-archive`, `/mem-workspace-list`, `/mem-workspace-map`.

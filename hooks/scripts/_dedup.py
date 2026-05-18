@@ -9,23 +9,31 @@ File format:
 
 Designed to FAIL OPEN: any IO/JSON failure returns False (no dedup), so a
 broken window file never blocks user writes.
+
+v3.4 addition: tag-aware dedup. Hash is computed over (tag, normalized_content)
+so `[decision] foo` and `[exp] foo` produce DIFFERENT hashes and both are stored.
+`is_duplicate(ws_root, tag, content)` checks the SQLite index DB for any prior
+row with the same (tag, content_hash) across all files and sessions — cross-file,
+cross-time dedup layer on top of the 300s hot-path cache.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
-from _home import gowth_home  # type: ignore
+from _home import gowth_home, index_db  # type: ignore
 from _lock import file_lock  # type: ignore
 
 DEFAULT_WINDOW_SECONDS = 300
 WHITESPACE_RE = re.compile(r"\s+")
+TAG_RE = re.compile(r"^\[([a-z-]+)\]\s*")
 
 
 def _window_path() -> Path:
@@ -36,8 +44,57 @@ def _normalize(text: str) -> str:
     return WHITESPACE_RE.sub(" ", text or "").strip().lower()
 
 
+def _extract_tag(content: str) -> str:
+    """Return the leading [tag] value from content, or '' if absent."""
+    m = TAG_RE.match((content or "").lstrip())
+    return m.group(1) if m else ""
+
+
 def _digest(text: str) -> str:
+    """Legacy content-only digest (used by existing seen_recently / record API)."""
     return hashlib.sha256(_normalize(text).encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _tag_digest(tag: str, content: str) -> str:
+    """v3.4: hash over (tag, normalized_content) so same text with different tag
+    produces a different hash — [decision] foo != [exp] foo.
+    """
+    norm = _normalize(content)
+    key = f"{tag}\x00{norm}"
+    return hashlib.sha256(key.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def is_duplicate(ws_root: str | Path, tag: str, content: str) -> bool:
+    """v3.4: cross-file, cross-session duplicate check backed by the SQLite index.
+
+    Returns True if ANY row in the chunks table has the same (tag, content_hash)
+    as the supplied (tag, content) pair. Falls open on any error.
+
+    The content_hash stored in the `hash` column is SHA-1[:16] over raw content
+    (set by _index.py). We therefore recompute it the same way here so the check
+    is consistent without requiring a full-text scan.
+    """
+    import hashlib as _hl
+    try:
+        db_path = index_db()
+        if not db_path.is_file():
+            return False
+        norm = _normalize(content)
+        # Use the same SHA-1[:16] hash that _index.py stores in the hash column.
+        raw_hash = _hl.sha1(content.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        with sqlite3.connect(str(db_path)) as db:
+            db.execute("PRAGMA busy_timeout=2000")
+            # Check column existence first — DB might be pre-migration.
+            cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+            if "tag" not in cols:
+                return False
+            row = db.execute(
+                "SELECT 1 FROM chunks WHERE tag=? AND hash=? LIMIT 1",
+                (tag, raw_hash),
+            ).fetchone()
+            return row is not None
+    except Exception:
+        return False
 
 
 def _fresh() -> dict:
@@ -119,10 +176,15 @@ def record(text: str) -> None:
 
 
 def check_and_record(text: str) -> bool:
-    """Atomic seen-then-record. Returns True if duplicate (caller should skip)."""
+    """Atomic seen-then-record. Returns True if duplicate (caller should skip).
+
+    v3.4: uses tag-aware digest so [decision] foo and [exp] foo are NOT
+    considered duplicates of each other in the hot-path 300s window.
+    """
     if not isinstance(text, str) or not text.strip():
         return False
-    digest = _digest(text)
+    tag = _extract_tag(text)
+    digest = _tag_digest(tag, text)
     now = time.time()
     try:
         with file_lock("dedup", timeout=1.0):
