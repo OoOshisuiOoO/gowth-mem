@@ -1,78 +1,59 @@
 #!/usr/bin/env python3
-"""PreCompact hook (v3.0): block until critical info is flushed to topic folders.
+"""PreCompact hook (v3.5): auto-dump transcript snapshot then pass through.
 
-Routes destinations for topic-organized memory at ~/.gowth-mem/, scoped to the
-active workspace. v3.0: topic = FOLDER `workspaces/<ws>/<slug>/` with
-`00-README.md` (MOC) + `YYYY-MM-DD-<aspect>.md` dated aspect files + `lessons.md`.
-Reserved subdirs at workspace root: docs, journal, skills, research.
+v3.5 — DECISION REVERSAL (was: force-LLM block-with-REASON).
 
-Idempotency (v2.9.2): once the LLM has flushed (writes a markdown file under the
-active workspace), a follow-up /compact within FLUSH_GRACE seconds passes silently
-so the user isn't trapped in a perpetual block.
+Earlier versions blocked /compact with a directive asking the LLM to invoke
+the mem-save dreaming pipeline. In practice the LLM frequently acknowledged
+the block with text rather than invoking the skill, especially when
+auto-compact fired at context-overflow — forcing the user to manually run
+`/mem-save` then `/compact` again.
 
-Empty-session pass-through (v2.10.1): if the transcript has fewer than
-MIN_USER_TURNS substantive user prompts, there is nothing meaningful to flush —
-pass through. Prevents trapping users who run /compact at session start.
+v3.5 reverses the decision: the hook now does a deterministic raw-dump of
+the recent transcript into `<ws>/journal/<today>.md` and passes /compact
+through. Classification (decisions/exp/ref → topic files) is deferred to
+`/mem-distill`, which the user can run when context is fresh. Zero manual
+retries; raw memory is never lost.
+
+Idempotency: once a dump happened or any *.md under the active workspace
+was modified within FLUSH_GRACE seconds, subsequent /compact runs pass
+through silently.
+
+Empty-session pass-through: if the transcript has fewer than MIN_USER_TURNS
+substantive user prompts, there is nothing meaningful to flush — pass
+through. Prevents trapping users who run /compact at session start.
 """
 from __future__ import annotations
 
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import active_workspace, workspace_dir  # type: ignore
+from _atomic import atomic_write  # type: ignore
+from _debug import log_debug  # type: ignore
+from _home import active_workspace, journal_dir, workspace_dir  # type: ignore
+from _lock import file_lock  # type: ignore
 
 FLUSH_GRACE = 300  # seconds — recent flush window
 MIN_USER_TURNS = 2  # below this, transcript has nothing substantive to flush
+RAW_DUMP_MAX_CHARS = 80_000  # cap snapshot size to avoid huge journal entries
 
 
-REASON = """[gowth-mem:precompact-flush] HARD-BLOCK: compact incoming. Save EVERYTHING critical first.
+FALLBACK_REASON = """[gowth-mem:precompact-flush] HARD-BLOCK: compact incoming and raw-dump failed.
 
-Active workspace = the one resolved at session start. All writes below land under
-~/.gowth-mem/workspaces/<active>/ unless explicitly cross-workspace ([[ws:slug]] / shared/).
+Save EVERYTHING critical first. Invoke `gowth-mem:mem-save` skill to run the
+dreaming pipeline (classify + route + write) before retrying /compact.
 
-Before context is summarized, do this WITHOUT user prompting:
-
-1. Scan this entire conversation for high-signal info that hasn't been saved yet.
-2. Route each item (apply mem0 ADD/UPDATE/DELETE/NOOP):
-   - Cross-cutting per workspace (flat under <ws>/docs/):
-     - Session state (current task / next / blocker) → <ws>/docs/handoff.md (prefix host:<name>)
-     - Cross-topic tool quirks (ws-specific) → <ws>/docs/tools.md
-     - Cross-topic episodic / fact overflow → <ws>/docs/exp.md / <ws>/docs/ref.md
-   - Cross-workspace (flat under shared/):
-     - Resource pointers (env-var name only, NEVER value) → shared/secrets.md
-     - System-wide tools (kubectl, frida, …) → shared/tools.md
-   - Topic content (v3.0: topic = FOLDER) — pick or create the right topic folder:
-     - Find existing <ws>/<slug>/ whose 00-README.md keywords overlap (≥3 common words).
-     - Else create <ws>/<new-slug>/ with 00-README.md (top-2 distinctive keywords as slug,
-       kebab-case ≤60). Reserved subdir names blocked: docs, journal, skills, research.
-     - Append entries to TODAY'S aspect file: <ws>/<slug>/YYYY-MM-DD-<aspect>.md
-       (NEVER to 00-README.md — that's the auto-regenerated MOC).
-     - Episodic experience → `## [exp]` section, line `- ...`
-     - Verified fact (Source REQUIRED) → `## [ref]` section
-     - Tool quirk specific to this topic → `## [ref]` section
-     - Architectural decision → `## [decision]` section
-     - Lesson learned → `<ws>/<slug>/lessons.md` (5-field schema, not append to aspect)
-3. Append raw observations to <ws>/journal/<today>.md if useful.
-4. Update <ws>/docs/handoff.md so the next session can resume.
-5. After writes: refresh MOC + index:
-   `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py --ws <ws>`
-   `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py`
-6. Confirm in one line: "precompact-flush: ws=<ws>, saved N items into <topics+docs>".
-
-Quy tắc: 1-2 dòng / entry, có Source cho [ref]. Conflict cũ → DELETE cũ. KHÔNG commit secret value.
-Frontmatter.last_touched phải update theo today. Slug đã publish thì KHÔNG đổi (vỡ wikilinks).
-
-After this turn, the PostCompact hook will pull-rebase-push automatically.
-Once saved (any *.md modified under the active workspace), re-run /compact within
-5 minutes — this hook detects the recent flush via mtime and lets it through."""
+Once saved, re-run /compact within 5 minutes — this hook detects the recent
+flush via mtime and lets it through."""
 
 
 def recently_flushed(grace: int = FLUSH_GRACE) -> bool:
     """True if any markdown under the active workspace was modified within
-    `grace` seconds — heuristic that the LLM just completed a flush."""
+    `grace` seconds — heuristic that a flush just completed."""
     try:
         wsd = workspace_dir(active_workspace())
     except Exception:
@@ -129,6 +110,93 @@ def user_turn_count(transcript_path: str) -> int:
     return n
 
 
+def _extract_text(content) -> str:
+    """Return joined plain text from a message.content (str or list-of-parts)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and p.get("type") == "text":
+                t = p.get("text") or ""
+                if t.strip():
+                    parts.append(t)
+        return "\n".join(parts)
+    return ""
+
+
+def extract_recent_turns(transcript_path: str, max_chars: int = RAW_DUMP_MAX_CHARS) -> str:
+    """Read transcript JSONL and return the most recent substantive user+assistant
+    text turns, oldest-first, capped at `max_chars`."""
+    if not transcript_path:
+        return ""
+    p = Path(transcript_path)
+    if not p.is_file():
+        return ""
+    turns: list[tuple[str, str]] = []
+    try:
+        with p.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                role = rec.get("type")
+                if role not in ("user", "assistant"):
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                text = _extract_text(content).strip()
+                if text:
+                    turns.append((role, text))
+    except OSError:
+        return ""
+
+    # Take from tail until budget exhausted, then re-reverse to chronological.
+    selected: list[str] = []
+    total = 0
+    for role, text in reversed(turns):
+        chunk = f"### [{role}]\n\n{text}\n"
+        if total + len(chunk) > max_chars and selected:
+            break
+        selected.append(chunk)
+        total += len(chunk)
+    selected.reverse()
+    return "\n".join(selected)
+
+
+def raw_dump_to_journal(text: str, ws: str) -> bool:
+    """Append a raw transcript snapshot to <ws>/journal/<today>.md atomically.
+
+    Returns True on success, False on any failure (so caller can fall back).
+    """
+    if not text.strip():
+        return False
+    try:
+        jd = journal_dir(ws)
+        jd.mkdir(parents=True, exist_ok=True)
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        timestamp = now.strftime("%H:%M:%S")
+        target = jd / f"{today}.md"
+
+        header = (
+            f"\n\n## [auto-precompact-dump] {today} {timestamp}\n\n"
+            "_Pre-compact snapshot. Run `/mem-distill` to classify into topic files._\n\n"
+        )
+        snapshot = header + text + "\n"
+
+        with file_lock(f"journal-{ws}", timeout=5.0):
+            existing = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
+            atomic_write(target, existing + snapshot)
+        return True
+    except Exception as e:
+        log_debug("precompact-flush", f"raw_dump failed: {e}")
+        return False
+
+
 def read_payload() -> dict:
     """Read the PreCompact JSON payload from stdin. Empty/invalid → {}."""
     try:
@@ -151,11 +219,26 @@ def main() -> int:
     if user_turn_count(transcript_path) < MIN_USER_TURNS:
         return 0
 
-    # Pass-through if the LLM just flushed (mtime heuristic).
+    # Pass-through if a flush already happened recently (mtime heuristic).
     if recently_flushed():
         return 0
 
-    print(json.dumps({"decision": "block", "reason": REASON}))
+    # v3.5: deterministic raw-dump → pass /compact through with zero manual retries.
+    # Skip silently if ~/.gowth-mem/ isn't materialized (per CLAUDE.md graceful-missing rule).
+    try:
+        ws = active_workspace()
+        ws_ok = bool(ws) and workspace_dir(ws).is_dir()
+    except Exception as e:
+        log_debug("precompact-flush", f"active_workspace failed: {e}")
+        ws, ws_ok = "", False
+
+    if ws_ok:
+        text = extract_recent_turns(transcript_path)
+        if text and raw_dump_to_journal(text, ws):
+            return 0  # pass-through; raw memory preserved in journal
+
+    # Fallback: raw-dump failed → block with directive so memory isn't lost silently.
+    print(json.dumps({"decision": "block", "reason": FALLBACK_REASON}))
     return 0
 
 
