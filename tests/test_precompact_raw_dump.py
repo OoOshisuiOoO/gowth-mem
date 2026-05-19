@@ -173,7 +173,11 @@ class TestSnapshotIdempotency(unittest.TestCase):
 
 
 class TestMissingGowthHomePassThrough(unittest.TestCase):
-    """If ~/.gowth-mem/ workspace dir doesn't exist → graceful pass-through."""
+    """If ~/.gowth-mem/ workspace dir doesn't exist → graceful pass-through.
+
+    v3.5.1: tightened from "block-acceptable" to "MUST pass-through silently".
+    Auto-compact on fresh install must not be blockable.
+    """
 
     def test_missing_workspace_dir_no_block_no_create(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,12 +193,39 @@ class TestMissingGowthHomePassThrough(unittest.TestCase):
             # Hook must NOT create workspaces/ as a side effect, must NOT block.
             self.assertFalse((Path(tmp) / "workspaces").exists(),
                              "hook must not materialize ~/.gowth-mem/workspaces/ when missing")
-            stdout = result.stdout.strip()
-            if stdout:
-                parsed = json.loads(stdout)
-                # Fallback block is acceptable here (text-only directive, no FS damage)
-                # but must not have written anything.
-                pass
+            self.assertEqual(result.stdout.strip(), "",
+                             "v3.5.1: fresh install must NEVER block /compact; "
+                             f"got stdout: {result.stdout!r}")
+
+
+class TestExtractFailurePassThrough(unittest.TestCase):
+    """Workspace exists but extract_recent_turns returns empty → pass-through, no block."""
+
+    def test_tool_result_only_transcript_passes_through(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws_dir = Path(tmp) / "workspaces" / "default"
+            ws_dir.mkdir(parents=True)
+            (Path(tmp) / "config.json").write_text(json.dumps({"active_workspace": "default"}))
+
+            # MIN_USER_TURNS satisfied by 2 substantive text turns, but assistant
+            # output is tool_use only (no text parts) — extract_recent_turns
+            # captures user turns, so this still extracts. To force empty,
+            # craft user records with non-text content (tool_result).
+            tx = Path(tmp) / "transcript.jsonl"
+            lines = [
+                json.dumps({"type": "user", "message": {"content": "real q one"}}),
+                json.dumps({"type": "user", "message": {"content": "real q two"}}),
+                # Trailing tool_result-shaped user record (skipped by extract)
+                json.dumps({"type": "user", "message": {"content": [
+                    {"type": "tool_result", "content": "side-effect data"}
+                ]}}),
+            ]
+            tx.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            result = _run_hook(tmp, str(tx))
+            self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
+            self.assertEqual(result.stdout.strip(), "",
+                             "v3.5.1: hook must never emit decision:block JSON")
 
 
 class TestExtractRecentTurnsCap(unittest.TestCase):

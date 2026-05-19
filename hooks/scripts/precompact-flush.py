@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""PreCompact hook (v3.5): auto-dump transcript snapshot then pass through.
+"""PreCompact hook (v3.5.1): best-effort transcript dump, NEVER blocks /compact.
 
-v3.5 — DECISION REVERSAL (was: force-LLM block-with-REASON).
+v3.5.1 — REMOVES the fallback HARD-BLOCK. The hook now exits 0 with empty
+stdout under every failure path. Rationale: auto-compact fires when context
+is overflowing; blocking it strands the user. The v3.5 fallback that
+printed `{"decision": "block"}` when raw-dump failed contradicted the v3.5
+promise of "zero manual retries". Failures are surfaced via `log_debug`
+(see `_debug.py`) instead.
 
-Earlier versions blocked /compact with a directive asking the LLM to invoke
-the mem-save dreaming pipeline. In practice the LLM frequently acknowledged
-the block with text rather than invoking the skill, especially when
-auto-compact fired at context-overflow — forcing the user to manually run
-`/mem-save` then `/compact` again.
+v3.5 baseline (kept):
+  Deterministic raw-dump of recent transcript turns into
+  `<ws>/journal/<today>.md`. Classification (decisions/exp/ref → topic
+  files) is deferred to `/mem-distill`, runnable when context is fresh.
 
-v3.5 reverses the decision: the hook now does a deterministic raw-dump of
-the recent transcript into `<ws>/journal/<today>.md` and passes /compact
-through. Classification (decisions/exp/ref → topic files) is deferred to
-`/mem-distill`, which the user can run when context is fresh. Zero manual
-retries; raw memory is never lost.
-
-Idempotency: once a dump happened or any *.md under the active workspace
-was modified within FLUSH_GRACE seconds, subsequent /compact runs pass
-through silently.
-
-Empty-session pass-through: if the transcript has fewer than MIN_USER_TURNS
-substantive user prompts, there is nothing meaningful to flush — pass
-through. Prevents trapping users who run /compact at session start.
+Pass-through paths (all return 0, no stdout):
+  1. Transcript has < MIN_USER_TURNS substantive user prompts (session-start)
+  2. recently_flushed() — any *.md under workspace touched in last FLUSH_GRACE
+  3. Workspace not materialized (fresh install, before /mem-install)
+  4. extract_recent_turns returned empty (tool-result-only transcript)
+  5. raw_dump_to_journal raised — logged, not surfaced
+  6. Happy path — dump succeeded
 """
 from __future__ import annotations
 
@@ -40,15 +38,6 @@ from _lock import file_lock  # type: ignore
 FLUSH_GRACE = 300  # seconds — recent flush window
 MIN_USER_TURNS = 2  # below this, transcript has nothing substantive to flush
 RAW_DUMP_MAX_CHARS = 80_000  # cap snapshot size to avoid huge journal entries
-
-
-FALLBACK_REASON = """[gowth-mem:precompact-flush] HARD-BLOCK: compact incoming and raw-dump failed.
-
-Save EVERYTHING critical first. Invoke `gowth-mem:mem-save` skill to run the
-dreaming pipeline (classify + route + write) before retrying /compact.
-
-Once saved, re-run /compact within 5 minutes — this hook detects the recent
-flush via mtime and lets it through."""
 
 
 def recently_flushed(grace: int = FLUSH_GRACE) -> bool:
@@ -234,11 +223,16 @@ def main() -> int:
 
     if ws_ok:
         text = extract_recent_turns(transcript_path)
-        if text and raw_dump_to_journal(text, ws):
-            return 0  # pass-through; raw memory preserved in journal
+        if not text:
+            log_debug("precompact-flush", "no substantive turns extracted; pass-through")
+        elif not raw_dump_to_journal(text, ws):
+            log_debug("precompact-flush", "raw_dump_to_journal failed; pass-through")
+    else:
+        log_debug("precompact-flush", "workspace not materialized; pass-through")
 
-    # Fallback: raw-dump failed → block with directive so memory isn't lost silently.
-    print(json.dumps({"decision": "block", "reason": FALLBACK_REASON}))
+    # v3.5.1: NEVER block /compact. Failures are logged, not surfaced. Auto-compact
+    # firing on context overflow must not be blockable — the user's recovery path
+    # (re-run /compact) doesn't exist when context is already gone.
     return 0
 
 

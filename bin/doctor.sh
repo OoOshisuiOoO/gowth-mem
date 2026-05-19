@@ -97,6 +97,49 @@ else
   log "git: ${GIT_VER:-unknown} ✓"
 fi
 
+# 4. Stale user-level PreCompact hook (pre-v3.5 artifact)
+#
+# Some users installed `~/.claude/hooks/precompact-force-memsave.sh` while
+# following old docs. Plugin v3.5+ does NOT need (or want) it — the plugin's
+# own precompact-flush.py now handles compaction without blocking. The stale
+# hook chains in front and HARD-BLOCKs every /compact until a `mem-save`
+# happens. Detect + advise (we don't auto-delete user files).
+STALE_HOOK="${HOME}/.claude/hooks/precompact-force-memsave.sh"
+STALE_SETTINGS="${HOME}/.claude/settings.json"
+SETTINGS_HAS_STALE=0
+if [ -f "$STALE_SETTINGS" ] && grep -q "precompact-force-memsave" "$STALE_SETTINGS" 2>/dev/null; then
+  SETTINGS_HAS_STALE=1
+fi
+if [ -f "$STALE_HOOK" ] || [ "$SETTINGS_HAS_STALE" -eq 1 ]; then
+  warn "stale pre-v3.5 PreCompact hook detected — blocks /compact and auto-compact"
+  warn "  Plugin v3.5+ handles pre-compact memory dump itself; no global hook needed."
+  if [ -f "$STALE_HOOK" ]; then
+    warn "  Step 1 — delete the script:"
+    warn "    rm \"$STALE_HOOK\""
+  fi
+  if [ "$SETTINGS_HAS_STALE" -eq 1 ]; then
+    warn "  Step 2 — surgically remove just the stale hook entry from $STALE_SETTINGS:"
+    warn "    python3 - <<'PY'"
+    warn "    import json, pathlib"
+    warn "    p = pathlib.Path(\"$STALE_SETTINGS\")"
+    warn "    d = json.loads(p.read_text())"
+    warn "    hooks = d.get('hooks', {})"
+    warn "    pc = hooks.get('PreCompact', [])"
+    warn "    new_pc = []"
+    warn "    for group in pc:"
+    warn "        kept = [h for h in group.get('hooks', []) if 'precompact-force-memsave' not in h.get('command','')]"
+    warn "        if kept:"
+    warn "            group['hooks'] = kept"
+    warn "            new_pc.append(group)"
+    warn "    if new_pc:"
+    warn "        hooks['PreCompact'] = new_pc"
+    warn "    else:"
+    warn "        hooks.pop('PreCompact', None)"
+    warn "    p.write_text(json.dumps(d, indent=2) + '\\n')"
+    warn "    PY"
+  fi
+fi
+
 # Surface env failures before plugin-registry checks
 if [ "$ENV_EXIT" -ne 0 ]; then
   exit "$ENV_EXIT"
