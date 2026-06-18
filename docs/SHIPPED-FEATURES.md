@@ -262,3 +262,21 @@ Workspace: trade / Topics: exness-ea / Entries: +1 decision +1 ref / Context: pr
 Now `git log --grep 'Workspace: trade'`, `git log --grep '^archive('`, `git log -- <path>`,
 `git log --stat`, `git blame` all stay useful. Deep research: Perplexity (backend dcc8cb10),
 Gemini (conv c_c23d12acdbbec4a3). Test coverage: **246/246** green (added `test_commitmsg.py` [8]).
+
+### v3.7 — File-level schema validator (learned from supremor)
+
+Studied the TrueProfit `supremor` team-knowledge vault (1295 .md, `claude-code-vault-keeper`
+validated, BOARD.md kanban, 72 templates, themed auto-changelog, `type(scope):` commits). Its
+**file-level schema validator** is the discipline gowth-mem most lacked: `_gate.py` checks entry
+*content*, but nothing checked file *structure*, so **121 topic files** had missing/partial/wrong
+frontmatter (invisible to wikilinks, recall scoring, auto-MOC).
+
+- **`_validate.py`** (adapted to v3 file types): validates `00-README`(slug/title/type/status),
+  dated-aspect(type=aspect/date/topic/slug/title), naming(slug regex), reserved-path placement.
+  `--scan` reports; `--fix` deterministically repairs aspect frontmatter from the path
+  (topic=parent, date+aspect=filename, slug=topic-aspect, title=H1), content-preserving.
+- **Live vault reorganized**: 121 non-conforming → `--fix` repaired **124 aspect files** + MOC
+  rebuild → **0 schema issues**. Accounts/configs preserved verbatim; `_gate.py` still 0 junk.
+- `/mem-validate` command + 7 tests (**253 total**). Full comparison + remaining transferable
+  learnings (deliberate taxonomy, themed `/mem-changelog`, work-board handoff, SSOT router) in
+  `.claude/research/v3.7-supremor-comparison.md`.
