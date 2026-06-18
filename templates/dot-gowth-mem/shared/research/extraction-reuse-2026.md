@@ -65,6 +65,8 @@ Extraction runs **offline** (not mid-task) so it sees a *complete* cognitive loo
 | 10 | Low durability | transient ("timeout is now 3") vs durable ("service needs backoff because rate-limited") | agent |
 | 11 | Low poignancy | importance < 0.40 (chit-chat, failed-attempt-only, one-off) → not semantic | agent |
 | 12 | Reserved/format | bad slug, reserved name, malformed frontmatter | ★ (slug) |
+| 13 | `[hypothesis]` without Verify path | no verify/test/falsification clause (it's exempt from the hedge gate but must say how it resolves) | ★ |
+| 14 | `[goal]` without Status/criterion | no lifecycle `Status:` and no verifiable `Done when:` | ★ |
 
 ★ = enforced deterministically in `_gate.py` at `_topic.append_entry` / `_lesson.append_lesson`.
 The rest are agent discipline (need an LLM judgment: poignancy, durability, splitting).
@@ -114,12 +116,20 @@ progressive-disclosure finding.
 > **TL;DR** — 1-2 lines, the reusable core. The agent reads THIS first and decides
 >   whether to open the body. Keep ≤ ~200 chars. (progressive disclosure)
 
+## [goal] <short title>          ← user objective. Status: active|paused|achieved|abandoned|blocked|superseded. Never deleted.
+Status: active
+Done when: <externally verifiable criterion — a test, a released tag, a count>
+
 ## [decision] <short title>      ← choice + rationale + alternative. Current at top.
 <body — must contain a because/since/rationale clause>
 
 ## [ref] <short title>           ← verified fact.
 <body>
 Source: <url | file:line | commit | tool-id>
+
+## [hypothesis] <short title>    ← UNVERIFIED claim pending confirmation ("chưa verify"). Exempt from hedge gate.
+Verify: <how it resolves — backtest / experiment / observation / code path to check>
+<!-- promotes to [ref]+Source when confirmed; move old entry to ## Superseded — git diff = audit trail -->
 
 ## [tool] <short title>          ← version + working `command`.
 ## [exp] <short title>           ← episodic, specific cause.
@@ -134,7 +144,7 @@ Source: <url | file:line | commit | tool-id>
   `[type]` tag **stays on the H2 line** — `_gate`/`_dedup`/`_index` read it there (v3.8;
   before v3.8 only bullets were recognized, so block entries silently bypassed the gate).
 - **TL;DR FIRST** (Gemini progressive disclosure; supremor frontmatter `description` ≤1024).
-- **Order**: decisions → refs → tools → exp → reflections (canon §3 type order). Current at top.
+- **Order**: goal → decision → ref → tool → hypothesis → exp → reflection (canon §3 type order). Current truth on top; hypotheses sit below the verified types (lower trust).
 - **Superseded → trailing `## Superseded`** (positive framing: current truth on top, history
   in git + this section). `[decision]` is never hard-deleted — moved here marked `(superseded)`.
 - One file **≤ 500 lines / ~5k tokens** (canon §2; split via `/mem-promote` past that).

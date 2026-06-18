@@ -18,6 +18,9 @@ gowth-mem workspaces. AGENTS.md cites this file; hooks (`_prune.py`, `_lint.py`,
 `_dedup.py`, `_consolidate.py`) implement these thresholds. **Do not soften
 without a research note showing the new threshold is at least as safe.**
 
+> **v3.9 provenance layer**: for the verified/unverified distinction (`[ref]` vs `[hypothesis]`)
+> and the goal-tracking layer (`[goal]`), see `shared/research/provenance-2026.md`.
+
 ## 0. Why this exists
 
 > Memory is not a retrieval problem — it is a lifecycle problem.
@@ -48,6 +51,8 @@ Any entry that fails ANY of these is REJECTED at write time (`_topic.append_entr
 | `[exp]` without specific cause | DROP if matches `/tried (things|stuff|some)/i` and no concrete attempt | mem0 specificity rule |
 | `[tool]` without version + working syntax | DROP if no `version:` AND no fenced command | shared/tools.md schema |
 | `[secret-ref]` with raw value | DROP and alert — pointer-only contract (env-var name or path) | shared/AGENTS.md §14 |
+| `[hypothesis]` without `Verify:` path | DROP — unverified claim must name its confirmation/falsification path | v3.9 provenance-2026 |
+| `[goal]` without `Status:` / success criterion | DROP — vague wish without `Done when:` is not a goal | v3.9 provenance-2026 |
 | Hedge ratio | hedge words / total words > 0.25 → DROP | derived from LangMem importance |
 | Reserved slug as topic | `docs / journal / skills / research / readme / lessons / 00-readme` → DROP | v3 layout invariant |
 | Slug regex | `^[a-z0-9][a-z0-9-]{0,59}$` → DROP otherwise | v3 layout invariant |
@@ -86,18 +91,20 @@ otherwise verify_fail false-positives on AWS docs example keys etc. See
 | Aspect-file hard size | `> 400 lines` → `/mem-promote` warning | shared/AGENTS.md §8 |
 | Fact poignancy (manual, optional) | scale `1-5`; only `≥ 3` survives to `[decision]/[ref]` | docs-side | Zep `fact_rating` 1-5 |
 
-## 3. Retention TTL by 7-type schema
+## 3. Retention TTL by 9-type schema
 
-Maps gowth-mem's 7 prefixes onto the working / episodic / semantic / procedural taxonomy:
+Maps gowth-mem's 9 prefixes onto the working / episodic / semantic / procedural taxonomy:
 
 | Prefix | Memory class | Default TTL | Decay rule | Delete trigger |
 |---|---|---|---|---|
+| `[goal]` | working/reflective | ∞ | none | mark achieved/abandoned/superseded — never delete |
 | `[secret-ref]` | resource pointer | ∞ until rotated | none | `(rotated)` marker OR `valid_until:` past |
 | `[ref]` | semantic | ∞ until contradicted | none | superseded marker OR `_lint.py` confirms contradiction |
 | `[decision]` | semantic + procedural | ∞ | none | immutable — mark `(superseded)` instead of delete (audit trail) |
 | `[skill-ref]` | procedural | ∞ | none | source skill removed/deprecated |
 | `[reflection]` | semantic (meta) | 180 days unless cross-linked ≥ 2× | linear after 90d | low layer_score + untouched 180d |
 | `[exp]` | episodic | 90 days unless reinforced | Ebbinghaus | recall_count < 2 AND age > 90d |
+| `[hypothesis]` | episodic-staging | 30 days | linear | refuted OR (age > 30d AND never promoted to `[ref]`) |
 | `[tool]` | semantic (versioned) | until version deprecated | none | `valid_until:` past OR version in DEPRECATED list |
 | journal raw | working | 7 days raw, then distill | hard cutoff | after `/mem-distill` succeeds |
 
@@ -110,8 +117,8 @@ floor            = 0.1   (never fully forgotten if importance ≥ 0.5)
 on recall        → reset Δdays = 0  (spaced-repetition reinforcement)
 ```
 
-`importance` source: `[decision]=1.0`, `[ref]=0.9`, `[skill-ref]=0.9`,
-`[reflection]=0.7`, `[tool]=0.7`, `[exp]=0.5`, `[secret-ref]=1.0`.
+`importance` source: `[goal]=1.0`, `[decision]=1.0`, `[ref]=0.9`, `[skill-ref]=0.9`,
+`[reflection]=0.7`, `[tool]=0.7`, `[exp]=0.5`, `[hypothesis]=0.4`, `[secret-ref]=1.0`.
 
 ## 4. Multi-signal recall score (deterministic-only — no LLM in path)
 

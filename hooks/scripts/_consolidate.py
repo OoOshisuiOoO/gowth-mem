@@ -40,7 +40,7 @@ W_RECENCY = 0.15
 W_CONSOLIDATION = 0.10
 W_RICHNESS = 0.06
 
-TYPE_RE = re.compile(r"\[(decision|exp|ref|tool|reflection|skill-ref|secret-ref)\]")
+TYPE_RE = re.compile(r"\[(decision|exp|ref|tool|reflection|skill-ref|secret-ref|goal|hypothesis)\]")
 MIN_RECALL_COUNT = 2
 
 

@@ -63,6 +63,18 @@ RATIONALE_RE = re.compile(
 # canon §1: [tool] needs a version marker OR a fenced/inline command.
 VERSION_RE = re.compile(r"(version:|v?\d+\.\d+|\b\d+\.\d+\.\d+\b|@[\w.-]+)", re.IGNORECASE)
 COMMAND_RE = re.compile(r"`[^`]+`|```")
+# v3.9 provenance layer: [hypothesis] is UNVERIFIED knowledge — it is *allowed*
+# to hedge (uncertainty is its nature, so it is exempt from the hedge gate), but
+# it MUST state HOW it will be confirmed/refuted (a Verify: / test / falsification
+# path). An idle guess with no verification path is speculation = junk.
+VERIFY_RE = re.compile(
+    r"\b(verify|verif\w+|test|confirm|falsif\w+|pending|validate|reproduce|"
+    r"check|expect|kiểm chứng|xác minh)\b", re.IGNORECASE)
+# v3.9: [goal] (user objective/intent) MUST carry a lifecycle Status or a success
+# criterion — otherwise it is a vague wish, not a trackable goal.
+GOAL_STATUS_RE = re.compile(
+    r"\b(active|paused|achieved|abandoned|blocked|superseded|done when|success|"
+    r"criteria|target|objective|mục tiêu|hoàn thành)\b", re.IGNORECASE)
 PLACEHOLDER_RE = re.compile(
     r"^\s*(todo|tbd|fixme|xxx|wip|misc|random|stuff|note to self|"
     r"investigate later|placeholder|n/?a|\.\.\.|-+)\s*$",
@@ -134,7 +146,9 @@ def evaluate(content: str, *, strict: bool | None = None) -> GateResult:
     words = re.findall(r"\w+", body.lower())
     if words:
         hedge_hits = len(HEDGE_RE.findall(body))
-        if hedge_hits and not EVIDENCE_RE.search(raw):
+        # [hypothesis] is unverified by design — hedging is allowed; it must
+        # instead carry a Verify: path (enforced in the strict block below).
+        if hedge_hits and not EVIDENCE_RE.search(raw) and tag != "hypothesis":
             ratio = hedge_hits / max(1, len(words))
             if ratio > HEDGE_RATIO_MAX or len(words) < 12:
                 return GateResult(False, "hedged_no_evidence",
@@ -147,6 +161,12 @@ def evaluate(content: str, *, strict: bool | None = None) -> GateResult:
             return GateResult(False, "decision_without_rationale", "[decision] requires a because/since/rationale clause")
         if tag == "tool" and not (VERSION_RE.search(raw) or COMMAND_RE.search(raw)):
             return GateResult(False, "tool_without_version_or_syntax", "[tool] requires a version or a `command`")
+        if tag == "hypothesis" and not VERIFY_RE.search(raw):
+            return GateResult(False, "hypothesis_without_verify",
+                              "[hypothesis] requires a Verify:/test/falsification path to confirm it")
+        if tag == "goal" and not GOAL_STATUS_RE.search(raw):
+            return GateResult(False, "goal_without_status",
+                              "[goal] requires a Status: (active/achieved/...) or a success criterion")
 
     return GateResult(True)
 

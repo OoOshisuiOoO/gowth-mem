@@ -33,7 +33,9 @@ from _home import (  # type: ignore
 )
 
 
-TYPE_RE = re.compile(r"\[(ref|decision|tool)\]")
+# v3.9: include [hypothesis] — an unverified claim contradicting a verified [ref]
+# is exactly the signal worth flagging. [goal] is excluded (intent, not a fact claim).
+TYPE_RE = re.compile(r"\[(ref|decision|tool|hypothesis)\]")
 
 POLARITY_PAIRS: list[tuple[str, str]] = [
     ("enabled", "disabled"),

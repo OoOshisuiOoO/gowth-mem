@@ -54,7 +54,7 @@ SALVAGE_FILE = "_salvage.md"
 # A curated entry = bullet line opening with a 7-type prefix. Raw transcript
 # (assistant/user prose under `### [assistant]`) has no such bullet → not salvaged.
 ENTRY_RE = re.compile(
-    r"^\s*[-*]\s+\[(?:decision|exp|ref|tool|reflection|skill-ref|secret-ref)\]",
+    r"^\s*[-*]\s+\[(?:decision|exp|ref|tool|reflection|skill-ref|secret-ref|goal|hypothesis)\]",
     re.IGNORECASE,
 )
 DUMP_HEADER_RE = re.compile(r"^##\s+\[auto-precompact-dump\]", re.IGNORECASE)

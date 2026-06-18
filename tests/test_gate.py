@@ -176,5 +176,65 @@ class TestBlockFormat(unittest.TestCase):
                 os.environ.pop("GOWTH_MEM_HOME", None)
 
 
+class TestProvenanceTypes(unittest.TestCase):
+    """v3.9: [goal] (intent) + [hypothesis] (unverified) gate rules."""
+
+    def test_goal_with_status_accepted(self):
+        self.assertTrue(GATE.evaluate(
+            "## [goal] ship provenance layer\nStatus: active. Done when: tests green",
+            strict=True).ok)
+
+    def test_goal_without_status_rejected(self):
+        self.assertEqual(
+            GATE.evaluate("## [goal] make things generally better around here", strict=True).reason,
+            "goal_without_status")
+
+    def test_hypothesis_with_verify_accepted(self):
+        # hedged ("may") yet accepted — [hypothesis] is exempt from the hedge gate
+        # because it carries a Verify path.
+        self.assertTrue(GATE.evaluate(
+            "## [hypothesis] EMA-50 may beat EMA-20 on gold\nVerify: backtest 5y walk-forward",
+            strict=True).ok)
+
+    def test_hypothesis_without_verify_rejected(self):
+        self.assertEqual(
+            GATE.evaluate("[hypothesis] i think this is probably faster somehow today",
+                          strict=True).reason,
+            "hypothesis_without_verify")
+
+    def test_hypothesis_exempt_from_hedge_gate(self):
+        # Pure hedge that would trip hedged_no_evidence for any other type passes
+        # for [hypothesis] as long as it states how it will be confirmed.
+        v = GATE.evaluate("[hypothesis] maybe latency improves under load\n"
+                          "Verify: load-test before/after", strict=True)
+        self.assertTrue(v.ok, v.reason)
+
+    def test_goal_secret_still_blocked(self):
+        self.assertEqual(
+            GATE.evaluate("## [goal] rotate creds\nStatus: active AKIAIOSFODNN7EXAMPLE").reason,
+            "secret_leak")
+
+    def test_scan_finds_hypothesis_without_verify(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["GOWTH_MEM_HOME"] = tmp
+            try:
+                ws = Path(tmp) / "workspaces" / "default"
+                topic = ws / "demo"
+                topic.mkdir(parents=True)
+                (ws / "workspace.json").write_text("{}")
+                (topic / "2026-06-19-x.md").write_text(
+                    "# X\n\n"
+                    "## [goal] ship it\nStatus: active. Done when: released\n\n"      # good
+                    "## [hypothesis] vague guess about the system with no path\n"
+                    "no confirmation path given at all here\n\n"                       # junk
+                )
+                findings = GATE.scan_workspace("default")
+                reasons = [f["reason"] for f in findings]
+                self.assertIn("hypothesis_without_verify", reasons)
+                self.assertEqual(len(findings), 1, findings)
+            finally:
+                os.environ.pop("GOWTH_MEM_HOME", None)
+
+
 if __name__ == "__main__":
     unittest.main()

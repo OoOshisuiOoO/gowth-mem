@@ -76,14 +76,18 @@ last_touched / parents / links / aliases / tags`. Body sections: `TL;DR`,
 ### 5b. `YYYY-MM-DD-<aspect>.md` — dated aspect (the actual content)
 
 Frontmatter: `slug / title / type:aspect / date / topic / aspect / status /
-created / last_touched / links / tags`. Body uses the 7-type schema:
+created / last_touched / links / tags`. Body uses the 9-type schema:
 
 ```
-## [exp]        episodic, 1-2 lines, specific cause
-## [ref]        verified fact, Source: REQUIRED
+## [goal]       user objective/intent — Status: + Done when: (verifiable)
 ## [decision]   choice + rationale + alternatives rejected
-## [reflection] pattern (weekly via /mem-reflect)
+## [ref]        verified fact, Source: REQUIRED
 ## [tool]       tool quirks for this topic (version + working syntax)
+## [hypothesis] UNVERIFIED claim — Verify: path REQUIRED (promote to [ref] when confirmed)
+## [exp]        episodic, 1-2 lines, specific cause
+## [reflection] pattern (weekly via /mem-reflect)
+## [skill-ref]  link to skills/<slug>.md
+## [secret-ref] env-var pointer only (NEVER value)
 ```
 
 ### 5c. `lessons.md` — per-topic ledger (5-field schema, see §6)
@@ -112,10 +116,12 @@ Full canon: `shared/research/data-quality-2026.md`. Inline summary follows.
 
 | Prefix | MUST | NEVER |
 |---|---|---|
+| `[goal]` | `Status:` (active/paused/achieved/abandoned/blocked/superseded) + verifiable `Done when:` ; `Motivated-by:` links | vague wish, no done-when |
 | `[ref]` | `Source:` (URL / file:line / commit) | hedged language without evidence |
 | `[decision]` | rationale + alternative considered | silent reversal — mark old `(superseded)` |
 | `[exp]` | specific cause (what failed, why) | "tried things and it worked" |
 | `[tool]` | `version:` + fenced working syntax | speculative / untested commands |
+| `[hypothesis]` | `Verify:` confirmation/falsification path | stating it as fact — use `[ref]`+`Source:` instead |
 | `[reflection]` | pattern seen ≥ 2× with examples | one-off opinion |
 | `[skill-ref]` | path to `<ws>/skills/<slug>.md` | inline how-to (link instead) |
 | `[secret-ref]` | env-var name or path + how to obtain | the actual value (EVER) |
@@ -127,6 +133,8 @@ Full canon: `shared/research/data-quality-2026.md`. Inline summary follows.
 - `[ref]` without `Source:` → DROP
 - `[decision]` without rationale clause → DROP
 - `[tool]` without version + working syntax → DROP
+- `[hypothesis]` without a `Verify:` path → DROP
+- `[goal]` without `Status:` / success criterion → DROP
 - Secret pattern match (AKIA / sk- / ghp_ / xox / PRIVATE KEY / JWT) → BLOCK
 - Reserved slug as topic → DROP
 - Slug fails `^[a-z0-9][a-z0-9-]{0,59}$` → DROP
@@ -149,9 +157,11 @@ hard-delete.
 
 | Prefix | TTL | Delete trigger |
 |---|---|---|
+| `[goal]` | ∞ | mark achieved/abandoned/superseded (never delete) |
 | `[ref]/[decision]/[skill-ref]/[secret-ref]` | ∞ | `(superseded)` / `(rotated)` / `valid_until:` past |
 | `[reflection]` | 180d | low layer_score + untouched 180d |
 | `[exp]` | 90d | recall_count < 2 AND age > 90d (Ebbinghaus floor 0.1) |
+| `[hypothesis]` | 30d | refuted OR (age > 30d AND never promoted to `[ref]`) |
 | `[tool]` | until deprecated | `valid_until:` past OR DEPRECATED |
 | journal raw | 7d | after `/mem-distill` succeeds |
 

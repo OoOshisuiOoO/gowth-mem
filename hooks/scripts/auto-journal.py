@@ -105,7 +105,7 @@ def _build_reason(ws: str, journal_every: int) -> str:
     return (
         f"[gowth-mem:auto-journal ws={ws}] {journal_every} turns elapsed. "
         f"Read {instructions_path} for the full protocol, then update journal. "
-        f"TL;DR: classify items as [decision]/[exp]/[ref]/[tool]/[secret-ref], "
+        f"TL;DR: classify items as [goal]/[decision]/[exp]/[ref]/[tool]/[hypothesis]/[secret-ref], "
         f"route to topic folders, apply quality gates, update handoff.md."
     )
 

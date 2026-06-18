@@ -1,8 +1,8 @@
 ---
-description: Search workspace memory with optional tag filter (v3.4). Pre-filters chunks by [decision]/[exp]/[ref]/[tool]/[reflection]/[skill-ref]/[secret-ref] before BM25 ranking. Deterministic, no LLM.
+description: "Search workspace memory with optional tag filter (v3.4). Pre-filters chunks by [decision]/[exp]/[ref]/[tool]/[reflection]/[skill-ref]/[secret-ref]/[goal]/[hypothesis] before BM25 ranking. Deterministic, no LLM."
 ---
 
-Recall high-signal memory entries from the active workspace (or a named workspace) using FTS5 BM25 ranking. With `--type=<tag>` the search is pre-filtered to one of the seven schema tags, so `[decision]` queries never return `[exp]` noise.
+Recall high-signal memory entries from the active workspace (or a named workspace) using FTS5 BM25 ranking. With `--type=<tag>` the search is pre-filtered to one of the nine schema tags, so `[decision]` queries never return `[exp]` noise.
 
 ## Usage
 
@@ -15,11 +15,17 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --type decision "rate li
 
 # Explicit workspace, top-20
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --ws gowth-mem --type ref --limit 20 "FTS5 migration"
+
+# Find all active goals
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --type goal "active"
+
+# Find unverified hypotheses about a topic
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --type hypothesis "ema cross"
 ```
 
 ## Flags
 
-- `--type=<tag>` — filter to one of: `decision`, `exp`, `ref`, `tool`, `reflection`, `skill-ref`, `secret-ref`. Empty / omitted = no filter.
+- `--type=<tag>` — filter to one of: `decision`, `exp`, `ref`, `tool`, `reflection`, `skill-ref`, `secret-ref`, `goal`, `hypothesis`. Empty / omitted = no filter.
 - `--ws=<name>` — workspace name. Default: active workspace from `state.json`.
 - `--limit=<N>` — top-N hits. Default 10.
 - Positional arg(s) — joined as the query string.

@@ -147,7 +147,7 @@ class TagExtractionTests(unittest.TestCase):
 
     def test_known_tag_extracted(self):
         for tag in ("decision", "exp", "ref", "tool", "reflection",
-                    "skill-ref", "secret-ref"):
+                    "skill-ref", "secret-ref", "goal", "hypothesis"):
             result = self.idx._extract_tag(f"[{tag}] some content here")
             self.assertEqual(result, tag, f"failed for tag={tag!r}")
 

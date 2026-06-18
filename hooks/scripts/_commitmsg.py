@@ -10,18 +10,25 @@ structured Conventional-Commits-style message **from the staged diff alone**
 
     add(trade): +2 [decision] +1 lesson in exness-100k-ea
 
+    Why: lock acct 109680411 (because Real6 is the canonical funded book)
+
     - 4 files changed, +37 / -2 lines
     - Focus: trade/exness-100k-ea, trade/journal
     - Largest: exness-100k-ea/2026-06-18-mm.md (+21/-0)
+    When: 2026-06-18 (knowledge date)
 
     Workspace: trade
     Topics: exness-100k-ea
     Entries: +3 ~0 -0
     Files: 4
+    Why-Code: record-decision
     Machine: mac
     Context: stop-sync
 
-So `git log --grep 'Workspace: trade'`, `git log --grep '^archive('`,
+The v3.9 `Why:` line (WHY) + subject (WHAT) + `When:` (WHEN) make a single
+`git log` entry self-explaining before anyone opens the diff. So
+`git log --grep 'Workspace: trade'`, `git log --grep '^archive('`,
+`git log --grep 'Why-Code: verify-claim'`,
 `git log -- workspaces/trade/...`, `git log --stat`, and `git blame` all stay
 useful. Grounded in deep research (Perplexity 2026-06-18, backend dcc8cb10;
 Gemini conv c_c23d12acdbbec4a3): Conventional Commits + path-bucket
@@ -43,9 +50,18 @@ from _debug import log_debug  # type: ignore
 
 SUBJECT_MAX = 72
 HUNK_SCAN_LINE_CAP = 4000   # stop tag-scanning huge diffs (forget/migration bulk)
-TAG_RE = re.compile(r"\[(decision|exp|ref|tool|reflection|skill-ref|secret-ref)\]", re.IGNORECASE)
+TAG_RE = re.compile(r"\[(decision|exp|ref|tool|reflection|skill-ref|secret-ref|goal|hypothesis)\]", re.IGNORECASE)
 WS_RE = re.compile(r"^workspaces/([^/]+)/(.*)$")
 DATED_ASPECT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9-]+\.md$", re.IGNORECASE)
+
+# v3.9 — derive a human "Why:" deterministically from the knowledge diff so a
+# single `git log` entry explains the MOTIVATION before anyone opens the diff.
+DATE_IN_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2})-[a-z0-9-]+\.md$", re.IGNORECASE)
+GOAL_TITLE_RE = re.compile(r"^(?:#{2,6}\s*|[-*]\s*)?\[goal\]\s*(.+)", re.IGNORECASE)
+DECISION_TITLE_RE = re.compile(r"^(?:#{2,6}\s*|[-*]\s*)?\[decision\]\s*(.+)", re.IGNORECASE)
+HYP_TITLE_RE = re.compile(r"^(?:#{2,6}\s*|[-*]\s*)?\[hypothesis\]\s*(.+)", re.IGNORECASE)
+RATIONALE_RE = re.compile(r"\b(?:because|since|so that|in order to|due to|vì|bởi|để)\b\s+\S.*", re.IGNORECASE)
+WHY_MAX = 160
 
 
 def _run(gh: Path, *args: str) -> str:
@@ -140,6 +156,81 @@ def _fmt_tags(c: Counter) -> str:
     return " ".join(f"+{n} [{t}]" for t, n in c.most_common())
 
 
+def _added_lines(gh: Path) -> list[str]:
+    """Text of lines ADDED in the staged diff (leading '+' stripped, capped)."""
+    out: list[str] = []
+    text = _run(gh, "diff", "--cached", "--unified=0", "--no-color", "-M")
+    for i, line in enumerate(text.splitlines()):
+        if i > HUNK_SCAN_LINE_CAP:
+            break
+        if line.startswith("+++"):
+            continue
+        if line.startswith("+"):
+            out.append(line[1:])
+    return out
+
+
+def _derive_why(added: list[str], tags_add: Counter, tags_rem: Counter,
+                ctype: str) -> tuple[str, str]:
+    """Map the knowledge diff → (human Why sentence, grep-able Why-Code).
+
+    Deterministic, no LLM: prefer a literal rationale lifted from the added
+    content (goal/decision title, because-clause), else a template keyed by the
+    dominant change. Mirrors the Perplexity 2026-06-19 field→rationale mapping.
+    """
+    # Strongest signal: an unverified claim became a verified fact.
+    if tags_rem.get("hypothesis") and tags_add.get("ref"):
+        return ("promote unverified [hypothesis] → verified [ref] after confirmation",
+                "verify-claim")
+
+    goal_title = decision_title = hyp_title = rationale = ""
+    for ln in added:
+        s = ln.strip()
+        if not s:
+            continue
+        if not goal_title:
+            m = GOAL_TITLE_RE.match(s)
+            if m:
+                goal_title = m.group(1).strip(" #")
+        if not decision_title:
+            m = DECISION_TITLE_RE.match(s)
+            if m:
+                decision_title = m.group(1).strip(" #")
+        if not hyp_title:
+            m = HYP_TITLE_RE.match(s)
+            if m:
+                hyp_title = m.group(1).strip(" #")
+        if not rationale:
+            m = RATIONALE_RE.search(s)
+            if m:
+                rationale = m.group(0).strip()
+
+    if goal_title:
+        return (f"capture/track objective — {goal_title}"[:WHY_MAX], "capture-objective")
+    if decision_title:
+        why = f"{decision_title} ({rationale})" if rationale else f"record decision — {decision_title}"
+        return (why[:WHY_MAX], "record-decision")
+    if rationale:
+        return (rationale[:WHY_MAX], "record-decision")
+    if hyp_title:
+        return (f"log unverified claim pending verification — {hyp_title}"[:WHY_MAX], "log-hypothesis")
+
+    # Template fallbacks keyed by the dominant change type.
+    if ctype == "archive":
+        return ("forget stale raw journal past the 7d TTL (hippocampal buffer → archive)", "forget-stale")
+    if ctype == "prune":
+        return ("remove superseded / duplicate entries", "prune-stale")
+    if ctype == "consolidate":
+        return ("regenerate topic MOC index from current aspects", "rebuild-moc")
+    if tags_add.get("ref"):
+        return ("record verified finding (cited Source)", "record-finding")
+    if tags_add.get("goal"):
+        return ("record new objective", "capture-objective")
+    if ctype == "add":
+        return ("capture new knowledge from this session", "capture")
+    return ("revise existing knowledge", "revise")
+
+
 def build_message(gh: Path, *, host: str | None = None, context: str = "",
                   fallback: str = "sync") -> str:
     """Build a deterministic, structured commit message from the staged diff.
@@ -182,6 +273,9 @@ def build_message(gh: Path, *, host: str | None = None, context: str = "",
         per_file_lines[path] = numstat.get(path, (0, 0))
 
     tags_add, tags_rem = _count_tags(gh)
+    added_lines = _added_lines(gh)
+    knowledge_dates = sorted({m.group(1) for p in per_file_lines
+                              for m in [DATE_IN_NAME_RE.search(p)] if m})
     total_add = sum(a for a, _ in per_file_lines.values())
     total_del = sum(d for _, d in per_file_lines.values())
     n_files = len(name_status)
@@ -243,8 +337,10 @@ def build_message(gh: Path, *, host: str | None = None, context: str = "",
     if len(subject) > SUBJECT_MAX:
         subject = subject[: SUBJECT_MAX - 1].rstrip() + "…"
 
-    # ── body ───────────────────────────────────────────────────────
-    body: list[str] = [f"- {n_files} file{'s' if n_files != 1 else ''} changed, +{total_add} / -{total_del} lines"]
+    # ── body: WHY (motivation) → WHAT (stats) → WHEN (knowledge date) ──
+    why_text, why_code = _derive_why(added_lines, tags_add, tags_rem, ctype)
+    body: list[str] = [f"Why: {why_text}", ""]
+    body.append(f"- {n_files} file{'s' if n_files != 1 else ''} changed, +{total_add} / -{total_del} lines")
     focus = [b for b, _ in buckets.most_common(3) if b not in ("meta",)]
     if focus:
         body.append("- Focus: " + ", ".join(focus))
@@ -253,6 +349,10 @@ def build_message(gh: Path, *, host: str | None = None, context: str = "",
     if largest:
         body.append("- Largest: " + ", ".join(
             f"{Path(p).name} (+{a}/-{d})" for p, (a, d) in largest))
+    if knowledge_dates:
+        when = (knowledge_dates[0] if len(knowledge_dates) == 1
+                else f"{knowledge_dates[0]}..{knowledge_dates[-1]}")
+        body.append(f"When: {when} (knowledge date)")
 
     # ── trailers (grep-able) ───────────────────────────────────────
     trailers: list[str] = []
@@ -267,6 +367,7 @@ def build_message(gh: Path, *, host: str | None = None, context: str = "",
         ]))
         trailers.append("Entries: " + ec)
     trailers.append(f"Files: {n_files} (+{n_add} ~{n_mod} -{n_del}" + (f" R{n_ren}" if n_ren else "") + ")")
+    trailers.append(f"Why-Code: {why_code}")
     if host:
         trailers.append(f"Machine: {host}")
     if context:

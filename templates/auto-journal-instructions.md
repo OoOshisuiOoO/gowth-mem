@@ -10,12 +10,15 @@ Now do this WITHOUT user prompting before yielding control:
 
 1. Scan the last {journal_every} user turns and your replies.
 2. For each high-signal item, classify into ONE of these types and prepend the prefix:
+   [goal]        user objective/intent        → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (Status: + Done when: REQUIRED)
    [decision]    choice + rationale          → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (## [decision])
    [exp]         debug / fix / lesson         → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (## [exp])
    [reflection]  pattern / takeaway           → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (## [reflection])
    [ref]         verified external fact       → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (## [ref], Source REQUIRED)
    [tool]        topic-specific gotcha        → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  OR  workspaces/<target_ws>/docs/tools.md
+   [hypothesis]  UNVERIFIED claim/assumption  → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (Verify: path REQUIRED)
    [secret-ref]  env-var POINTER              → shared/secrets.md  (NEVER value)
+   Use [goal] for the user's objectives (with Status:), [hypothesis] for unverified claims (with Verify:).
 3. **Workspace + topic routing** (v3.0: topic = FOLDER):
    - Workspace: route each entry to the workspace that best matches its topic:
      * {ws} (active) = default target for entries about the current session's work

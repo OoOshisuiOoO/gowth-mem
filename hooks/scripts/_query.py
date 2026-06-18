@@ -37,7 +37,7 @@ def query_by_type(
         Workspace name (e.g. "myproject"). Pass "" or "*" to search all workspaces.
     tag:
         Schema tag to filter on: "decision", "exp", "ref", "tool", "reflection",
-        "skill-ref", "secret-ref". Pass "" to skip tag filtering (returns all chunks
+        "skill-ref", "secret-ref", "goal", "hypothesis". Pass "" to skip tag filtering (returns all chunks
         ranked by query — same as legacy behaviour).
     query:
         FTS5 query string. When empty, results are ordered by rowid DESC (most recent
@@ -173,7 +173,7 @@ if __name__ == "__main__":
     ap.add_argument("--ws", default="", help="Workspace name ('' = all workspaces)")
     ap.add_argument(
         "--type", dest="tag", default="",
-        help="Schema tag to filter: decision|exp|ref|tool|reflection|skill-ref|secret-ref"
+        help="Schema tag to filter: decision|exp|ref|tool|reflection|skill-ref|secret-ref|goal|hypothesis"
              " ('' = no filter)",
     )
     ap.add_argument("--query", default="", help="FTS5 query string ('' = most recent)")

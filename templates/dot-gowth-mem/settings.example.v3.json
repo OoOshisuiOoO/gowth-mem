@@ -92,7 +92,7 @@
   "contradictions": {
     "enabled": true,
     "min_entity_overlap": 3,
-    "scan_types": ["ref", "decision", "tool"]
+    "scan_types": ["ref", "decision", "tool", "hypothesis"]
   },
   "recall": {
     "max_chars_per_file": 15000,

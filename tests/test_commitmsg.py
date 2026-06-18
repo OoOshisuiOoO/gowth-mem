@@ -118,5 +118,63 @@ class TestBuildMessage(unittest.TestCase):
         self.assertLessEqual(len(subject), 72, subject)
 
 
+class TestWhyWhatWhen(unittest.TestCase):
+    """v3.9: body carries a derived Why: (WHY), When: knowledge-date (WHEN), Why-Code: trailer."""
+
+    def test_why_from_goal_title(self):
+        r = _new_repo()
+        _write(r, "workspaces/trade/plan/2026-06-19-x.md",
+               "# Plan\n\n## [goal] Ship the provenance layer to production\n"
+               "Status: active. Done when: released\n")
+        _git(r, "add", "-A")
+        msg = CM.build_message(r, host="mac")
+        self.assertIn("Why: capture/track objective — Ship the provenance layer to production", msg)
+        self.assertIn("Why-Code: capture-objective", msg)
+        self.assertIn("When: 2026-06-19 (knowledge date)", msg)
+
+    def test_why_from_decision_rationale(self):
+        r = _new_repo()
+        _write(r, "workspaces/trade/x/2026-06-19-d.md",
+               "## [decision] use markdown-in-git because diffable and no vendor lock\n")
+        _git(r, "add", "-A")
+        msg = CM.build_message(r, host="mac")
+        self.assertIn("Why:", msg)
+        self.assertIn("because diffable", msg)
+        self.assertIn("Why-Code: record-decision", msg)
+
+    def test_why_promote_hypothesis_to_ref(self):
+        r = _new_repo()
+        _write(r, "workspaces/trade/x/2026-06-19-h.md",
+               "## [hypothesis] ema50 beats ema20 in trends\nVerify: backtest 5y\n")
+        _git(r, "add", "-A"); _git(r, "commit", "-qm", "seed")
+        _write(r, "workspaces/trade/x/2026-06-19-h.md",
+               "## [ref] ema50 beats ema20 in trends (was hypothesis, verified 2026-06-19)\n"
+               "Source: backtest.json\n")
+        _git(r, "add", "-A")
+        msg = CM.build_message(r, host="mac")
+        self.assertIn("Why-Code: verify-claim", msg)
+        self.assertIn("promote unverified [hypothesis]", msg)
+
+    def test_why_archive_forget_stale(self):
+        r = _new_repo()
+        for d in ("2026-06-01", "2026-06-02", "2026-06-03"):
+            _write(r, f"workspaces/default/journal/{d}.md", "raw\n")
+        _git(r, "add", "-A"); _git(r, "commit", "-qm", "seed")
+        for d in ("2026-06-01", "2026-06-02", "2026-06-03"):
+            _git(r, "rm", "-q", f"workspaces/default/journal/{d}.md")
+        msg = CM.build_message(r, host="mac")
+        self.assertIn("Why-Code: forget-stale", msg)
+
+    def test_goal_and_hypothesis_appear_in_trailers(self):
+        r = _new_repo()
+        _write(r, "workspaces/trade/x/2026-06-19-g.md",
+               "## [goal] do the thing\nStatus: active. Done when: done\n"
+               "## [hypothesis] a guess\nVerify: test it\n")
+        _git(r, "add", "-A")
+        msg = CM.build_message(r, host="mac")
+        self.assertIn("goal", msg)
+        self.assertIn("hypothesis", msg)
+
+
 if __name__ == "__main__":
     unittest.main()

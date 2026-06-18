@@ -6,13 +6,13 @@ Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Ag
 
 ## What's new in v3.4
 
-v3.4 cuts hook token waste, makes the 7-type schema actually queryable, and ships the missing dreaming UX. Grounded in three deep-research passes (`.claude/research/v3.4-*.md`): biology→arch translation (CLS theory, pattern separation, sleep consolidation, Ebbinghaus, reconsolidation), latest LLM memory systems (mem0, Zep, HippoRAG, Letta, A-MEM), and Claude Code hook efficiency patterns.
+v3.4 cuts hook token waste, makes the 9-type schema actually queryable, and ships the missing dreaming UX. Grounded in three deep-research passes (`.claude/research/v3.4-*.md`): biology→arch translation (CLS theory, pattern separation, sleep consolidation, Ebbinghaus, reconsolidation), latest LLM memory systems (mem0, Zep, HippoRAG, Letta, A-MEM), and Claude Code hook efficiency patterns.
 
 - **Shell pre-check on `UserPromptSubmit`** — `conflict-detect.sh` checks for `SYNC-CONFLICT.md` in pure bash; Python only fires on the 1% of prompts where a conflict actually exists. Cuts ≥1.9 KB of Python startup per prompt.
 - **Merged SessionStart and PreCompact hooks** — `session-start.sh` and `precompact.sh` collapse the two-entry matchers into a single command each, branching on the `source` field. Preserves HARD-BLOCK semantics.
 - **Externalized auto-journal instructions** — the 3 KB `REASON` block now lives in `templates/auto-journal-instructions.md`; the `Stop` hook injects a short pointer (~400 chars). Saves 20-30k tokens/day on heavy sessions. Subagent context (env `CLAUDE_SUBAGENT` or stdin `agent_type=subagent`) auto-skips.
 - **Tunable cadence** — `auto_journal.journal_every` and `auto_journal.auto_journal_enabled` in `settings.json` replace the hardcoded every-10-turns.
-- **Tag-aware FTS5 schema** — `chunks` and `chunks_fts` gain a `tag TEXT` column. Existing DBs auto-migrate (`ALTER TABLE` + backfill from leading `[tag]` marker). `KNOWN_TAGS = {decision, exp, ref, tool, reflection, skill-ref, secret-ref}`; unknown tags stored as empty string.
+- **Tag-aware FTS5 schema** — `chunks` and `chunks_fts` gain a `tag TEXT` column. Existing DBs auto-migrate (`ALTER TABLE` + backfill from leading `[tag]` marker). `KNOWN_TAGS = {decision, exp, ref, tool, reflection, skill-ref, secret-ref, goal, hypothesis}`; unknown tags stored as empty string.
 - **Cross-file, tag-aware SHA-256 dedup** (`_dedup.py`) — write-time hash over `(tag, normalized_content)` blocks `[decision] foo` duplicates across files and sessions, but allows `[exp] foo` (different tag = different fact). Fixes the "ghi vào nhưng không dùng được" symptom.
 - **`/mem-recall --type=<tag>` retrieval** — new `_query.query_by_type(ws, tag, query)` pre-filters by tag before BM25 ranking. Schema is now first-class, not a formatting hint.
 - **`/mem-dream` skill** — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
@@ -199,7 +199,7 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | `/mem-reflect` | `memr` | Generate reflections |
 | `/mem-skillify` | `memk` | Extract reusable workflows |
 | `/mem-journal` | `memj` | Open today's journal |
-| `/mem-recall` | — | v3.4 — deterministic FTS5 BM25 recall with optional `--type=<tag>` pre-filter (decision/exp/ref/tool/reflection/skill-ref/secret-ref) |
+| `/mem-recall` | — | v3.4 — deterministic FTS5 BM25 recall with optional `--type=<tag>` pre-filter (decision/exp/ref/tool/reflection/skill-ref/secret-ref/goal/hypothesis) |
 | `/mem-dream` | — | v3.4 — run Light/REM/Deep consolidation across a workspace (wraps `_consolidate.py`); supports `--ws`, `--dry-run`, per-phase skip flags |
 | `/mem-reindex` | `memx` | Rebuild SQLite FTS5 + optional vector index |
 | `/mem-cost` | `memc` | Estimate bootstrap token footprint |
@@ -368,7 +368,7 @@ memx                    # build local index
 | `/mem-reflect` | `memr` | Sinh reflection |
 | `/mem-skillify` | `memk` | Extract workflow tái dùng |
 | `/mem-journal` | `memj` | Mở journal hôm nay |
-| `/mem-recall` | — | v3.4 — FTS5 BM25 recall + tuỳ chọn `--type=<tag>` lọc theo 7-type schema |
+| `/mem-recall` | — | v3.4 — FTS5 BM25 recall + tuỳ chọn `--type=<tag>` lọc theo 9-type schema |
 | `/mem-dream` | — | v3.4 — chạy Light/REM/Deep consolidation (`_consolidate.py`); hỗ trợ `--ws`, `--dry-run`, skip từng phase |
 | `/mem-reindex` | `memx` | Rebuild SQLite FTS5+vec |
 | `/mem-cost` | `memc` | Estimate token footprint của bootstrap |
@@ -381,9 +381,11 @@ memx                    # build local index
 
 Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-recall`, `/mem-dream`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp. `/mem-bootstrap` và `/mem-flush` đã bị xoá ở v3.4 (auto-run qua hook).
 
-### 7-type schema (line-level prefix trong topic file)
+### 9-type schema (line-level prefix trong topic file)
 
 ```
+- [goal]        user objective (Status: + Done when:)
+- [hypothesis]  UNVERIFIED claim (Verify: path; promotes to [ref])
 - [exp]         debug / fix / lesson
 - [ref]         fact đã verify (Source: BẮT BUỘC)
 - [tool]        tool quirk theo topic
