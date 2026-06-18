@@ -18,6 +18,10 @@
     "salvage": true,
     "auto_forget_enabled": true
   },
+  "gate": {
+    "enabled": true,
+    "strict": true
+  },
   "workspace": {
     "default": "default",
     "auto_detect_from_cwd": true,

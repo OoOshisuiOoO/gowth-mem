@@ -400,6 +400,19 @@ def append_entry(content: str, ws: str | None = None,
     tag = _extract_tag(content)
     if tag and is_duplicate(workspace_dir(ws), tag, content):
         return target, False
+    # v3.6: hard write-rules gate — reject junk before it lands (canon §1).
+    # Deterministic, no LLM. Gated by settings.gate.enabled (default true).
+    try:
+        from _home import read_settings as _rs  # type: ignore
+        if (_rs().get("gate", {}) or {}).get("enabled", True):
+            from _gate import evaluate as _gate_eval  # type: ignore
+            _v = _gate_eval(content)
+            if not _v.ok:
+                from _debug import log_debug  # type: ignore
+                log_debug("topic", f"gate reject [{_v.reason}]: {content[:80]}")
+                return target, False
+    except Exception:
+        pass  # gate is best-effort; never block a write on gate internals failing
     if target.is_file():
         existing = target.read_text(errors="ignore")
         body = existing.rstrip() + "\n" + content.rstrip() + "\n"

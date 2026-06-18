@@ -84,6 +84,19 @@ def append_lesson(
     if is_duplicate(workspace_dir(ws), "exp", routing_text):
         return target
 
+    # v3.6: hard write-rules gate on the 5-field lesson (canon §1; deterministic).
+    try:
+        from _home import read_settings as _rs  # type: ignore
+        if (_rs().get("gate", {}) or {}).get("enabled", True):
+            from _gate import evaluate_lesson  # type: ignore
+            _v = evaluate_lesson(symptom, tried, root_cause, fix, source)
+            if not _v.ok:
+                from _debug import log_debug  # type: ignore
+                log_debug("lesson", f"gate reject [{_v.reason}]")
+                return target
+    except Exception:
+        pass
+
     heading = f"## [{today}] {_truncate(symptom)}\n"
     body_lines = [
         f"**Symptom:** {symptom.strip()}",
