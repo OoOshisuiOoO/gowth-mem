@@ -101,3 +101,42 @@ Zettelkasten = topic-folder + dated aspects; bi-temporal = `valid_until`/`(super
 git history; debounce = Stop-hook every-N-turns + `/mem-distill`; agentic = the agent writes
 via `memL`/`memj` under these gates. The gap vs full B-TAZ (no embeddings, no LLM in write
 path) is the deliberate price of determinism + zero runtime deps.
+
+## 7. Content organization INSIDE a file (v3.8) — the body schema
+
+How content is laid out *within* an aspect/topic file, for progressive disclosure +
+navigation + machine-readability. Learned from supremor's T2 body sections + Gemini's
+progressive-disclosure finding.
+
+```markdown
+# <Title>
+
+> **TL;DR** — 1-2 lines, the reusable core. The agent reads THIS first and decides
+>   whether to open the body. Keep ≤ ~200 chars. (progressive disclosure)
+
+## [decision] <short title>      ← choice + rationale + alternative. Current at top.
+<body — must contain a because/since/rationale clause>
+
+## [ref] <short title>           ← verified fact.
+<body>
+Source: <url | file:line | commit | tool-id>
+
+## [tool] <short title>          ← version + working `command`.
+## [exp] <short title>           ← episodic, specific cause.
+## [reflection] <short title>    ← pattern (weekly via /mem-reflect).
+
+## Superseded                    ← entries marked (superseded) live here (history out of the way).
+```
+
+**Rules (enforced by `_gate.py` + `_validate.py`):**
+- An entry is a **`## [type] <title>` titled BLOCK**, not a flat `- [type]` bullet. The
+  block is navigable (jump-to-heading), scannable (title), and FTS5-chunked as a unit. The
+  `[type]` tag **stays on the H2 line** — `_gate`/`_dedup`/`_index` read it there (v3.8;
+  before v3.8 only bullets were recognized, so block entries silently bypassed the gate).
+- **TL;DR FIRST** (Gemini progressive disclosure; supremor frontmatter `description` ≤1024).
+- **Order**: decisions → refs → tools → exp → reflections (canon §3 type order). Current at top.
+- **Superseded → trailing `## Superseded`** (positive framing: current truth on top, history
+  in git + this section). `[decision]` is never hard-deleted — moved here marked `(superseded)`.
+- One file **≤ 500 lines / ~5k tokens** (canon §2; split via `/mem-promote` past that).
+- Each block obeys §2 (self-contained, when-to-apply, Source) + §3 hard rules.
+- Legacy `- [type] ...` bullets are still recognized on read; new writes use blocks.

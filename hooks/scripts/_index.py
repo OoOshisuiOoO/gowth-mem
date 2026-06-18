@@ -54,7 +54,7 @@ from _lock import file_lock  # type: ignore
 
 CHUNK_SIZE = 1500
 
-TAG_RE = re.compile(r"^\[([a-z-]+)\]\s*")
+TAG_RE = re.compile(r"^(?:#{2,6}\s*)?\[([a-z-]+)\]\s*")  # v3.8: bullet OR `## [type]` block
 KNOWN_TAGS = {"decision", "exp", "ref", "tool", "reflection", "skill-ref", "secret-ref"}
 
 

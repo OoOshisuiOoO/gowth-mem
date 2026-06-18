@@ -40,7 +40,10 @@ from _home import (  # type: ignore
 MIN_BODY_CHARS = 20            # canon §1: body < 20 chars after prefix → DROP
 HEDGE_RATIO_MAX = 0.25         # canon §1: hedge words / total > 0.25 → DROP
 
-TAG_RE = re.compile(r"^\s*[-*]?\s*\[([a-z][a-z-]*)\]\s*", re.IGNORECASE)
+# v3.8: recognize BOTH entry formats — `- [type] ...` bullet AND
+# `## [type] <title>` titled block. The block format (124 files) was previously
+# invisible to the gate/dedup/index, so block entries were never validated.
+TAG_RE = re.compile(r"^\s*(?:[-*]|#{2,6})?\s*\[([a-z][a-z-]*)\]\s*", re.IGNORECASE)
 HEDGE_RE = re.compile(
     r"\b(maybe|i think|i guess|probably|might be|may be|perhaps|possibly|"
     r"seems like|seems to|kinda|sort of|could be|not sure|dunno)\b",
@@ -161,7 +164,10 @@ def evaluate_lesson(symptom: str, tried: str, root_cause: str, fix: str, source:
 
 
 # ── scanner: find junk in EXISTING files (non-destructive reporter) ───────
-ENTRY_LINE_RE = re.compile(r"^\s*[-*]\s+\[[a-z-]+\]", re.IGNORECASE)
+# v3.8: recognize BOTH `- [type] ...` bullets AND `## [type] <title>` blocks.
+ENTRY_BULLET_RE = re.compile(r"^\s*[-*]\s+\[[a-z-]+\]", re.IGNORECASE)
+ENTRY_BLOCK_RE = re.compile(r"^#{2,6}\s*\[[a-z-]+\]", re.IGNORECASE)
+HEADING_RE = re.compile(r"^#{1,6}\s")
 
 
 def scan_workspace(ws: str) -> list[dict]:
@@ -179,13 +185,28 @@ def scan_workspace(ws: str) -> list[dict]:
             lines = f.read_text(errors="ignore").splitlines()
         except Exception:
             continue
-        for i, line in enumerate(lines, 1):
-            if not ENTRY_LINE_RE.match(line):
-                continue
-            entry = line.lstrip("-*").strip()
-            v = evaluate(entry)
-            if not v.ok:
-                out.append({"file": str(f), "line": i, "reason": v.reason, "text": entry[:100]})
+        i, n = 0, len(lines)
+        while i < n:
+            line = lines[i]
+            if ENTRY_BLOCK_RE.match(line):
+                # Titled block: header + body until the next heading or EOF.
+                block = [line]
+                j = i + 1
+                while j < n and not HEADING_RE.match(lines[j]):
+                    block.append(lines[j])
+                    j += 1
+                entry = "\n".join(block).strip()
+                v = evaluate(entry)
+                if not v.ok:
+                    out.append({"file": str(f), "line": i + 1, "reason": v.reason, "text": entry[:100]})
+                i = j
+            elif ENTRY_BULLET_RE.match(line):
+                v = evaluate(line.strip())
+                if not v.ok:
+                    out.append({"file": str(f), "line": i + 1, "reason": v.reason, "text": line.strip()[:100]})
+                i += 1
+            else:
+                i += 1
     return out
 
 

@@ -132,5 +132,49 @@ class TestScan(unittest.TestCase):
                 os.environ.pop("GOWTH_MEM_HOME", None)
 
 
+class TestBlockFormat(unittest.TestCase):
+    """v3.8: gate must recognize `## [type] <title>` titled blocks, not only bullets."""
+
+    def test_block_decision_without_rationale_rejected(self):
+        self.assertEqual(GATE.evaluate("## [decision] switched everything to graphql").reason,
+                         "decision_without_rationale")
+
+    def test_block_decision_with_rationale_accepted(self):
+        self.assertTrue(GATE.evaluate(
+            "## [decision] use blocks\nuse titled blocks because they read better").ok)
+
+    def test_block_ref_without_source_rejected(self):
+        self.assertEqual(GATE.evaluate("## [ref] the feature is enabled in prod now").reason,
+                         "ref_without_source")
+
+    def test_block_ref_with_source_accepted(self):
+        self.assertTrue(GATE.evaluate(
+            "## [ref] WAL allows concurrent readers\nbody.\nSource: https://sqlite.org/wal.html").ok)
+
+    def test_block_secret_leak_rejected(self):
+        self.assertEqual(GATE.evaluate("## [secret-ref] key AKIAIOSFODNN7EXAMPLE in env").reason,
+                         "secret_leak")
+
+    def test_scan_finds_block_junk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["GOWTH_MEM_HOME"] = tmp
+            try:
+                ws = Path(tmp) / "workspaces" / "default"
+                topic = ws / "demo"
+                topic.mkdir(parents=True)
+                (ws / "workspace.json").write_text("{}")
+                (topic / "2026-06-18-x.md").write_text(
+                    "# X\n\n"
+                    "## [ref] sqlite WAL\nconcurrent readers. Source: https://sqlite.org\n\n"  # good
+                    "## [decision] switched everything to graphql for the api\nno reason given\n\n"  # junk
+                )
+                findings = GATE.scan_workspace("default")
+                reasons = [f["reason"] for f in findings]
+                self.assertIn("decision_without_rationale", reasons)
+                self.assertEqual(len(findings), 1, f"expected 1 junk block, got {findings}")
+            finally:
+                os.environ.pop("GOWTH_MEM_HOME", None)
+
+
 if __name__ == "__main__":
     unittest.main()

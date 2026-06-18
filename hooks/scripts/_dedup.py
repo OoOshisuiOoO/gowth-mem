@@ -33,7 +33,7 @@ from _lock import file_lock  # type: ignore
 
 DEFAULT_WINDOW_SECONDS = 300
 WHITESPACE_RE = re.compile(r"\s+")
-TAG_RE = re.compile(r"^\[([a-z-]+)\]\s*")
+TAG_RE = re.compile(r"^(?:#{2,6}\s*)?\[([a-z-]+)\]\s*")  # v3.8: bullet OR `## [type]` block
 
 
 def _window_path() -> Path:
