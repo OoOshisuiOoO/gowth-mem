@@ -178,3 +178,36 @@ Reference plugins consulted: claude-mem (thedotmack), claude-code-rewind, superp
 15. Entity/relation KG (HippoRAG/Zep pattern) — deferred from v3.4; needs entity extractor which would break deterministic-only rule. Re-evaluate for v3.5.
 16. FSRS upgrade from SM-2-lite — backlogged for v3.5; SM-2-lite sufficient for current scale.
 17. Two-factor synaptic edge weights (gemini deep-research finding) — defers with KG work.
+
+## v3.6 — Active forgetting (journals are ephemeral)
+
+Root cause found via two audits: a memory system that **captured but never consolidated**.
+`precompact-flush.py` dumped ≤80 KB raw transcript into durable journals on every `/compact`,
+deferring distillation to a manual `/mem-distill` that never ran. Journals grew unbounded
+(one hit 1.8 MB / 26,812 lines); **79% of all stored data was unread raw transcript**, only
+~5% actionable. The agent stopped reading journals (too large) → "captures everything, reads nothing".
+
+Shipped:
+- **`_forget.py`** — enforces canon §3 journal raw-TTL (default 7d). Per workspace: SALVAGE
+  curated `- [type]` bullet entries → `journal/_salvage.md` (SHA1-deduped), then ARCHIVE
+  (gzip → `.archive/journal/<ws>/`, gitignored) journals older than `raw_ttl_days` OR >1-day-old
+  and over `max_bytes`. Today's / within-TTL journals never touched. Recoverable via gz +
+  memory-repo git history. Verified-before-delete (re-reads the gz header).
+- **Stop-hook wiring** — `auto-journal.py` runs `_forget --all-workspaces --quiet` beside
+  `_prune`/`_consolidate`, gated by `settings.journal.auto_forget_enabled` (default true).
+- **precompact cap 80 KB → 20 KB** — keeps the bootstrap-loaded today-journal cheap to read.
+- **settings** `journal{raw_ttl_days, max_bytes, salvage, auto_forget_enabled}` (live + template).
+- **`/mem-forget`** command. Fixed **broken `/mem-prune`** (passed `--workspace`, which `_prune.py`
+  rejects with "unrecognized arguments").
+- **One-time live-vault cleanup**: workspaces/ **14 MB → 1.9 MB**, `index.db` **29 MB → 3 MB**
+  (rebuilt clean), 28 raw journals archived, 6 curated entries salvaged, stale `.backup/` (2.9 MB)
+  removed, `hook-errors.log` truncated.
+
+Test coverage: **219/219** green (added `test_forget.py` [10]). Compile clean.
+
+Grounded in `.claude/research/v3.6-brain-storage.md` (Gemini + Perplexity deep research; Grok
+unavailable). Companion to `shared/research/data-quality-2026.md` (what-to-keep canon).
+
+Next gaps (see research note §5): auto-consolidation still under-fired (episodic→semantic leans
+on Stop-hook block); no hard size-split hook for >500-line files; no decay-GC over stale topic
+entries; defrag surfaces but doesn't auto-merge; progressive-disclosure TL;DR not length-capped.

@@ -7,10 +7,12 @@ Run an active prune over docs/*.md. Removes entries that match strict outdated c
 Run with the Bash tool:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_prune.py" --workspace "${CLAUDE_PROJECT_DIR:-$PWD}" "$@"
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_prune.py" "$@"
 ```
 
-Pass `--dry-run` to preview without writing.
+Operates on the active workspace by default. Pass `--dry-run` to preview without writing, or `--all-workspaces` to prune every workspace.
+
+(Fixed v3.6: previously passed `--workspace <path>`, which `_prune.py` rejects with "unrecognized arguments". The script resolves the active workspace itself via `_home`.)
 
 ## Pruning rules (in order)
 
@@ -18,10 +20,13 @@ Pass `--dry-run` to preview without writing.
 2. `(superseded)` / `(deprecated)` / `(obsolete)` markers → DELETE
 3. Within-file near-duplicate (Jaccard ≥ 0.85) → keep the LONGER entry, DELETE the rest
 
+Canon: `shared/research/data-quality-2026.md` §2 (numeric thresholds) + §3 (retention TTL).
+Do NOT soften these without a new research note.
+
 ## Scope
 
 - Operates on `docs/**/*.md`
-- **Skips `docs/journal/**`** — raw journal is a permanent log; never auto-prunes
+- **Skips `journal/**`** — the journal is the ephemeral raw buffer; its lifecycle is handled by `/mem-forget` (archive past the 7-day TTL), not by prune
 - Treats an "entry" as a line starting with `- [type]` or `* [type]` plus its indented continuation lines
 
 ## When to run

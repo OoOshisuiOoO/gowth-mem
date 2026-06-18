@@ -17,7 +17,7 @@ gowth-mem studies and adapts patterns from [OpenClaw](https://github.com/opencla
 |---|---|
 | `MEMORY.md` long-term memory | `shared/AGENTS.md` + topic files |
 | `memory/YYYY-MM-DD.md` daily notes | `workspaces/<ws>/journal/<date>.md` |
-| Dreaming (Light→REM→Deep consolidation) | `auto-journal.py` + `_prune.py` (simpler, gaps identified) |
+| Dreaming (Light→REM→Deep consolidation) | `auto-journal.py` + `_prune.py` + `_forget.py` (v3.6 active forgetting: journal raw-TTL → gzip archive) |
 | `memory_search` hybrid recall | DROPPED v3.2 (token cost > benefit); `index.db` now slug-only via `_wikilink` |
 | `AGENTS.md` operating instructions | `shared/AGENTS.md` |
 | `skills/<slug>/SKILL.md` | `shared/skills/<slug>.md` |
@@ -87,6 +87,7 @@ Distilled insights in `.claude/research/`:
 - `v3.4-brain-memory.md` — biology→arch translation (CLS theory, pattern separation, schema theory, reconsolidation, Ebbinghaus, sleep consolidation)
 - `v3.4-llm-memory-systems.md` — 2025-2026 survey of mem0, Zep, HippoRAG, Letta, A-MEM, Cognee, LangMem; 7 convergent best practices
 - `v3.4-hook-patterns.md` — Claude Code hook efficiency canon (claude-mem reference + 5 actionable patterns)
+- `v3.6-brain-storage.md` — storage-structure deep research (Gemini+Perplexity): file-size caps (≤500 lines), 4-tier brain layout, the capture→distill→**forget** pipeline; companion to `shared/research/data-quality-2026.md` (what-to-keep)
 
 **5 convergent patterns** across mem0, Letta, Zep, Cognee, Anthropic, LangMem, LlamaIndex, MemoRAG, HippoRAG, Generative Agents, Voyager, Reflexion:
 
@@ -134,3 +135,4 @@ See `RESEARCH.md` § F for roadmap with `✅` markers. Key shipped items:
 - **v3.4**: hook consolidation (shell pre-check on UserPromptSubmit, merged SessionStart/PreCompact, externalized auto-journal REASON, settings-tunable cadence, subagent-skip via env+hook_event_name+in_loop+agent_type); tag-aware FTS5 (`tag TEXT` indexed column + idempotent migration under `file_lock("index-migrate")` + cross-file SHA-1 dedup wired into `_lesson.append_lesson` and `_topic.append_entry`); `/mem-dream` skill wrapping `_consolidate.py` three phases (Light/REM/Deep) with per-workspace state filtering; command surface pruning (33→28 — removed `mem-bootstrap`, `mem-flush`, and 4 `mem-workspace-*` subcommand stubs; added `mem-recall`); `/mem-recall` slash command + `_query.query_by_type(ws, tag, query)` API. Grounded in `.claude/research/v3.4-{brain-memory, llm-memory-systems, hook-patterns}.md`.
 - **v3.5**: deterministic transcript raw-dump replaces force-LLM block on PreCompact (`precompact-flush.py` writes recent user/assistant turns into `<ws>/journal/<today>.md`; classification deferred to `/mem-distill`).
 - **v3.5.1**: precompact hook NEVER blocks `/compact` (fixes v3.5 fallback that still emitted `decision:block` JSON when raw-dump failed — auto-compact firing on context overflow is no longer brickable). All failure paths log via `_debug` and pass-through with exit 0 and empty stdout. `bin/doctor.sh` also detects stale pre-v3.5 `$HOME/.claude/hooks/precompact-force-memsave.sh` artifact and prints exact cleanup commands.
+- **v3.6**: **active forgetting** — journals are now the *ephemeral hippocampal buffer*, not permanent. `_forget.py` enforces the canon §3 raw-TTL (default 7d): salvages curated `- [type]` entries into `journal/_salvage.md`, then gzip-archives old/oversized journals into `.archive/` (gitignored) + memory-repo git history (recoverable). Wired into the Stop hook beside `_prune`/`_consolidate` (gated by `settings.journal.auto_forget_enabled`); `/mem-forget` command + `tests/test_forget.py` (10 tests). precompact raw-dump cap **80 KB → 20 KB** (keeps the bootstrap-loaded today-journal cheap). Fixed broken `/mem-prune` (`--workspace` flag `_prune.py` rejected). One-time vault cleanup: **workspaces/ 14 MB → 1.9 MB**, `index.db` 29 MB → 3 MB, 28 raw journals archived. Grounded in `.claude/research/v3.6-brain-storage.md`. Root cause closed: a memory system that *captured but never consolidated* (79% of data was unread raw transcript).
