@@ -10,7 +10,7 @@
     {
       "name": "gowth-mem",
       "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v3.5.1: precompact NEVER blocks /compact (was: HARD-BLOCK on raw-dump failure). v3.5: deterministic transcript raw-dump on PreCompact. v3.4: tag-aware FTS5 dedup, /mem-dream consolidation (Light/REM/Deep), /mem-recall, consolidated hooks. Auto pull/push around /compact, multi-session safe via fcntl locks, AI-mediated conflict resolution, deterministic FTS5 BM25 recall.",
-      "version": "3.5.1",
+      "version": "3.8.0",
       "author": {
         "name": "duynguyen"
       },
@@ -33,5 +33,5 @@
       ]
     }
   ],
-  "version": "3.5.1"
+  "version": "3.8.0"
 }
