@@ -1,5 +1,5 @@
 ---
-description: Chắt lọc raw journal entries (docs/journal/<date>.md) into curated working memory (docs/exp.md, docs/ref.md, docs/tools.md). Drops noise; keeps signal. Default range: today + yesterday.
+description: "Chắt lọc raw journal entries (docs/journal/<date>.md) into curated working memory (docs/exp.md, docs/ref.md, docs/tools.md). Drops noise; keeps signal. Default range: today + yesterday."
 ---
 
 Invoke the `mem-distill` skill to consolidate the most recent journal entries into the curated working layer.
@@ -15,3 +15,10 @@ The skill will:
 5. Report: N kept, M dropped as noise, K conflicts resolved.
 
 Use this command at end of day or before `/compact` to keep the curated layer clean.
+
+## Data-quality canon
+
+Apply `shared/research/data-quality-2026.md` §1 DROP gates BEFORE promoting:
+- entry < 20 chars / code-only / `[ref]` without Source / vague hedge ("maybe", "I think") → drop
+- secret-pattern pre-sweep (§1a) — AKIA / sk- / ghp_ / xox / PRIVATE KEY / JWT → quarantine, never promote
+- Use ADD / UPDATE / DELETE / NOOP semantics (§5) — never blind append.

@@ -211,3 +211,25 @@ unavailable). Companion to `shared/research/data-quality-2026.md` (what-to-keep 
 Next gaps (see research note §5): auto-consolidation still under-fired (episodic→semantic leans
 on Stop-hook block); no hard size-split hook for >500-line files; no decay-GC over stale topic
 entries; defrag surfaces but doesn't auto-merge; progressive-disclosure TL;DR not length-capped.
+
+### v3.6 — Hard write-rules gate + extraction canon
+
+The canon documented DROP rules; nothing enforced them at the write path, so junk still landed.
+
+- **`_gate.py`** — deterministic (no-LLM) write-time gate enforcing canon §1: REJECT on
+  empty / placeholder(`todo/tbd/...`) / `<20`-char body / hedged-without-evidence /
+  `[ref]`-without-Source / `[decision]`-without-rationale / `[tool]`-without-version-or-syntax /
+  secret-leak(AKIA/sk-/ghp_/xox/JWT/PEM). Wired into `_topic.append_entry` + `_lesson.append_lesson`
+  (gated by `settings.gate.enabled/strict`, best-effort — never blocks on gate-internal error).
+  `--scan` finds junk in existing files (found 18 in the live vault). `/mem-gate` command.
+- **`shared/research/extraction-reuse-2026.md`** (new shipped canon) — capture→extract→consolidate→
+  forget lifecycle; what makes an entry reusable (self-contained, canonical phrasing, when-to-apply
+  triggers, provenance, validity); the 12-rule write gate; ADD/MERGE/DEDUP/SUPERSEDE/NOOP matrix
+  (Jaccard 0.85 / cosine 0.75/0.92); target architecture **B-TAZ** (Bi-Temporal Agentic Zettelkasten).
+- **Fixed broken YAML frontmatter** in `mem-compress/mem-distill/mem-install` (mid-value `: `
+  mis-parsed the description — a real cause of "Claude doesn't know which skill to use"). All 43
+  command+skill frontmatter files now parse clean.
+
+Deep research: 2× Gemini (conv c_742be0a1ce2e1d61, c_31a0d05a7bdf8421) + 2× Perplexity
+(backend f4b8784b, 955b213d "Git Hippocampus"); Grok unavailable (x-statsig auth).
+Test coverage: **234/234** green (added `test_gate.py` [15]).

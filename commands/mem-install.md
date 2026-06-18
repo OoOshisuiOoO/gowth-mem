@@ -1,5 +1,5 @@
 ---
-description: First-time install wizard for ~/.gowth-mem/. Scaffolds shared + workspace v3 layout (topic-folder + dated aspect), asks for git remote+branch+token, writes settings.json + config.json, runs initial sync. Upgrade-aware: detects v2/v3 mismatch and prompts for /mem-migrate-v3.
+description: "First-time install wizard for ~/.gowth-mem/. Scaffolds shared + workspace v3 layout (topic-folder + dated aspect), asks for git remote+branch+token, writes settings.json + config.json, runs initial sync. Upgrade-aware: detects v2/v3 mismatch and prompts for /mem-migrate-v3."
 ---
 
 Run the v3.0 install wizard. Detects existing installs and offers upgrade path; never destroys data.
@@ -38,11 +38,12 @@ Branch logic:
 ## Step 1 — Fresh install (`~/.gowth-mem/` missing)
 
 Scaffold the shared + workspaces v3 layout:
-- `mkdir -p ~/.gowth-mem/shared/skills`
+- `mkdir -p ~/.gowth-mem/shared/skills ~/.gowth-mem/shared/research`
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md` → `~/.gowth-mem/shared/AGENTS.md`
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v3.json` → `~/.gowth-mem/settings.json` (carries `layout_version: 3`)
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md` → `~/.gowth-mem/shared/secrets.md`
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md` → `~/.gowth-mem/shared/tools.md`
+- Copy `${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/shared/research/data-quality-2026.md` → `~/.gowth-mem/shared/research/data-quality-2026.md` (canonical data-quality criteria referenced from `shared/AGENTS.md` §7)
 - Run `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py create default --title "Default Fallback"` (creates v3 scaffold: `docs/`, `journal/`, `skills/`, `research/`, `misc/00-README.md`)
 
 ## Step 2 — Git config (ask three questions)

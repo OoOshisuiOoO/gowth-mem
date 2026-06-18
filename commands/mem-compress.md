@@ -1,5 +1,5 @@
 ---
-description: rtk-style pre-storage compression — collapses 3+ adjacent identical lines + merges adjacent `key: value` runs sharing the same key. Deterministic, idempotent, no LLM. Use before writing large journal/aspect blocks.
+description: "rtk-style pre-storage compression — collapses 3+ adjacent identical lines + merges adjacent `key: value` runs sharing the same key. Deterministic, idempotent, no LLM. Use before writing large journal/aspect blocks."
 ---
 
 Compress a markdown chunk before writing it to memory. Strips obvious token-waste without altering semantics.
