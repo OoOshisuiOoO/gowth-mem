@@ -37,7 +37,12 @@ from _lock import file_lock  # type: ignore
 
 FLUSH_GRACE = 300  # seconds — recent flush window
 MIN_USER_TURNS = 2  # below this, transcript has nothing substantive to flush
-RAW_DUMP_MAX_CHARS = 80_000  # cap snapshot size to avoid huge journal entries
+# v3.6: cap the raw safety-net snapshot small. Journals are the ephemeral
+# hippocampal buffer (canon §3): `_forget.py` archives them after `raw_ttl_days`
+# (7d). The dump is a recent-context safety net, NOT durable knowledge — so a
+# tight cap keeps today's journal (loaded at bootstrap) cheap to read. Was
+# 80_000, which let a single day's journal balloon past 1 MB.
+RAW_DUMP_MAX_CHARS = 20_000
 
 
 def recently_flushed(grace: int = FLUSH_GRACE) -> bool:
@@ -173,7 +178,9 @@ def raw_dump_to_journal(text: str, ws: str) -> bool:
 
         header = (
             f"\n\n## [auto-precompact-dump] {today} {timestamp}\n\n"
-            "_Pre-compact snapshot. Run `/mem-distill` to classify into topic files._\n\n"
+            "_Ephemeral safety-net snapshot (raw working memory). Distill the signal "
+            "into topic files via `/mem-distill`; the raw is auto-archived after "
+            "`journal.raw_ttl_days` (default 7d) by `_forget.py`._\n\n"
         )
         snapshot = header + text + "\n"
 

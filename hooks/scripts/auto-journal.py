@@ -62,6 +62,21 @@ def _read_journal_settings() -> tuple[int, bool]:
         return AUTO_DISTILL_EVERY, True
 
 
+def _auto_forget_enabled() -> bool:
+    """v3.6: whether the Stop hook archives journal raw past its TTL.
+
+    Settings `journal.auto_forget_enabled` (default True). The canon (§3) treats
+    journals as the ephemeral hippocampal buffer — `_forget.py` is the active
+    forgetting step that keeps the active recall surface lean.
+    """
+    try:
+        s = read_settings()
+        j = s.get("journal", {}) if isinstance(s, dict) else {}
+        return bool(j.get("auto_forget_enabled", True))
+    except Exception:
+        return True
+
+
 def _is_subagent(data: dict) -> bool:
     """Return True if this Stop event is from a subagent context — skip journaling.
 
@@ -167,6 +182,21 @@ def main() -> int:
             log_debug("auto-journal", f"consolidate subprocess timeout after 8s: {e}")
         except Exception as e:
             log_debug("auto-journal", f"consolidate subprocess failed: {e}")
+
+    # v3.6: active forgetting — archive journal raw older than journal.raw_ttl_days
+    # (canon §3). Near-noop when nothing is past TTL; gated by auto_forget_enabled.
+    # Archived files stay recoverable (gz under .archive/ + memory-repo git history).
+    forget_script = Path(__file__).parent / "_forget.py"
+    if forget_script.is_file() and _auto_forget_enabled():
+        try:
+            subprocess.run(
+                ["python3", str(forget_script), "--all-workspaces", "--quiet"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except subprocess.TimeoutExpired as e:
+            log_debug("auto-journal", f"forget subprocess timeout after 10s: {e}")
+        except Exception as e:
+            log_debug("auto-journal", f"forget subprocess failed: {e}")
 
     ws = active_workspace()
     reason = _build_reason(ws, journal_every)

@@ -12,6 +12,12 @@
     "journal_every": 10,
     "auto_journal_enabled": true
   },
+  "journal": {
+    "raw_ttl_days": 7,
+    "max_bytes": 75000,
+    "salvage": true,
+    "auto_forget_enabled": true
+  },
   "workspace": {
     "default": "default",
     "auto_detect_from_cwd": true,
@@ -121,6 +127,7 @@
   "_notes": {
     "version": "schema 3.0 = topic-FOLDER + dated-aspect layout (replaces v2.4 single-file-per-topic)",
     "layout_version": "Integer schema version. v3 is current. Read-path stays permissive across v3/v2.4/v2.3; write-path is strict v3.",
+    "journal": "v3.6 active-forgetting (canon §3). Journals = ephemeral hippocampal buffer. raw_ttl_days: archive raw journals older than N days. max_bytes: also archive a >1-day-old journal over this size. salvage: lift curated `- [type]` entries into journal/_salvage.md before archiving. auto_forget_enabled: run _forget.py on the Stop hook. Archives go to .archive/ (gitignored) + stay in memory-repo git history.",
     "topic_layout.mode": "folder (v3 only). Each topic = workspaces/<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}.",
     "topic_layout.reserved_aspect_names": "Blocked aspect slugs (would collide with structural files).",
     "topic_layout.reserved_subdirs": "Cannot be used as topic slugs at workspace root.",
