@@ -139,10 +139,15 @@ def main() -> int:
                 if not has_head:
                     run_git(gh, "add", "-A")
                     try:
+                        from _commitmsg import build_message as _bm  # type: ignore
+                        _msg = _bm(gh, host=host, context="initial")
+                    except Exception:
+                        _msg = f"initial sync from {host}"
+                    try:
                         run_git(
                             gh, "-c", "user.name=gowth-mem",
                             "-c", f"user.email=gowth-mem@{host}",
-                            "commit", "-m", f"initial sync from {host}",
+                            "commit", "-m", _msg,
                         )
                     except subprocess.CalledProcessError as e:
                         print(f"WARN: initial commit failed: {e.stderr}", file=sys.stderr)
@@ -182,10 +187,15 @@ def main() -> int:
                 status = run_git(gh, "status", "--porcelain", check=False).stdout
                 if status.strip():
                     try:
+                        from _commitmsg import build_message as _bm  # type: ignore
+                        _msg = _bm(gh, host=host, context="mem-sync")
+                    except Exception:
+                        _msg = f"sync from {host}"
+                    try:
                         run_git(
                             gh, "-c", "user.name=gowth-mem",
                             "-c", f"user.email=gowth-mem@{host}",
-                            "commit", "-m", f"sync from {host}",
+                            "commit", "-m", _msg,
                         )
                         print(f"sync: committed local changes from {host}")
                     except subprocess.CalledProcessError as e:

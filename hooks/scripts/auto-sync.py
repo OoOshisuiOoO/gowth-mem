@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _commitmsg import build_message  # type: ignore
+from _debug import log_debug  # type: ignore
 from _git import auth_url, git_cmd, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
 from _home import conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
@@ -56,18 +58,29 @@ def ensure_repo(gh: Path, remote: str, branch: str, token: Optional[str], quiet:
     return True
 
 
-def commit_local(gh: Path, host: str, quiet: bool, message: str = "auto-sync") -> bool:
-    """Stage and commit. Returns True if a commit was made."""
+def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -> bool:
+    """Stage and commit. Returns True if a commit was made.
+
+    v3.6: the commit message is generated deterministically from the staged
+    diff (`_commitmsg.build_message`) so `git log` is a readable audit trail
+    instead of "auto-sync from <host>". `context` names the hook that fired
+    (e.g. "pre-compact", "auto-sync") and lands in a `Context:` trailer.
+    """
     run_git(gh, "add", "-A", check=False)
     status = run_git(gh, "status", "--porcelain", check=False).stdout
     if not status.strip():
         return False
     try:
+        msg = build_message(gh, host=host, context=context)
+    except Exception as e:
+        log_debug("auto-sync", f"build_message failed: {e}")
+        msg = f"{context} from {host}"  # fallback to the old one-liner
+    try:
         run_git(
             gh,
-            "-c", f"user.name=gowth-mem",
+            "-c", "user.name=gowth-mem",
             "-c", f"user.email=gowth-mem@{host}",
-            "commit", "-m", f"{message} from {host}",
+            "commit", "-m", msg,
         )
         log(f"sync: committed local changes from {host}", quiet=quiet)
         return True
@@ -233,7 +246,7 @@ def main() -> int:
             return 0
         try:
             with file_lock("sync", timeout=5.0):
-                commit_local(gh, host, quiet, message="pre-compact snapshot")
+                commit_local(gh, host, quiet, context="pre-compact")
         except TimeoutError as e:
             log_debug("auto-sync", f"commit-only lock timeout: {e}")
             log("sync: commit skipped — sync lock held", quiet=quiet, err=True)

@@ -233,3 +233,32 @@ The canon documented DROP rules; nothing enforced them at the write path, so jun
 Deep research: 2× Gemini (conv c_742be0a1ce2e1d61, c_31a0d05a7bdf8421) + 2× Perplexity
 (backend f4b8784b, 955b213d "Git Hippocampus"); Grok unavailable (x-statsig auth).
 Test coverage: **234/234** green (added `test_gate.py` [15]).
+
+### v3.6 — Descriptive auto-commits (git = audit trail)
+
+The memory repo auto-commits on hooks, but messages were `"auto-sync from <host>"` —
+`git log` told no story. The user's requirement: "khi plugin commit thì ghi rõ trong git,
+để đảm bảo check từ git có thể hiểu được. và từ git sẽ đi sâu vào."
+
+- **`_commitmsg.py`** — `build_message(gh, host, context)` generates a structured message
+  **deterministically from the staged diff** (`--name-status -M` + `--numstat -M` +
+  `--unified=0`, no LLM). Shape: `type(scope): summary` + body (counts/focus/largest) +
+  git-trailer footers `Workspace:`/`Topics:`/`Entries: +2 decision -1 ref`/`Files:`/
+  `Machine:`/`Context:`. Types `add/update/prune/archive/consolidate/sync` chosen by
+  path-bucket (journal/handoff/aspect/lessons/moc/docs/shared) + entry-tag deltas +
+  file add/delete/rename counts. Subject capped 72 chars; huge diffs cap hunk-scan.
+- Wired into `auto-sync.commit_local` (SessionStart/PreCompact/PostCompact/Stop hooks)
+  and `_sync.py` (manual `/mem-sync`). Falls back to the old one-liner if generation fails.
+- **Bug fixed**: `auto-sync.py` called `log_debug` without importing it — a sync-lock
+  timeout would crash the hook with a traceback (violates graceful-missing). Now imported.
+
+Real output (verified end-to-end through the hook):
+```
+add(trade): +1 [decision] +1 [ref]; in exness-ea
+- 3 files changed, +5 / -0 lines
+- Focus: aspect
+Workspace: trade / Topics: exness-ea / Entries: +1 decision +1 ref / Context: pre-compact
+```
+Now `git log --grep 'Workspace: trade'`, `git log --grep '^archive('`, `git log -- <path>`,
+`git log --stat`, `git blame` all stay useful. Deep research: Perplexity (backend dcc8cb10),
+Gemini (conv c_c23d12acdbbec4a3). Test coverage: **246/246** green (added `test_commitmsg.py` [8]).
