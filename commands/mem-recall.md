@@ -39,3 +39,9 @@ Lines are deterministic — same query + index = same output. No LLM in the path
 - Requires the v3.4 `tag TEXT` column on the `chunks` table. `_index.py` migrates idempotently on first read; pre-v3.4 DBs are auto-upgraded.
 - Empty result set returns exit 0 with no output (not an error).
 - For raw BM25 without tag filter and across the legacy schema, use `/mem-doctor --query` instead.
+
+## Data-quality canon
+
+Scoring formula in `shared/research/data-quality-2026.md` §4:
+`R = 0.30·BM25 + 0.30·layer_score + 0.15·recency + 0.15·diversity + 0.10·log(1+recall_count)`.
+Deterministic only — no LLM in the recall path (gowth-mem hard rule).

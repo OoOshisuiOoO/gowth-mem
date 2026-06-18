@@ -45,6 +45,9 @@ A human (or you, the AI) decides:
 
 This command is intentionally read-only.
 
+Canon: `shared/research/data-quality-2026.md` §7 (contradiction handling).
+Threshold `overlap ≥ 0.4` is set in §2; do not loosen without a research note.
+
 ## When to run
 
 - Before `/mem-distill` (catches conflicts before promotion)

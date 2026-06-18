@@ -29,13 +29,15 @@ Now do this WITHOUT user prompting before yielding control:
      * Always append entries to the dated aspect file, NEVER to `00-README.md` (auto-regenerated MOC).
      * Reserved subdirs at ws root: docs, journal, skills, research. Reserved files inside topic folder:
        00-README.md, lessons.md, _MAP.md.
-4. Apply quality gates — DROP if:
+4. Apply quality gates per `shared/research/data-quality-2026.md` §1 — DROP if:
    - Entry < 20 chars
    - Code-only (no prose)
    - [ref] without Source
    - Vague / hedged ("maybe", "I think") without backing
-5. Apply mem0 ADD / UPDATE / DELETE / NOOP against existing target file content.
-   Update frontmatter.last_touched on every write.
+   - Secret pattern hit (§1a): AKIA* / sk-* / ghp_* / xox* / PRIVATE KEY / JWT → never write, quarantine in handoff with [secret-ref] pointer only
+5. Apply mem0 ADD / UPDATE / DELETE / NOOP (canon §5) against existing target file content.
+   Numeric dedup: Jaccard ≥ 0.85 → UPDATE/merge; overlap ≥ 0.4 + polarity flip → contradiction lint.
+   Update frontmatter.last_touched on every write. Never blind append.
 6. Update workspaces/{ws}/docs/handoff.md (prefix host:<machine>) with new task / next / blocker.
 7. After writes, run `_moc.py --ws <target_ws>` for each workspace that received writes
    (refreshes the workspace MOC + every topic README in that workspace).

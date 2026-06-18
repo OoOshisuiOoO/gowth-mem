@@ -98,3 +98,10 @@ pipeline itself. Actual pruning requires a separate `/mem-prune` invocation.
 - `/mem-distill` — single-pass distillation of recent journal entries into curated docs (scoped to today/yesterday; lower-level than `/mem-dream`)
 - `/mem-lint` — detect schema violations and contradictions in topic files
 - `/mem-prune` — delete expired, superseded, and duplicate entries; acts on the `prune_candidates` list that `/mem-dream` surfaces
+
+## Data-quality canon
+
+All three phases honour `shared/research/data-quality-2026.md`:
+- §4 multi-signal recall score = the 6 deep-phase weights (frequency / relevance / diversity / recency / consolidation / richness)
+- §6 consolidation triggers — when REM/Deep should fire vs skip
+- §8 anti-bloat invariant — Letta defragmentation target 15–25 focused files/topic; Deep flags overflow as prune_candidates
