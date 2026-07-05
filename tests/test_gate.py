@@ -280,6 +280,42 @@ class TestV40Calibration(unittest.TestCase):
         )
         self.assertTrue(v.ok, v.reason)
 
+    # Round 2 (vault-fixer study: 13 residual false-positives) ----------------
+
+    def test_decision_purposive_so_is_rationale(self):
+        v = GATE.evaluate(
+            "- [decision] Pin the CLI version in the shared tag so it marks the "
+            "common cloak baseline across both repos"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_decision_chose_over_is_rationale(self):
+        v = GATE.evaluate(
+            "- [decision] Chose MVP runnable-cycle over Voyager 8-subsystem build "
+            "(simplicity-first)"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_ref_cited_code_path_is_source(self):
+        v = GATE.evaluate(
+            "- [ref] Google Chat provider is TEXT-ONLY. Grep from image "
+            "/venv/lib/python3.13/site-packages/keep/providers/google_chat_provider.py"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_ref_commit_hash_provenance_is_source(self):
+        v = GATE.evaluate(
+            "- [ref] Live state Ready=True after the deploy chain b27201e through f7b6e02d1"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_ref_bare_claim_still_rejected(self):
+        v = GATE.evaluate(
+            "- [ref] The gateway keeps balances complementary and separate somehow"
+        )
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, "ref_without_source")
+
 
 if __name__ == "__main__":
     unittest.main()

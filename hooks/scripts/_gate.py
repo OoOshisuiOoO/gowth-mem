@@ -58,11 +58,13 @@ EVIDENCE_RE = re.compile(
 )
 RATIONALE_RE = re.compile(
     # Lexical causal markers (EN + VI) …
-    r"\b(because|since|so that|in order to|rationale|reason:|why:|due to|"
+    r"\b(because|since|so that|so\b|in order to|rationale|reason:|why:|due to|"
     r"avoids?|prevents?|ensures?|otherwise|instead( of)?|"
     r"vì|bởi|để|do|tránh|thay vì|đảm bảo)\b"
+    # … a chose/prefer X over Y comparison states rationale as a tradeoff …
+    r"|\b(chose|choose|chọn|prefer\w*|pick\w*)\b[^.\n]{0,80}\bover\b"
     # … plus this vault's structural idiom: an `X → Y` consequence chain inside
-    # the entry body states WHY as cause→effect (v4.0 calibration: 33 real
+    # the entry body states WHY as cause→effect (v4.0 calibration: 33+ real
     # decisions with body rationale were flagged only for lacking the keywords).
     r"|→", re.IGNORECASE,
 )
@@ -168,10 +170,14 @@ def evaluate(content: str, *, strict: bool | None = None) -> GateResult:
         # v4.0 calibration: an inline verification statement ("verified in-pod",
         # "verified from image `x:1.2`", "xác minh end-to-end") IS the source for
         # self-verified live observations — canon wants evidence, not a label.
+        # Round 2 (live-vault study): EVIDENCE_RE (cited file/code paths, commit
+        # hashes, `commands`, line refs) also grounds a [ref] — a grep-path or a
+        # SHA256 equality proof is stronger provenance than a bare "Source:" label.
         if (tag == "ref"
                 and not re.search(r"source:", raw, re.IGNORECASE)
                 and not re.search(r"https?://", raw)
-                and not re.search(r"\b(verified|verify path|xác minh|kiểm chứng)\b", raw, re.IGNORECASE)):
+                and not re.search(r"\b(verified|verify path|xác minh|kiểm chứng)\b", raw, re.IGNORECASE)
+                and not EVIDENCE_RE.search(raw)):
             return GateResult(False, "ref_without_source", "[ref] requires Source:")
         if tag == "decision" and not RATIONALE_RE.search(raw):
             return GateResult(False, "decision_without_rationale", "[decision] requires a because/since/rationale clause")
