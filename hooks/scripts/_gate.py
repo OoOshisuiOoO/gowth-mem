@@ -57,8 +57,14 @@ EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 RATIONALE_RE = re.compile(
+    # Lexical causal markers (EN + VI) …
     r"\b(because|since|so that|in order to|rationale|reason:|why:|due to|"
-    r"vì|bởi|để|do)\b", re.IGNORECASE,
+    r"avoids?|prevents?|ensures?|otherwise|instead( of)?|"
+    r"vì|bởi|để|do|tránh|thay vì|đảm bảo)\b"
+    # … plus this vault's structural idiom: an `X → Y` consequence chain inside
+    # the entry body states WHY as cause→effect (v4.0 calibration: 33 real
+    # decisions with body rationale were flagged only for lacking the keywords).
+    r"|→", re.IGNORECASE,
 )
 # canon §1: [tool] needs a version marker OR a fenced/inline command.
 VERSION_RE = re.compile(r"(version:|v?\d+\.\d+|\b\d+\.\d+\.\d+\b|@[\w.-]+)", re.IGNORECASE)
@@ -73,8 +79,12 @@ VERIFY_RE = re.compile(
 # v3.9: [goal] (user objective/intent) MUST carry a lifecycle Status or a success
 # criterion — otherwise it is a vague wish, not a trackable goal.
 GOAL_STATUS_RE = re.compile(
-    r"\b(active|paused|achieved|abandoned|blocked|superseded|done when|success|"
-    r"criteria|target|objective|mục tiêu|hoàn thành)\b", re.IGNORECASE)
+    r"\b(active|paused|achieved|abandoned|blocked|superseded|done[- ]when|success|"
+    r"criteria|target|objective|mục tiêu|hoàn thành"
+    # v4.0 calibration: ANY explicit `Status: <value>` label satisfies the
+    # lifecycle contract (real entries write `**Status: DONE.**` — the enum
+    # list above missed bold/uppercase variants of the same intent).
+    r"|status:\s*\S)", re.IGNORECASE)
 PLACEHOLDER_RE = re.compile(
     r"^\s*(todo|tbd|fixme|xxx|wip|misc|random|stuff|note to self|"
     r"investigate later|placeholder|n/?a|\.\.\.|-+)\s*$",
@@ -155,7 +165,13 @@ def evaluate(content: str, *, strict: bool | None = None) -> GateResult:
                                   "uncertain language with no source/evidence")
 
     if strict and tag:
-        if tag == "ref" and not re.search(r"source:", raw, re.IGNORECASE) and not re.search(r"https?://", raw):
+        # v4.0 calibration: an inline verification statement ("verified in-pod",
+        # "verified from image `x:1.2`", "xác minh end-to-end") IS the source for
+        # self-verified live observations — canon wants evidence, not a label.
+        if (tag == "ref"
+                and not re.search(r"source:", raw, re.IGNORECASE)
+                and not re.search(r"https?://", raw)
+                and not re.search(r"\b(verified|verify path|xác minh|kiểm chứng)\b", raw, re.IGNORECASE)):
             return GateResult(False, "ref_without_source", "[ref] requires Source:")
         if tag == "decision" and not RATIONALE_RE.search(raw):
             return GateResult(False, "decision_without_rationale", "[decision] requires a because/since/rationale clause")

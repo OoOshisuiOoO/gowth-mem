@@ -236,5 +236,50 @@ class TestProvenanceTypes(unittest.TestCase):
                 os.environ.pop("GOWTH_MEM_HOME", None)
 
 
+class TestV40Calibration(unittest.TestCase):
+    """v4.0 gate calibration — accept the vault's real idiom (live-data study:
+    50 flags -> 16 after these; the dropped 34 all carried rationale/source/status
+    expressed structurally rather than with the original keyword vocabulary)."""
+
+    def test_decision_arrow_chain_is_rationale(self):
+        # `X → Y` consequence chain states WHY as cause→effect.
+        v = GATE.evaluate(
+            "- [decision] Disable chart-default rules via defaultRules.disabled "
+            "→ my tiered group stays the only owner of those alertnames"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_decision_avoid_prevent_instead_is_rationale(self):
+        v = GATE.evaluate(
+            "- [decision] Null-route the alertname in the AM route instead of "
+            "editing template.tmpl; avoids the highest blast radius file"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_decision_still_rejected_without_any_why(self):
+        v = GATE.evaluate("- [decision] Use tag v2.1.183-parity on both repos going forward")
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, "decision_without_rationale")
+
+    def test_ref_inline_verification_is_source(self):
+        v = GATE.evaluate(
+            "- [ref] Keep CE has ZERO runtime license checks (verified from image "
+            "keephq/keep:0.54.1, grep over /venv site-packages)"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+    def test_ref_still_rejected_without_source_or_verification(self):
+        v = GATE.evaluate("- [ref] The gateway keeps balances complementary and separate somehow")
+        self.assertFalse(v.ok)
+        self.assertEqual(v.reason, "ref_without_source")
+
+    def test_goal_bold_status_done_accepted(self):
+        v = GATE.evaluate(
+            "## [goal]\nMake SQL digest analysis usable on prod. **Status: DONE.** "
+            "Done-when: auditloader writes digests queryable in starrocks"
+        )
+        self.assertTrue(v.ok, v.reason)
+
+
 if __name__ == "__main__":
     unittest.main()
