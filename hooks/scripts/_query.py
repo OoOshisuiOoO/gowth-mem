@@ -28,8 +28,12 @@ def query_by_type(
     tag: str,
     query: str = "",
     limit: int = 20,
+    *,
+    keyword: str = "",
+    topic: str = "",
+    days: int = 0,
 ) -> list[dict]:
-    """Return chunks filtered by tag, optionally ranked by BM25.
+    """Return chunks filtered by tag/keyword/topic/date, optionally ranked by BM25.
 
     Parameters
     ----------
@@ -37,18 +41,24 @@ def query_by_type(
         Workspace name (e.g. "myproject"). Pass "" or "*" to search all workspaces.
     tag:
         Schema tag to filter on: "decision", "exp", "ref", "tool", "reflection",
-        "skill-ref", "secret-ref", "goal", "hypothesis". Pass "" to skip tag filtering (returns all chunks
-        ranked by query — same as legacy behaviour).
+        "skill-ref", "secret-ref", "goal", "hypothesis". Pass "" to skip tag filtering.
     query:
         FTS5 query string. When empty, results are ordered by rowid DESC (most recent
-        first). When non-empty, results are ranked by BM25 score ascending (lower =
-        better in FTS5 convention).
+        first). When non-empty, results are ranked by a column-weighted BM25 —
+        `bm25(chunks_fts, 5.0, 3.0, 1.0)` — so tag/keyword hits outrank body hits.
     limit:
         Maximum number of results to return.
+    keyword:
+        v4.0 — filter to chunks whose `keywords` column contains this token
+        (auto-tag / frontmatter-tag match). LIKE substring, case-insensitive.
+    topic:
+        v4.0 — filter to chunks whose stored path contains `/<slug>/` (topic folder).
+    days:
+        v4.0 — only chunks modified within the last N days (chunk mtime cutoff).
 
     Returns
     -------
-    list of dicts with keys: path, line_no, content, tag, bm25_score.
+    list of dicts with keys: path, line_no, content, tag, keywords, bm25_score.
     line_no is always 0 (chunks table does not store per-line offsets).
     Returns empty list on any error (fail-open).
     """
@@ -58,83 +68,70 @@ def query_by_type(
     try:
         db = sqlite3.connect(str(db_path))
         db.execute("PRAGMA busy_timeout=2000")
-        # Guard: check that tag column exists (pre-migration DB).
         cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
         if "tag" not in cols:
             db.close()
             return []
+        has_keywords = "keywords" in cols
 
+        import time as _time
+        mtime_cutoff = (_time.time() - days * 86400) if days and days > 0 else None
+
+        # Shared non-FTS predicates (tag / keyword / topic / days).
+        def _extra_where(params: list) -> str:
+            clauses = []
+            if tag:
+                clauses.append("c.tag = ?")
+                params.append(tag)
+            if keyword and has_keywords:
+                clauses.append("c.keywords LIKE ?")
+                params.append(f"%{keyword.lower()}%")
+            if topic:
+                clauses.append("c.path LIKE ?")
+                params.append(f"%/{topic}/%")
+            if mtime_cutoff is not None:
+                clauses.append("c.mtime >= ?")
+                params.append(mtime_cutoff)
+            return "".join(f" AND {c}" for c in clauses)
+
+        kw_sel = "c.keywords" if has_keywords else "'' AS keywords"
         results: list[dict] = []
 
         if query.strip():
-            # BM25 path: filter tag in WHERE, rank by FTS5 bm25().
-            # chunks_fts has columns (tag, content); bm25() scores the whole row.
-            if tag:
-                # Filter by both tag column in base table AND tag in FTS index.
-                sql = """
-                    SELECT c.path, c.content, c.tag,
-                           bm25(chunks_fts) AS score
-                    FROM chunks_fts
-                    JOIN chunks c ON chunks_fts.rowid = c.id
-                    WHERE chunks_fts MATCH ?
-                      AND c.tag = ?
-                    ORDER BY score
-                    LIMIT ?
-                """
-                rows = db.execute(sql, (query, tag, limit)).fetchall()
-            else:
-                sql = """
-                    SELECT c.path, c.content, c.tag,
-                           bm25(chunks_fts) AS score
-                    FROM chunks_fts
-                    JOIN chunks c ON chunks_fts.rowid = c.id
-                    WHERE chunks_fts MATCH ?
-                    ORDER BY score
-                    LIMIT ?
-                """
-                rows = db.execute(sql, (query, limit)).fetchall()
-            for path, content, chunk_tag, score in rows:
-                # Optionally filter by workspace prefix.
-                if ws and ws != "*":
-                    if not _path_in_ws(path, ws):
-                        continue
-                results.append({
-                    "path": path,
-                    "line_no": 0,
-                    "content": content,
-                    "tag": chunk_tag,
-                    "bm25_score": score,
-                })
+            params: list = [query]
+            # Weighted BM25: tag(5) > keywords(3) > content(1) when keywords exist,
+            # else fall back to (tag, content) 2-column weighting for older indexes.
+            score_expr = ("bm25(chunks_fts, 5.0, 3.0, 1.0)"
+                          if has_keywords else "bm25(chunks_fts, 5.0, 1.0)")
+            sql = (
+                f"SELECT c.path, c.content, c.tag, {kw_sel}, {score_expr} AS score "
+                "FROM chunks_fts JOIN chunks c ON chunks_fts.rowid = c.id "
+                "WHERE chunks_fts MATCH ?"
+                + _extra_where(params)
+                + " ORDER BY score LIMIT ?"
+            )
+            params.append(limit)
+            rows = db.execute(sql, params).fetchall()
+            for path, content, chunk_tag, kw, score in rows:
+                if ws and ws != "*" and not _path_in_ws(path, ws):
+                    continue
+                results.append({"path": path, "line_no": 0, "content": content,
+                                "tag": chunk_tag, "keywords": kw, "bm25_score": score})
         else:
-            # No query: return most-recent rows matching tag (rowid DESC).
-            if tag:
-                sql = """
-                    SELECT c.path, c.content, c.tag
-                    FROM chunks c
-                    WHERE c.tag = ?
-                    ORDER BY c.id DESC
-                    LIMIT ?
-                """
-                rows = db.execute(sql, (tag, limit * 3)).fetchall()
-            else:
-                sql = """
-                    SELECT c.path, c.content, c.tag
-                    FROM chunks c
-                    ORDER BY c.id DESC
-                    LIMIT ?
-                """
-                rows = db.execute(sql, (limit * 3,)).fetchall()
-            for path, content, chunk_tag in rows:
-                if ws and ws != "*":
-                    if not _path_in_ws(path, ws):
-                        continue
-                results.append({
-                    "path": path,
-                    "line_no": 0,
-                    "content": content,
-                    "tag": chunk_tag,
-                    "bm25_score": 0.0,
-                })
+            params = []
+            sql = (
+                f"SELECT c.path, c.content, c.tag, {kw_sel} "
+                "FROM chunks c WHERE 1=1"
+                + _extra_where(params)
+                + " ORDER BY c.id DESC LIMIT ?"
+            )
+            params.append(limit * 3)
+            rows = db.execute(sql, params).fetchall()
+            for path, content, chunk_tag, kw in rows:
+                if ws and ws != "*" and not _path_in_ws(path, ws):
+                    continue
+                results.append({"path": path, "line_no": 0, "content": content,
+                                "tag": chunk_tag, "keywords": kw, "bm25_score": 0.0})
                 if len(results) >= limit:
                     break
 
@@ -177,17 +174,25 @@ if __name__ == "__main__":
              " ('' = no filter)",
     )
     ap.add_argument("--query", default="", help="FTS5 query string ('' = most recent)")
+    ap.add_argument("--keyword", default="", help="Filter by auto-tag / frontmatter keyword")
+    ap.add_argument("--topic", default="", help="Filter to a topic slug (path /<slug>/)")
+    ap.add_argument("--days", type=int, default=0, help="Only chunks modified within N days")
     ap.add_argument("--limit", type=int, default=20, help="Max results (default 20)")
+    ap.add_argument("query_pos", nargs="*", help="Query terms (joined; same as --query)")
     args = ap.parse_args()
 
-    hits = query_by_type(ws=args.ws, tag=args.tag, query=args.query, limit=args.limit)
+    query = args.query or " ".join(args.query_pos)
+    hits = query_by_type(ws=args.ws, tag=args.tag, query=query, limit=args.limit,
+                         keyword=args.keyword, topic=args.topic, days=args.days)
     if not hits:
         print("(no results)")
         sys.exit(0)
     for hit in hits:
         score_str = f"  bm25={hit['bm25_score']:.4f}" if hit["bm25_score"] else ""
         tag_str = f"[{hit['tag']}]" if hit["tag"] else "[untagged]"
-        print(f"{hit['path']}  {tag_str}{score_str}")
+        kw = hit.get("keywords") or ""
+        kw_str = f"  kw={kw}" if kw else ""
+        print(f"{hit['path']}  {tag_str}{score_str}{kw_str}")
         # Compact content preview (first 120 chars, single line)
         preview = hit["content"].replace("\n", " ")[:120]
         print(f"  {preview}")

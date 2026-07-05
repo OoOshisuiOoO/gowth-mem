@@ -51,6 +51,7 @@ from _home import (  # type: ignore
     workspace_dir,
 )
 from _lock import file_lock  # type: ignore
+from _tags import TAG_TOKEN_RE, strip_tags_text  # type: ignore  # v4.0 keywords + tag-stable hash
 
 CHUNK_SIZE = 1500
 
@@ -66,6 +67,49 @@ def _extract_tag(content: str) -> str:
         return ""
     tag = m.group(1)
     return tag if tag in KNOWN_TAGS else ""
+
+
+def _frontmatter_tags(text: str) -> list[str]:
+    """Parse frontmatter `tags:` (inline `[a, b]` and block `- a` forms)."""
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    if end == -1:
+        return []
+    lines = text[3:end].split("\n")
+    for i, line in enumerate(lines):
+        m = re.match(r"^tags:\s*(.*)$", line)
+        if not m:
+            continue
+        val = m.group(1).strip()
+        if val.startswith("[") and val.endswith("]"):
+            return [x.strip().strip("'\"") for x in val[1:-1].split(",") if x.strip()]
+        if val:
+            return [val.strip("'\"")]
+        out: list[str] = []
+        for l2 in lines[i + 1:]:
+            mm = re.match(r"^\s*-\s+(.+?)\s*$", l2)
+            if mm:
+                out.append(mm.group(1).strip().strip("'\""))
+            else:
+                break
+        return out
+    return []
+
+
+def _chunk_keywords(content: str, file_text: str | None = None) -> str:
+    """Space-joined keyword string for a chunk: all inline `#tag` tokens (no `#`);
+    for the file's FIRST chunk (file_text supplied) also its frontmatter tags."""
+    kws: list[str] = [m.group(0)[1:].lower() for m in TAG_TOKEN_RE.finditer(content)]
+    if file_text is not None:
+        kws.extend(t.lower() for t in _frontmatter_tags(file_text))
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in kws:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return " ".join(out)
 
 
 def split_chunks(text: str) -> list[tuple[str, str]]:
@@ -226,6 +270,62 @@ def _migrate_tag_column_inner(db: sqlite3.Connection) -> None:
         db.commit()
 
 
+def _migrate_keywords_column(db: sqlite3.Connection) -> None:
+    """Idempotent v4.0 migration: add `keywords TEXT` to chunks, backfill from
+    inline #tags, rebuild chunks_fts to include the keywords column.
+
+    Mirrors `_migrate_tag_column` — wrapped in `file_lock("index-migrate")` so
+    two indexers can't race the ALTER/UPDATE/DROP-CREATE-INSERT sequence.
+    """
+    try:
+        lock_cm = file_lock("index-migrate", timeout=10.0)
+    except Exception:
+        lock_cm = None
+    if lock_cm is not None:
+        with lock_cm:
+            _migrate_keywords_column_inner(db)
+    else:
+        _migrate_keywords_column_inner(db)
+
+
+def _migrate_keywords_column_inner(db: sqlite3.Connection) -> None:
+    cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+    if "keywords" not in cols:
+        db.execute("ALTER TABLE chunks ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")
+        # Backfill from existing chunk content (inline #tags only; frontmatter
+        # tags are re-derived on the next per-file reindex).
+        for cid, content in db.execute("SELECT id, content FROM chunks").fetchall():
+            kw = _chunk_keywords(content or "")
+            if kw:
+                db.execute("UPDATE chunks SET keywords=? WHERE id=?", (kw, cid))
+        db.commit()
+
+    # Rebuild chunks_fts to include keywords column if it doesn't have it.
+    fts_cols = set()
+    try:
+        fts_info = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='chunks_fts' AND type='table'"
+        ).fetchone()
+        if fts_info and fts_info[0]:
+            fts_cols = set(re.findall(r"\b(\w+)\b", fts_info[0]))
+    except Exception:
+        pass
+    if "keywords" not in fts_cols:
+        try:
+            db.execute("DROP TABLE IF EXISTS chunks_fts")
+        except Exception:
+            pass
+        db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+            "tag, keywords, content, content='chunks', content_rowid='id', tokenize='unicode61')"
+        )
+        db.execute(
+            "INSERT INTO chunks_fts(rowid, tag, keywords, content) "
+            "SELECT id, tag, keywords, content FROM chunks"
+        )
+        db.commit()
+
+
 def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> None:
     # NOTE: idx_chunks_tag is NOT created here because the old `chunks` table may
     # already exist without the `tag` column. _migrate_tag_column() adds the column
@@ -239,7 +339,8 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
         content TEXT NOT NULL,
         mtime REAL NOT NULL,
         hash TEXT NOT NULL,
-        tag TEXT NOT NULL DEFAULT ''
+        tag TEXT NOT NULL DEFAULT '',
+        keywords TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
 
@@ -259,10 +360,11 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
     """)
     db.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-        "tag, content, content='chunks', content_rowid='id', tokenize='unicode61')"
+        "tag, keywords, content, content='chunks', content_rowid='id', tokenize='unicode61')"
     )
-    # Run migration in case DB was created by older code without tag column.
+    # Run migrations in case DB was created by older code without tag/keywords.
     _migrate_tag_column(db)
+    _migrate_keywords_column(db)
     if use_vec:
         sqlite_vec.load(db)  # type: ignore
         db.execute(
@@ -403,14 +505,21 @@ def main() -> int:
             if use_vec:
                 db.execute("DELETE FROM chunks_vec WHERE id=?", (oid,))
         db.execute("DELETE FROM chunks WHERE path=?", (rel,))
-        for heading, content in split_chunks(text):
-            h = hashlib.sha1(content.encode()).hexdigest()[:16]
+        for ci, (heading, content) in enumerate(split_chunks(text)):
+            # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
+            # entry whether or not it carries inline #tags.
+            h = hashlib.sha1(strip_tags_text(content).encode()).hexdigest()[:16]
             tag = _extract_tag(content)
+            keywords = _chunk_keywords(content, text if ci == 0 else None)
             cid = db.execute(
-                "INSERT INTO chunks (path, heading, content, mtime, hash, tag) VALUES (?, ?, ?, ?, ?, ?)",
-                (rel, heading, content, mtime, h, tag),
+                "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (rel, heading, content, mtime, h, tag, keywords),
             ).lastrowid
-            db.execute("INSERT INTO chunks_fts(rowid, tag, content) VALUES (?, ?, ?)", (cid, tag, content))
+            db.execute(
+                "INSERT INTO chunks_fts(rowid, tag, keywords, content) VALUES (?, ?, ?, ?)",
+                (cid, tag, keywords, content),
+            )
             if use_vec:
                 vec = embed_one(content)
                 if vec:

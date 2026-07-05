@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _home import gowth_home, index_db  # type: ignore
 from _lock import file_lock  # type: ignore
+from _tags import strip_tags_text  # type: ignore  # v4.0: tag-stable hashing
 
 DEFAULT_WINDOW_SECONDS = 300
 WHITESPACE_RE = re.compile(r"\s+")
@@ -41,7 +42,9 @@ def _window_path() -> Path:
 
 
 def _normalize(text: str) -> str:
-    return WHITESPACE_RE.sub(" ", text or "").strip().lower()
+    # v4.0: strip trailing inline #tags from every line BEFORE collapsing so an
+    # entry dedupes identically with or without its auto-tags.
+    return WHITESPACE_RE.sub(" ", strip_tags_text(text or "")).strip().lower()
 
 
 def _extract_tag(content: str) -> str:
@@ -79,9 +82,10 @@ def is_duplicate(ws_root: str | Path, tag: str, content: str) -> bool:
         db_path = index_db()
         if not db_path.is_file():
             return False
-        norm = _normalize(content)
-        # Use the same SHA-1[:16] hash that _index.py stores in the hash column.
-        raw_hash = _hl.sha1(content.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        # v4.0: hash TAG-STRIPPED content so an entry matches its indexed chunk
+        # whether or not inline #tags were appended (_index.py hashes the same way).
+        stripped = strip_tags_text(content)
+        raw_hash = _hl.sha1(stripped.encode("utf-8", errors="ignore")).hexdigest()[:16]
         with sqlite3.connect(str(db_path)) as db:
             db.execute("PRAGMA busy_timeout=2000")
             # Check column existence first — DB might be pre-migration.

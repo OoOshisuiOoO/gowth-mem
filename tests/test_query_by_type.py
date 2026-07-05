@@ -58,6 +58,23 @@ def _insert(db: sqlite3.Connection, path: str, content: str, tag: str) -> None:
     db.commit()
 
 
+def _insert_kw(db: sqlite3.Connection, path: str, content: str, tag: str,
+               keywords: str, mtime: float = 1.0) -> None:
+    """v4.0 insert including the keywords column (FTS row too)."""
+    h = hashlib.sha1(content.encode()).hexdigest()[:16]
+    db.execute(
+        "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (path, "", content, mtime, h, tag, keywords),
+    )
+    cid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    db.execute(
+        "INSERT INTO chunks_fts(rowid, tag, keywords, content) VALUES (?, ?, ?, ?)",
+        (cid, tag, keywords, content),
+    )
+    db.commit()
+
+
 class QueryByTypeFilterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="gowth_qbt_")
@@ -169,6 +186,71 @@ class QueryByTypeBM25Tests(unittest.TestCase):
         self.assertTrue(hits)
         # FTS5 bm25 score is non-zero (negative float for relevance).
         self.assertNotEqual(hits[0]["bm25_score"], 0.0)
+
+
+class QueryByTypeV4FilterTests(unittest.TestCase):
+    """v4.0 --keyword / --topic / --days filters + weighted BM25."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gowth_qbt_v4_")
+        self.db = _make_db(self.tmp)
+        self.qmod = load_module("gowth_query_v4", SCRIPTS / "_query.py")
+        import time
+        now = time.time()
+        _insert_kw(self.db, "workspaces/w1/ema-cross/2026-07-01-a.md",
+                   "[decision] use EMA crossover for entries", "decision",
+                   "ema-cross crossover signal", mtime=now)
+        _insert_kw(self.db, "workspaces/w1/risk/2026-07-01-b.md",
+                   "[decision] size positions by ATR", "decision",
+                   "atr sizing risk", mtime=now)
+        _insert_kw(self.db, "workspaces/w1/ema-cross/2026-01-01-old.md",
+                   "[exp] old crossover note", "exp",
+                   "crossover ema-cross", mtime=now - 40 * 86400)
+
+    def tearDown(self):
+        self.db.close()
+        os.environ.pop("GOWTH_MEM_HOME", None)
+
+    def test_keyword_filter(self):
+        hits = self.qmod.query_by_type(ws="w1", tag="", keyword="atr")
+        self.assertEqual(len(hits), 1)
+        self.assertIn("atr", hits[0]["keywords"])
+
+    def test_keyword_filter_matches_multiple(self):
+        hits = self.qmod.query_by_type(ws="w1", tag="", keyword="crossover")
+        self.assertEqual(len(hits), 2)
+
+    def test_topic_filter(self):
+        hits = self.qmod.query_by_type(ws="w1", tag="", topic="ema-cross")
+        self.assertEqual(len(hits), 2)
+        for h in hits:
+            self.assertIn("/ema-cross/", h["path"])
+
+    def test_days_filter_excludes_old(self):
+        hits = self.qmod.query_by_type(ws="w1", tag="", days=7)
+        paths = {h["path"] for h in hits}
+        self.assertNotIn("workspaces/w1/ema-cross/2026-01-01-old.md", paths)
+        self.assertEqual(len(hits), 2)
+
+    def test_combined_keyword_and_days(self):
+        hits = self.qmod.query_by_type(ws="w1", tag="", keyword="crossover", days=7)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["path"], "workspaces/w1/ema-cross/2026-07-01-a.md")
+
+    def test_weighted_bm25_keyword_outranks_body(self):
+        # "signal" appears in the keywords column of row A and body of another.
+        _insert_kw(self.db, "workspaces/w1/misc/2026-07-01-c.md",
+                   "[ref] the signal was weak in choppy markets. Source: log", "ref",
+                   "choppy markets")
+        hits = self.qmod.query_by_type(ws="w1", tag="", query="signal")
+        self.assertTrue(hits)
+        # Row A has "signal" in its weighted keywords column → ranks first.
+        self.assertEqual(hits[0]["path"], "workspaces/w1/ema-cross/2026-07-01-a.md")
+
+    def test_result_has_keywords_key(self):
+        hits = self.qmod.query_by_type(ws="w1", tag="decision", limit=1)
+        self.assertTrue(hits)
+        self.assertIn("keywords", hits[0])
 
 
 class QueryByTypeEdgeCasesTests(unittest.TestCase):

@@ -38,6 +38,11 @@ Now do this WITHOUT user prompting before yielding control:
    - [ref] without Source
    - Vague / hedged ("maybe", "I think") without backing
    - Secret pattern hit (§1a): AKIA* / sk-* / ghp_* / xox* / PRIVATE KEY / JWT → never write, quarantine in handoff with [secret-ref] pointer only
+4b. (v4.0 auto-tagging) The write path appends deterministic inline `#tags` to each
+   entry's FIRST line and unions them into the aspect file's frontmatter `tags:`
+   automatically — you do NOT add `#tags` by hand. To make those tags useful, write
+   **content-dense first lines** (put the key nouns/identifiers/paths up front) and
+   never leave a MOC TL;DR as `TODO`.
 5. Apply mem0 ADD / UPDATE / DELETE / NOOP (canon §5) against existing target file content.
    Numeric dedup: Jaccard ≥ 0.85 → UPDATE/merge; overlap ≥ 0.4 + polarity flip → contradiction lint.
    Update frontmatter.last_touched on every write. Never blind append.

@@ -280,3 +280,64 @@ frontmatter (invisible to wikilinks, recall scoring, auto-MOC).
 - `/mem-validate` command + 7 tests (**253 total**). Full comparison + remaining transferable
   learnings (deliberate taxonomy, themed `/mem-changelog`, work-board handoff, SSOT router) in
   `.claude/research/v3.7-supremor-comparison.md`.
+
+### v4.0 — Metacognition: deterministic auto-tagging + session self-review loop
+
+The user's three complaints, closed in one tier: (1) *"entries have no tags — AI search
+struggles"*, (2) *"stored data has no clear value"*, (3) *"log my prompts and your thinking,
+score us honestly every 15 turns, save it as experience, improve every use"*.
+Design + research trail: `.claude/research/v4.0-metacognition.md` (2 codebase maps + Perplexity
+deep research; Gemini down that run).
+
+**A. Deterministic auto-tagging (`_tags.py`, pure stdlib, no LLM)**
+- YAKE-lite extraction for 1-3 line entries (research: RAKE/TextRank collapse on short text):
+  priority identifier harvest (`code`, dotted.paths, snake_case, kebab-case, CamelCase, --flags,
+  acronyms) then prose scoring (freq × early-position × length × casing boost, noun-phrase
+  bigrams). Quality guards: pure-alpha UPPER ≥5 demoted to prose (emphasis ≠ acronym — kills
+  `ONLY`/`CONTENT`), post-normalize stopword check (~200 EN + ~100 VI + ascii-VI set),
+  filesystem-component denylist (`opt`,`usr`…), substring collapse (keep `1tokenai-build`, drop
+  `tokenai`+`build` — retrieval-safe: `--keyword` LIKE-matches compounds), 2-slot prose
+  reservation so repeated topic words beat a fifth identifier. Typical 3-5 tags, hard cap 7.
+- Write path: inline `  #tags` appended to entry first line in `_topic.append_entry` +
+  `_lesson.append_lesson` (after gate, best-effort) + frontmatter `tags:` union on dated aspect
+  files (cap 15) — the dead `tags: []` field finally lives. **Dedup stability**: `_index`/`_dedup`
+  hash tag-STRIPPED content, so an entry dedupes identically with or without tags.
+- Index/search: `chunks.keywords` column + rebuilt `fts5(tag, keywords, content)` (idempotent
+  migration under `file_lock("index-migrate")`); ranked queries use column-weighted
+  `bm25(chunks_fts, 5.0, 3.0, 1.0)` — tag/keyword hits outrank body hits (boost by default,
+  filter on demand). `query_by_type` + `/mem-recall` gain `--keyword` / `--topic` / `--days`.
+  `mem-recall.md` honesty fix: removed the never-implemented 5-signal formula claim.
+- `/mem-retag` backfill (frontmatter-only — never rewrites historical entry lines): live vault
+  **153/190 aspect files gained tags**, 294 chunks carry keywords.
+- Data-value guards: topic auto-create denylist `(example|placeholder|redacted|akia…)` — the live
+  `akiaiosfodnn7example-placeholder` topic can no longer mint; `validate_workspace()` in both
+  write entrypoints (a swapped-args call had silently mkdir'd a junk dir named after entry prose).
+
+**B. Session capture (`_capture.py`, wired into the Stop hook — no new hook process)**
+- Every Stop: parse transcript tail (512KB), append to `<ws>/journal/sessions/<date>-<sid8>.md`:
+  `**User:**` (prompt, cap 2000), `**Claude:**` (text head 300 — visible reasoning), `**Actions:**`
+  (tool-use trace `Read(x) → Edit(y) → Bash(…)`, cap 500). **Thinking is NOT capturable**: Claude
+  Code transcripts carry signature-only thinking blocks (`thinking` field empty — verified 24/24
+  live + 681/681 across 40 transcripts). The Actions trace is the honest observable proxy for
+  reasoning direction; an opportunistic extractor stays for future versions
+  (`reflection.capture_thinking`). Idempotent per turn, never raises, TTL-managed by `_forget.py`
+  (sessions archived after `raw_ttl_days`, `## [self-review]` blocks salvaged, `journal/**/_*.md`
+  exempt).
+- `state.json` per-session counters: `total_turns` (monotonic), `review_count` (independent of
+  journal's `turn_count` — at turn 30 both fire as ONE combined `decision:block`).
+
+**C. 15-turn honest self-review (`templates/self-review-instructions.md`, `/mem-review`)**
+- Anti-sycophancy contract (research: self-preference bias is real): harsh-reviewer paragraph
+  written FIRST; 3 dimensions (user prompting on 5 sub-criteria / Claude reasoning / collaboration)
+  on an anchored 1-5 scale; ≥2 concrete weaknesses per dimension each with a **verbatim quote**
+  (no quote → no score); score ≥4 needs 2 citations; prefer dispatch to a fresh-context critic
+  subagent; **counterfactual gate** — a `[reflection]` rule is vault-written only if it would have
+  prevented an observed rework in THIS log; <10-turn sessions skipped.
+- Output: `## [self-review]` block in the session log + gate-checked `[reflection]` entries via
+  topic routing + score row in `<ws>/journal/_scores.md` (`| date | sid | turn | P | R | C |
+  delta |`) → the improvement trend `/mem-review --history` renders.
+
+Settings: `tags.{enabled,max_per_entry,max_frontmatter}`,
+`reflection.{enabled,turn_interval,capture_thinking,max_prompt_chars,max_thinking_chars}`.
+Test coverage: **351/351** green (+100 vs v3.9: test_tags 32, test_capture 17,
+test_review_trigger 8, +extensions in index/query/dedup/route/forget suites).

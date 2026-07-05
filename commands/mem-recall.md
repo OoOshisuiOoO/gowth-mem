@@ -26,28 +26,56 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --type hypothesis "ema c
 ## Flags
 
 - `--type=<tag>` — filter to one of: `decision`, `exp`, `ref`, `tool`, `reflection`, `skill-ref`, `secret-ref`, `goal`, `hypothesis`. Empty / omitted = no filter.
-- `--ws=<name>` — workspace name. Default: active workspace from `state.json`.
-- `--limit=<N>` — top-N hits. Default 10.
-- Positional arg(s) — joined as the query string.
+- `--keyword=<kw>` — (v4.0) filter to chunks whose auto-tag / frontmatter-tag `keywords` column contains `<kw>`. Substring, case-insensitive.
+- `--topic=<slug>` — (v4.0) filter to a topic folder (path contains `/<slug>/`).
+- `--days=<N>` — (v4.0) only chunks modified within the last N days.
+- `--ws=<name>` — workspace name. Default: active workspace.
+- `--query=<text>` — FTS5 query string (or pass query terms positionally).
+- `--limit=<N>` — top-N hits. Default 20.
+
+```bash
+# Keyword-filtered (the v4.0 auto-tag layer) — find decisions tagged "fts5"
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --type decision --keyword fts5 --query recall
+
+# Topic + recency scoping
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --topic ema-cross --days 30 --query signal
+```
 
 ## Output
 
-One line per hit:
+One line per hit, plus a compact snippet line:
 
 ```
-<rank>  bm25=<score>  tag=<tag>  <path>:<line>  <truncated snippet>
+<path>  [<tag>]  bm25=<score>  kw=<keywords>
+  <truncated snippet>
 ```
 
 Lines are deterministic — same query + index = same output. No LLM in the path.
 
+## Ranking (what is actually implemented)
+
+Non-empty queries are ranked by a **column-weighted FTS5 BM25**:
+`bm25(chunks_fts, 5.0, 3.0, 1.0)` over `(tag, keywords, content)` — so tag and
+keyword hits outrank plain body hits (lower BM25 = better). Empty queries return
+most-recent-first (`chunks.id DESC`). `--keyword` / `--topic` / `--days` are
+applied as SQL predicates before ranking. That is the whole formula — there is no
+multi-signal blend in this path.
+
+The richer 4-tier weighted context plan (layer score × recency decay × Jaccard)
+lives in `_budget.py` (see `/mem-budget`), not here.
+
+**Tags boost by default; `--keyword` is an opt-in filter.** Every auto-tag lands
+in the weighted `keywords` FTS column, so a normal query already ranks tag matches
+above plain body matches — you get the benefit without doing anything. Reach for
+`--keyword <kw>` only when you want a hard filter for a direct lookup (return *just*
+the chunks carrying that tag), not the default boosted ranking.
+
 ## Notes
 
-- Requires the v3.4 `tag TEXT` column on the `chunks` table. `_index.py` migrates idempotently on first read; pre-v3.4 DBs are auto-upgraded.
+- Requires the v3.4 `tag` column and the v4.0 `keywords` column on `chunks`. `_index.py` migrates both idempotently on first read; older DBs are auto-upgraded (queries fall back to `(tag, content)` weighting until the keywords column exists).
 - Empty result set returns exit 0 with no output (not an error).
-- For raw BM25 without tag filter and across the legacy schema, use `/mem-doctor --query` instead.
 
-## Data-quality canon
+## Related
 
-Scoring formula in `shared/research/data-quality-2026.md` §4:
-`R = 0.30·BM25 + 0.30·layer_score + 0.15·recency + 0.15·diversity + 0.10·log(1+recall_count)`.
-Deterministic only — no LLM in the recall path (gowth-mem hard rule).
+- `/mem-retag` — backfill the frontmatter `tags:` that feed the `--keyword` filter
+- `/mem-budget` — the 4-tier weighted context planner (the real multi-signal scorer)

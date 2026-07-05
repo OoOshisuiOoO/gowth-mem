@@ -149,6 +149,96 @@ class TestForgetCore(unittest.TestCase):
         self.assertFalse((jd / "_salvage.md").exists(), "dry-run must not write salvage")
 
 
+class TestForgetSessions(unittest.TestCase):
+    """v4.0: journal/sessions/*.md are TTL-managed like raw journals; self-review
+    blocks salvaged first; any journal/**/_*.md is never archived."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmp.name)
+        os.environ["GOWTH_MEM_HOME"] = str(self.home)
+        self.mod = _load_module()
+
+    def tearDown(self) -> None:
+        os.environ.pop("GOWTH_MEM_HOME", None)
+        self._tmp.cleanup()
+
+    def _forget(self, **kw):
+        return self.mod.forget_workspace(
+            "default", kw.get("ttl_days", 7), kw.get("max_bytes", 75_000),
+            kw.get("salvage", True), kw.get("dry_run", False), self.home,
+        )
+
+    def test_old_session_archived_with_review_salvage(self):
+        jd = _scaffold_ws(self.home)
+        sess_dir = jd / "sessions"
+        sess_dir.mkdir()
+        old = sess_dir / "2026-01-01-abc12345.md"
+        old.write_text(
+            "# Session log — 2026-01-01 — abc12345\n\n"
+            "## turn 1 — 09:00\n**User:** do a raw thing\n**Thinking:** raw reasoning\n**Did:** did it\n\n"
+            "## [self-review] 2026-01-01 turn 15\n\n"
+            "**Harsh reviewer:** prompting was vague and caused rework loops this block\n"
+            "**User prompting: 4/10** — vague asks with no acceptance criteria\n\n"
+            "## turn 16 — 09:30\n**User:** next thing\n**Thinking:** more\n**Did:** more\n"
+        )
+        _backdate(old, 30)
+        r = self._forget()
+        self.assertEqual(r["archived"], 1, "old session log must archive")
+        self.assertFalse(old.exists())
+        gzs = list((self.home / ".archive" / "journal" / "default" / "sessions").glob("*.md.gz"))
+        self.assertEqual(len(gzs), 1, "session archive goes under sessions/ subdir")
+        salvage = (jd / "_salvage.md").read_text()
+        self.assertIn("[self-review] 2026-01-01 turn 15", salvage)
+        self.assertIn("prompting was vague", salvage)
+        # Raw turn prose is NOT a self-review block → not salvaged.
+        self.assertNotIn("do a raw thing", salvage)
+
+    def test_scores_md_never_archived(self):
+        jd = _scaffold_ws(self.home)
+        scores = jd / "_scores.md"
+        scores.write_text("| date | sid | turn | prompting | reasoning | collab | delta |\n")
+        _backdate(scores, 60)
+        r = self._forget()
+        self.assertEqual(r["archived"], 0)
+        self.assertTrue(scores.exists(), "_scores.md must never be archived")
+
+    def test_underscore_journal_files_exempt(self):
+        jd = _scaffold_ws(self.home)
+        salvage = jd / "_salvage.md"
+        salvage.write_text("# curated salvage\n- [decision] kept forever because underscore-prefixed\n")
+        _backdate(salvage, 90)
+        r = self._forget()
+        self.assertTrue(salvage.exists(), "_salvage.md must never be archived")
+        self.assertEqual(r["archived"], 0)
+
+    def test_today_session_protected(self):
+        jd = _scaffold_ws(self.home)
+        sess_dir = jd / "sessions"
+        sess_dir.mkdir()
+        today = datetime.now().strftime("%Y-%m-%d")
+        cur = sess_dir / f"{today}-abc12345.md"
+        cur.write_text("x" * 200_000)  # huge but fresh mtime → protected
+        r = self._forget()
+        self.assertEqual(r["archived"], 0, "today's session log must never be archived")
+        self.assertTrue(cur.exists())
+
+    def test_session_dedup_review_across_runs(self):
+        jd = _scaffold_ws(self.home)
+        sess_dir = jd / "sessions"
+        sess_dir.mkdir()
+        block = ("## [self-review] 2026-01-02 turn 15\n\n"
+                 "**Harsh reviewer:** identical review block deduped by sha1 across runs\n")
+        for name in ("2026-01-02-aaaa1111.md", "2026-01-03-bbbb2222.md"):
+            f = sess_dir / name
+            f.write_text(block)
+            _backdate(f, 30)
+        self._forget()
+        salvage = (jd / "_salvage.md").read_text()
+        self.assertEqual(salvage.count("identical review block deduped"), 1,
+                         "duplicate self-review blocks must dedupe to one")
+
+
 class TestForgetCLI(unittest.TestCase):
     def test_missing_home_graceful(self):
         with tempfile.TemporaryDirectory() as tmp:

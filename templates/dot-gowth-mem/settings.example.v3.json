@@ -22,6 +22,18 @@
     "enabled": true,
     "strict": true
   },
+  "tags": {
+    "enabled": true,
+    "max_per_entry": 7,
+    "max_frontmatter": 15
+  },
+  "reflection": {
+    "enabled": true,
+    "turn_interval": 15,
+    "capture_thinking": true,
+    "max_prompt_chars": 2000,
+    "max_thinking_chars": 1500
+  },
   "workspace": {
     "default": "default",
     "auto_detect_from_cwd": true,
@@ -140,6 +152,8 @@
     "moc.topic_readme_sections": "Sections inside 00-README.md. Cross-links manual NEVER overwritten.",
     "migration.v3_backup_keep": "Rolling-2 window: keep newest 2 v3 backups in shared/backup-v3/.",
     "migration.v3_backup_demote_after_hours": "Demote oldest backup beyond keep window if older than this many hours.",
-    "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest."
+    "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest.",
+    "tags": "v4.0 deterministic auto-tagging. Write path appends inline #tags to each entry (stdlib keyword extraction, no LLM) + unions them into aspect frontmatter tags:. Indexed as a weighted FTS5 column; /mem-recall --keyword filters on it. Dedup hashes are computed on tag-stripped content so tags never break dedup.",
+    "reflection": "v4.0 session self-review loop. Stop hook captures each turn's user prompt + thinking digest into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals). Every turn_interval turns, injects a self-review directive (templates/self-review-instructions.md): honest 3-dimension scoring (user prompting / Claude reasoning / collaboration) with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md."
   }
 }

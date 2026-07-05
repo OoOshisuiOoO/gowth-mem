@@ -46,12 +46,21 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import safe_write  # type: ignore
 from _dedup import _extract_tag, is_duplicate  # type: ignore
 from _frontmatter import parse_file  # type: ignore
+from _tags import (  # type: ignore
+    apply_inline_tags,
+    extract_tags,
+    max_frontmatter,
+    max_per_entry,
+    merge_frontmatter_tags,
+    tags_enabled,
+)
 from _home import (  # type: ignore
     RESERVED_FILES,
     RESERVED_SUBDIRS,
     RESERVED_TOPIC_FILES,
     TOPIC_README,
     active_workspace,
+    is_dated_aspect_filename,
     is_reserved,
     is_topic_folder,
     iter_topic_files,
@@ -91,6 +100,33 @@ ASPECT_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}$")
 
 # Inside-topic-folder names that cannot be used as an aspect slug.
 ASPECT_BLOCKLIST = frozenset({"readme", "lessons", "00-readme"})
+
+# v4.0 data-value guard: a NEW topic slug matching any of these is junk (secret
+# placeholders, redaction markers, throwaway names) — route to the default topic
+# (misc) instead of minting a parasitic topic. Fixes the live vault failure where
+# `AKIAIOSFODNN7EXAMPLE` minted an `akia...` topic.
+_DENY_NEW_SLUG_RE = re.compile(
+    r"(example|placeholder|redacted|akia[a-z0-9]+|xxx+|^test-?\d*$|^todo$)"
+)
+
+
+def _guard_new_slug(slug: str, default_topic: str) -> str:
+    """Return `default_topic` if `slug` looks like a junk/placeholder topic name."""
+    return default_topic if _DENY_NEW_SLUG_RE.search(slug) else slug
+
+
+# v4.0: workspace name guard. Public entrypoints that take `ws` and cause a
+# filesystem effect (append_entry / append_lesson) must reject arbitrary text
+# BEFORE any mkdir — a swapped-args call once mkdir'd a junk directory named
+# after prose, and a >255-char ws raised a raw OSError.
+WS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def validate_workspace(ws: str) -> str:
+    """Raise ValueError if `ws` is not a well-formed workspace name."""
+    if not isinstance(ws, str) or not WS_RE.match(ws):
+        raise ValueError(f"invalid workspace: {ws!r} (must match {WS_RE.pattern})")
+    return ws
 
 
 def _validate_slug(slug: str) -> str:
@@ -285,7 +321,7 @@ def derive_topic_slug(content: str, ws: str | None = None,
         return best_slug
 
     distinctive = sorted(kws, key=len, reverse=True)[:2]
-    return _slugify(distinctive) or default_topic
+    return _guard_new_slug(_slugify(distinctive) or default_topic, default_topic)
 
 
 def route(content: str, ws: str | None = None,
@@ -366,7 +402,7 @@ def route(content: str, ws: str | None = None,
 
     # No good match → new topic from top-2 distinctive keywords.
     distinctive = sorted(kws, key=len, reverse=True)[:2]
-    new_slug = _slugify(distinctive) or default_topic
+    new_slug = _guard_new_slug(_slugify(distinctive) or default_topic, default_topic)
 
     # If the new slug already exists in the index (e.g. nested via /mem-restructure),
     # route to that folder instead of shadowing.
@@ -396,15 +432,18 @@ def append_entry(content: str, ws: str | None = None,
     the caller (matches existing route() contract).
     """
     ws = ws or active_workspace()
-    slug, target, _section = route(content, ws=ws, settings=settings)
+    validate_workspace(ws)  # reject junk ws BEFORE any mkdir (route → ensure_topic_folder)
+    s = settings if isinstance(settings, dict) else read_settings()
+    slug, target, _section = route(content, ws=ws, settings=s)
     tag = _extract_tag(content)
+    # Dedup + gate run on the ORIGINAL (untagged) content. is_duplicate hashes
+    # tag-stripped content, so the check is stable regardless of inline #tags.
     if tag and is_duplicate(workspace_dir(ws), tag, content):
         return target, False
     # v3.6: hard write-rules gate — reject junk before it lands (canon §1).
     # Deterministic, no LLM. Gated by settings.gate.enabled (default true).
     try:
-        from _home import read_settings as _rs  # type: ignore
-        if (_rs().get("gate", {}) or {}).get("enabled", True):
+        if (s.get("gate", {}) or {}).get("enabled", True):
             from _gate import evaluate as _gate_eval  # type: ignore
             _v = _gate_eval(content)
             if not _v.ok:
@@ -413,12 +452,36 @@ def append_entry(content: str, ws: str | None = None,
                 return target, False
     except Exception:
         pass  # gate is best-effort; never block a write on gate internals failing
+
+    # v4.0: deterministic auto-tagging. Append inline #tags to the entry's first
+    # line, then union them into the aspect file's frontmatter tags:.
+    entry = content
+    tags: list[str] = []
+    if tags_enabled(s):
+        try:
+            tags = extract_tags(content, max_per_entry(s))
+            entry = apply_inline_tags(content, tags)
+        except Exception:
+            entry = content  # tagging is best-effort; never block a write
+
     if target.is_file():
         existing = target.read_text(errors="ignore")
-        body = existing.rstrip() + "\n" + content.rstrip() + "\n"
+        body = existing.rstrip() + "\n" + entry.rstrip() + "\n"
     else:
-        body = content.rstrip() + "\n"
+        body = entry.rstrip() + "\n"
     safe_write(target, body)
+
+    # Union tags into frontmatter — only for dated aspect files (not secrets.md,
+    # skills/<slug>.md, or lessons.md side-channels).
+    if tags and is_dated_aspect_filename(target.name):
+        try:
+            new_text = merge_frontmatter_tags(
+                target.read_text(errors="ignore"), tags, max_frontmatter(s)
+            )
+            safe_write(target, new_text)
+        except Exception:
+            pass
+
     return target, True
 
 

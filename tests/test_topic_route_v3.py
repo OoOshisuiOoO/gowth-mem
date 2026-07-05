@@ -158,6 +158,42 @@ class TopicRouteV3Tests(unittest.TestCase):
                 )
                 _run_in_home(code, home)
 
+    def test_append_entry_rejects_junk_workspace(self):
+        """A swapped-args / prose ws must raise ValueError BEFORE any mkdir."""
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            code = (
+                "import sys; sys.path.insert(0, 'hooks/scripts');\n"
+                "from _topic import append_entry\n"
+                "from _home import workspaces_root\n"
+                "bad = 'some junk text passed as workspace by mistake'\n"
+                "try:\n"
+                "    append_entry('[decision] x because y', ws=bad)\n"
+                "    raise SystemExit('expected ValueError')\n"
+                "except ValueError:\n"
+                "    pass\n"
+                "# No junk directory may have been created under workspaces/.\n"
+                "root = workspaces_root()\n"
+                "assert not root.exists() or not any(p.name == bad for p in root.iterdir()), 'junk dir created'\n"
+                "print('ok')\n"
+            )
+            out = _run_in_home(code, home)
+            self.assertIn("ok", out.stdout)
+
+    def test_append_entry_accepts_valid_workspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            code = (
+                "import sys; sys.path.insert(0, 'hooks/scripts');\n"
+                "from _topic import append_entry\n"
+                "p, w = append_entry('[decision] use atomic writes because races corrupt files', ws='proj-1')\n"
+                "assert w, 'valid ws write should succeed'\n"
+                "assert 'workspaces/proj-1/' in str(p), p\n"
+                "print('ok')\n"
+            )
+            out = _run_in_home(code, home)
+            self.assertIn("ok", out.stdout)
+
     def test_reserved_aspect_name_blocked(self):
         from importlib.util import spec_from_file_location, module_from_spec
 

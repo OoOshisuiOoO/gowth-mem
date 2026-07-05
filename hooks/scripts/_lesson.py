@@ -34,9 +34,11 @@ from _dedup import is_duplicate  # type: ignore
 from _home import (  # type: ignore
     TOPIC_LESSONS,
     active_workspace,
+    read_settings,
     workspace_dir,
 )
-from _topic import derive_topic_slug, resolve_topic_folder  # type: ignore
+from _tags import extract_tags, format_suffix, max_per_entry, tags_enabled  # type: ignore
+from _topic import derive_topic_slug, resolve_topic_folder, validate_workspace  # type: ignore
 
 
 HEADER = "# Lessons & Troubleshooting\n\n> Append-only ledger. Newest-first under `## Entries`. Schema cited from NASA LLIS / Army AAR / AWS EKS / Stripe / 5 Whys.\n\n## Entries\n\n"
@@ -74,6 +76,7 @@ def append_lesson(
 ) -> Path:
     """Append a 5-field lesson entry to the topic's lessons.md. Returns the path written."""
     ws = ws or active_workspace()
+    validate_workspace(ws)  # reject junk ws BEFORE any mkdir (resolve_topic_folder)
     today = today or date.today().isoformat()
 
     routing_text = " ".join(filter(None, [symptom, tried, root_cause, fix]))
@@ -97,7 +100,16 @@ def append_lesson(
     except Exception:
         pass
 
-    heading = f"## [{today}] {_truncate(symptom)}\n"
+    # v4.0: deterministic auto-tags on the entry's first line (the heading).
+    # lessons.md has no frontmatter — inline only (no frontmatter union).
+    heading_line = f"## [{today}] {_truncate(symptom)}"
+    if tags_enabled():
+        try:
+            tags = extract_tags(routing_text, max_per_entry())
+            heading_line = heading_line + format_suffix(tags)
+        except Exception:
+            pass
+    heading = heading_line + "\n"
     body_lines = [
         f"**Symptom:** {symptom.strip()}",
         f"**Tried:** {tried.strip()}",

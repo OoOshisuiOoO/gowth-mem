@@ -174,5 +174,62 @@ class IsDuplicateTests(unittest.TestCase):
                 os.environ["GOWTH_MEM_HOME"] = self.tmp
 
 
+class TagStabilityTests(unittest.TestCase):
+    """v4.0: an entry dedupes identically with or without inline #tags.
+
+    _index.py stores hash = sha1(strip_tags_text(chunk)); is_duplicate recomputes
+    the same way, so appending auto-tags to an entry never breaks its dedup key.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gowth_dedup_stab_")
+        os.environ["GOWTH_MEM_HOME"] = self.tmp
+        self.dedup = load_module("gowth_dedup_stab", SCRIPTS / "_dedup.py")
+        self.tags = load_module("gowth_tags_stab", SCRIPTS / "_tags.py")
+        self.idx = load_module("gowth_idx_stab", SCRIPTS / "_index.py")
+        db_path = Path(self.tmp) / "index.db"
+        self.db = sqlite3.connect(str(db_path))
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.idx._ensure_schema(self.db, sample_dim=0, use_vec=False)
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+        os.environ.pop("GOWTH_MEM_HOME", None)
+
+    def _insert(self, content: str, tag: str) -> None:
+        # Mirror _index.py: hash the TAG-STRIPPED content.
+        stripped = self.tags.strip_tags_text(content)
+        h = hashlib.sha1(stripped.encode()).hexdigest()[:16]
+        self.db.execute(
+            "INSERT INTO chunks (path, heading, content, mtime, hash, tag) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("workspaces/ws1/t/2026-01-01-a.md", "", content, 1.0, h, tag),
+        )
+        self.db.commit()
+
+    def test_normalize_strips_trailing_tags(self):
+        a = self.dedup._normalize("[decision] use FTS5 recall")
+        b = self.dedup._normalize("[decision] use FTS5 recall  #fts5 #recall")
+        self.assertEqual(a, b)
+
+    def test_tagged_chunk_matches_untagged_query(self):
+        entry = "[decision] use atomic writes for all file ops"
+        tags = self.tags.extract_tags(entry)
+        tagged = self.tags.apply_inline_tags(entry, tags)
+        self.assertNotEqual(entry, tagged)
+        # Index stores the TAGGED chunk; is_duplicate is asked with the UNTAGGED entry.
+        self._insert(tagged, "decision")
+        self.assertTrue(self.dedup.is_duplicate(self.tmp, "decision", entry))
+
+    def test_untagged_chunk_matches_tagged_query(self):
+        entry = "[exp] overfit backtests cause live losses in choppy regimes"
+        tags = self.tags.extract_tags(entry)
+        tagged = self.tags.apply_inline_tags(entry, tags)
+        # Index stores the UNTAGGED chunk; is_duplicate asked with the TAGGED entry.
+        self._insert(entry, "exp")
+        self.assertTrue(self.dedup.is_duplicate(self.tmp, "exp", tagged))
+
+
 if __name__ == "__main__":
     unittest.main()

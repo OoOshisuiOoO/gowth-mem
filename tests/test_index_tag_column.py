@@ -193,5 +193,83 @@ class TagExtractionTests(unittest.TestCase):
         db.close()
 
 
+class KeywordsColumnTests(unittest.TestCase):
+    """v4.0 keywords column migration + population."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gowth_idx_kw_")
+        os.environ["GOWTH_MEM_HOME"] = self.tmp
+        self.idx = load_module("gowth_index_kw", SCRIPTS / "_index.py")
+
+    def tearDown(self):
+        os.environ.pop("GOWTH_MEM_HOME", None)
+
+    def _open_db(self):
+        db = sqlite3.connect(str(Path(self.tmp) / "index.db"))
+        db.execute("PRAGMA journal_mode=WAL")
+        return db
+
+    def test_keywords_column_after_fresh_schema(self):
+        db = self._open_db()
+        self.idx._ensure_schema(db, 0, False)
+        db.commit()
+        cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+        self.assertIn("keywords", cols)
+        # FTS carries the keywords column too.
+        fts = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='chunks_fts'").fetchone()[0]
+        self.assertIn("keywords", fts)
+        db.close()
+
+    def test_keywords_migration_idempotent(self):
+        db = self._open_db()
+        self.idx._ensure_schema(db, 0, False)
+        db.commit()
+        try:
+            self.idx._ensure_schema(db, 0, False)
+            db.commit()
+        except Exception as e:
+            self.fail(f"second _ensure_schema raised: {e}")
+        db.close()
+
+    def test_keywords_migration_on_v34_db(self):
+        """A v3.4 DB (tag but no keywords) gains the keywords column + FTS rebuild."""
+        db = self._open_db()
+        db.executescript("""
+            CREATE TABLE chunks (
+                id INTEGER PRIMARY KEY, path TEXT NOT NULL, heading TEXT,
+                content TEXT NOT NULL, mtime REAL NOT NULL, hash TEXT NOT NULL,
+                tag TEXT NOT NULL DEFAULT '');
+        """)
+        db.execute(
+            "CREATE VIRTUAL TABLE chunks_fts USING fts5("
+            "tag, content, content='chunks', content_rowid='id', tokenize='unicode61')")
+        db.execute(
+            "INSERT INTO chunks(path,heading,content,mtime,hash,tag) VALUES(?,?,?,?,?,?)",
+            ("p.md", "", "[exp] lesson with #alpha #beta inline tags", 1.0, "h", "exp"))
+        db.commit()
+        self.idx._ensure_schema(db, 0, False)
+        db.commit()
+        cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+        self.assertIn("keywords", cols)
+        # Backfilled from inline #tags in the content.
+        kw = db.execute("SELECT keywords FROM chunks LIMIT 1").fetchone()[0]
+        self.assertIn("alpha", kw)
+        self.assertIn("beta", kw)
+        db.close()
+
+    def test_chunk_keywords_from_inline_and_frontmatter(self):
+        content = "[decision] use FTS5  #fts5 #recall"
+        file_text = "---\ntags: [gowth-mem, release]\n---\n\n" + content
+        # First chunk: inline tags + frontmatter tags.
+        kw = self.idx._chunk_keywords(content, file_text)
+        for expect in ("fts5", "recall", "gowth-mem", "release"):
+            self.assertIn(expect, kw.split())
+        # Non-first chunk: inline only.
+        kw2 = self.idx._chunk_keywords(content, None)
+        self.assertNotIn("release", kw2.split())
+        self.assertIn("fts5", kw2.split())
+
+
 if __name__ == "__main__":
     unittest.main()
