@@ -194,6 +194,25 @@ class TopicRouteV3Tests(unittest.TestCase):
             out = _run_in_home(code, home)
             self.assertIn("ok", out.stdout)
 
+    def test_append_entry_new_aspect_gets_full_frontmatter(self):
+        # v4.1: routed writes used to create tags-only frontmatter — invisible
+        # to wikilinks/recall/MOC until a manual `_validate --fix` (13 files
+        # observed in the live vault). New aspects must be born conformant.
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            code = (
+                "import sys; sys.path.insert(0, 'hooks/scripts');\n"
+                "from _topic import append_entry\n"
+                "p, w = append_entry('[decision] use atomic writes because races corrupt files', ws='proj-1')\n"
+                "assert w, 'write should succeed'\n"
+                "text = p.read_text()\n"
+                "for field in ('type:', 'date:', 'topic:', 'slug:', 'title:'):\n"
+                "    assert field in text.split('---')[1], f'missing {field} in new aspect frontmatter'\n"
+                "print('ok-frontmatter')\n"
+            )
+            out = _run_in_home(code, home)
+            self.assertIn("ok-frontmatter", out.stdout)
+
     def test_reserved_aspect_name_blocked(self):
         from importlib.util import spec_from_file_location, module_from_spec
 

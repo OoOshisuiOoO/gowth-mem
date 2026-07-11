@@ -12,6 +12,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_forget.py" --all-workspaces "$@"
 
 Pass `--dry-run` to preview without changing anything. `--ttl-days N` overrides the cutoff. `--no-salvage` skips lifting curated entries.
 
+**v4.1 aspect retention**: `--aspects` (or settings `topic_layout.auto_archive_enabled: true` for the Stop-hook run) also archives **topic aspects older than `topic_layout.archive_threshold_days`** (default 90 = the ">3 months → archive" policy). Curated `- [type]` blocks are salvaged into the topic's `lessons.md` first; every topic keeps its newest 3 aspects regardless of age; `00-README.md`/`lessons.md` are never touched. Age = filename date (knowledge date), not mtime. After an aspect pass, regen MOCs with `/mem-topic --regen-index`.
+
 ## What it does (per workspace journal/ dir)
 
 1. **SALVAGE** — lift any genuinely-curated bullet entries (`- [decision]`, `- [ref]`, `- [tool]`, `- [exp]`, …) from old journals into `<ws>/journal/_salvage.md` (SHA1-deduped). Raw transcript prose has no such bullet, so it is **not** salvaged — that's the noise being forgotten. Route salvaged lines into topic files via `/mem-distill`, then delete them from `_salvage.md`.

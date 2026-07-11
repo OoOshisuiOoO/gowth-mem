@@ -75,6 +75,50 @@ no contradiction detection. See `.claude/research/product-architecture.md` for f
 | fcntl + atomic write | Multi-session safety; SQLite WAL for concurrent index access |
 | Conflict → SYNC-CONFLICT.md | Raw `<<<<<<<` markers break FTS5 indexing; AI-mediated resolution instead |
 
+## Commands
+
+```bash
+python3 -m unittest discover -s tests                 # full suite (351 tests)
+python3 -m unittest tests.test_gate                   # single module
+python3 -m unittest tests.test_gate.TestClass.test_x  # single case
+python3 -m py_compile hooks/scripts/*.py              # compile check
+bin/test-install.sh                                   # clean-room install+upgrade+hook smoke test (temp GOWTH_MEM_HOME)
+bin/doctor.sh --dry-run                               # diagnose plugin registration (installed_plugins.json)
+bin/release.sh [patch|minor|major]                    # bump plugin.json+marketplace.json in lockstep, commit, tag, push
+```
+
+CI (`.github/workflows/ci.yml`) runs exactly `py_compile` + `unittest discover` — green locally means green in CI.
+
+To exercise anything against a scratch vault, set `GOWTH_MEM_HOME=/tmp/...` — all scripts resolve the vault root through `_home.py` (this is how tests and `bin/test-install.sh` isolate themselves from the real `~/.gowth-mem/`).
+
+## Plugin Anatomy (this repo)
+
+The repo is both a standalone Claude Code plugin and a single-plugin marketplace (`.claude-plugin/{plugin,marketplace}.json`; versions kept in lockstep by `bin/release.sh`).
+
+```
+hooks/hooks.json          event → script wiring (see below)
+hooks/scripts/_*.py       importable library modules (underscore prefix = shared lib, unit-tested)
+hooks/scripts/*.{py,sh}   hook entrypoints (no underscore): read JSON event on stdin, ALWAYS exit 0
+commands/mem-*.md         37 slash commands (YAML frontmatter + instructions; frontmatter `description:` must not contain a bare `: `)
+skills/<name>/SKILL.md    13 auto-trigger skills (subset of commands that also fire on description match)
+templates/                vault-file scaffolds + externalized hook instruction blocks (auto-journal, self-review)
+bin/                      operational shell: release, doctor, test-install, migrate-v3/rollback-v3
+tests/                    unittest suite + fixtures
+docs/SHIPPED-FEATURES.md  version-by-version audit trail (RESEARCH.md roadmap ✅ markers point here)
+```
+
+Hook wiring (`hooks/hooks.json`):
+
+| Event | Script | Role |
+|---|---|---|
+| `SessionStart` | `session-start.sh` | vault bootstrap context injection (branches on `source` field) |
+| `UserPromptSubmit` | `conflict-detect.sh` | pure-bash pre-check; Python only runs if `SYNC-CONFLICT.md` exists |
+| `Stop` | `auto-journal.py` | journal cadence, session capture, prune/consolidate/forget, 15-turn self-review |
+| `PreCompact` | `precompact.sh` | deterministic transcript raw-dump — must NEVER block `/compact` |
+| `PostCompact` | `auto-sync.py --pull-rebase-push` | git sync after compaction |
+
+Shell wrappers exist to dodge Python startup cost on hot paths: keep cheap pre-checks in bash, branch into Python only when work exists.
+
 ## Research Lineage
 
 Full research archive: `RESEARCH.md` (12 systems, retrieval algorithms, token techniques, PKM patterns).
@@ -106,8 +150,8 @@ Distilled insights in `.claude/research/`:
 - All file writes to `~/.gowth-mem/` go through `_atomic.atomic_write` (tempfile + `os.replace`).
 - Concurrent access protected by `_lock.py` (`fcntl.flock`, timeout).
 - Topic routing goes through `_topic.py` — never write directly to topic files.
-- Tests in `tests/`. Run: `python3 -m unittest discover -s tests`.
-- Compile check: `python3 -m py_compile hooks/scripts/*.py`.
+- New entries must pass `_gate.py` (content) and `_validate.py` (file structure) — the gate/validator are the enforcement layer; docs alone proved insufficient.
+- Before claiming done: full suite + compile check (see Commands); `bin/test-install.sh` for anything touching hooks, install, or migration.
 
 ## Anti-patterns
 
@@ -142,4 +186,6 @@ See `RESEARCH.md` § F for roadmap with `✅` markers. Key shipped items:
 
 - **v3.7 (file-level validator, learned from supremor)**: studied the TrueProfit `supremor` team-knowledge vault (1295 .md, vault-keeper-validated, BOARD.md kanban, themed changelog). Its **file-level schema validator** is the standout gap gowth-mem had — `_gate.py` validated entry *content* but nothing validated file *structure*, so **121 topic files** had missing/partial/wrong frontmatter (invisible to wikilinks/recall/MOC). Adopted as **`_validate.py`** (frontmatter required-fields + naming + reserved-path per v3 type; `--fix` deterministically repairs aspect frontmatter from the path, content-preserving). Reorganized live vault: **124 aspect files fixed + MOCs rebuilt → 0 schema issues** (was 121), accounts/configs preserved, gate still 0 junk. `/mem-validate` command + 7 tests (253 total). Full comparison + the other transferable learnings (deliberate taxonomy, themed `/mem-changelog`, work-board handoff, SSOT router) in `.claude/research/v3.7-supremor-comparison.md`.
 - **v3.9 (provenance & verification)**: TYPE-encoded epistemic status — VERIFIED("chắc chắn đúng")=`[ref]`(Source), UNVERIFIED("chưa verify")=new `[hypothesis]`(Verify: path, exempt from hedge gate, promotes to `[ref]` when confirmed). New `[goal]` type (user intent: `Status:` lifecycle + verifiable `Done when:`, never deleted, Motivated-by links). 7→9 types across `_gate`/`_index`/`_consolidate`/`_commitmsg`/`_forget`/`_contradict`/`_query`. `_commitmsg.py` now derives WHY/WHAT/WHEN deterministically from the diff (Why: line + When: knowledge-date + Why-Code: trailer; hypothesis→ref promotion = "verify-claim"). Canon: `shared/research/provenance-2026.md`. Grounded in Gemini+Perplexity deep research 2026-06-19.
+- **v4.1 (coverage + portability)**: (A) **`_review_ledger.py` + `/mem-review-backlog`** — conversation-review coverage over `~/.claude/projects`: machine-local gitignored ledger marks reviewed/unreviewed transcripts; `--next` surfaces oldest substantive candidate (substance = ASSISTANT turns — tool-heavy autonomous sessions have few user prompts; `"type"` is not the first JSON key in live transcripts, substring-match only); Stop-hook self-review reason now appends backlog count. Closes the v4.0 gap where only live sessions at 15-turn cadence got reviewed (live: 1058 transcripts, 119 substantive unreviewed). (B) **`_setup.py` + `/mem-setup`** — one-shot machine portability: plugins.json (marketplace URLs + installed plugins), mcp.global.json (env values → `<env:NAME>` pointers), settings/CLAUDE.md/skills sanitized via `_privacy` into synced `shared/setup/` + generated `restore.sh`/`RESTORE.md` (new machine = clone vault → 1 script → 1 paste block). (C) **`_handoff.py` bullet-level rotation** — archives stale `- host:` `[done]` bullets >14d (keeps `[doing]/[blocker]/[thread]/[next]` any age); section-based rotation never fired on the real-world flat-bullet format (trade 57.7→37.3KB, devops 33.3→23.8KB, ~7.4k tokens/bootstrap saved). +25 tests (**386 total**).
+- **v4.1 (retention & language policy)**: (D) **`_gate.py english_only`** (settings `gate.english_only`, default off) — curated entries must be stored in ENGLISH (>2 Vietnamese diacritics → `not_english` reject; journal stays bilingual; legacy files migrate translate-on-touch per vault `AGENTS.md` §7-LANG). (E) **`_forget.py --aspects`** — the ">3 months → archive" mechanism `topic_layout.archive_threshold_days` never had: aspects older than the threshold (default 90d, age = FILENAME date not mtime) are salvaged (`- [type]` blocks → topic `lessons.md`, deduped + provenance) then gzip-archived to `.archive/topics/`; every topic keeps its newest 3 aspects; `00-README.md`/`lessons.md` never touched; Stop-hook applies it when `topic_layout.auto_archive_enabled`. (F) **aspects born schema-conformant** — `append_entry` now calls `_validate.fix_aspect` on new files (routed writes used to create tags-only frontmatter, invisible to wikilinks/recall/MOC; 13 files had accumulated in the live vault). +13 tests (**399 total**).
 - **v4.0 (metacognition)**: **deterministic auto-tagging + session self-review loop.** (A) `_tags.py` YAKE-lite (stdlib, no LLM): priority identifier harvest + scored prose (freq×position×casing, noun-phrase bigrams), UPPER≥5 emphasis demotion, EN+VI(+ascii-VI) stopwords, substring collapse, 2-slot prose reservation — typical 3-5 tags/entry. Inline `#tags` at write time (`_topic.append_entry`+`_lesson.append_lesson`) + frontmatter `tags:` union + `chunks.keywords` FTS5 column (weighted `bm25(…,5,3,1)` = boost by default) + `/mem-recall --keyword/--topic/--days` + `/mem-retag` backfill (live vault: 153/190 files tagged). Dedup hashes tag-STRIPPED content (stability proven). Data-value guards: topic auto-create denylist (kills `akia…placeholder` topics) + `validate_workspace()` before any mkdir (junk-dir bug found by dogfooding). `mem-recall.md` honesty fix (removed never-implemented 5-signal formula). (B) `_capture.py` on Stop hook: per-turn `**User:**`/`**Claude:**`/`**Actions:**` (tool-use trace) into `journal/sessions/<date>-<sid8>.md` — **thinking is ENCRYPTED in transcripts** (verified 24/24 + 681/681 across 40 files), Actions trace = honest observable proxy; opportunistic thinking extractor kept. TTL-managed; `_scores.md`/`_*` exempt from forgetting; `[self-review]` blocks salvaged. (C) every 15 turns (independent `review_count`; combined block with journal at collisions) → `templates/self-review-instructions.md`: anchored 1-5, harsh-reviewer-first, ≥2 verbatim-quoted weaknesses/dimension, quote-or-no-score, fresh-context critic subagent preferred, counterfactual gate before vault writes, `<10`-turn skip; score trend via `/mem-review --history`. +100 tests (**351 total**). Design+research: `.claude/research/v4.0-metacognition.md`.

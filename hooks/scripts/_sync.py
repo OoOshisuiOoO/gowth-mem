@@ -38,12 +38,15 @@ _DEFAULT_GITIGNORE = (
     ".locks/\n"
     ".audit/\n"
     ".dedup-window.json\n"
+    "review-ledger.json\n"
     "__pycache__/\n"
     "*.pyc\n"
     "SYNC-CONFLICT.md\n"
 )
 
-_REQUIRED_IGNORES = (".audit/", ".dedup-window.json")
+# review-ledger.json is machine-local: it references transcript paths under
+# this machine's ~/.claude/projects, which other machines don't have.
+_REQUIRED_IGNORES = (".audit/", ".dedup-window.json", "review-ledger.json")
 
 
 def _gitignore_has_entry(existing: str, entry: str) -> bool:

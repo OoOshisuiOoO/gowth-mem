@@ -341,3 +341,62 @@ Settings: `tags.{enabled,max_per_entry,max_frontmatter}`,
 `reflection.{enabled,turn_interval,capture_thinking,max_prompt_chars,max_thinking_chars}`.
 Test coverage: **351/351** green (+100 vs v3.9: test_tags 32, test_capture 17,
 test_review_trigger 8, +extensions in index/query/dedup/route/forget suites).
+
+### v4.1 — Review coverage, one-shot portability, retention & English-storage policy
+
+Shipped 2026-07-11. Two sessions: a vault deep-review that turned findings straight into
+mechanisms (dogfooding), then a policy pass requested by the operator (">3 months → archive;
+required data stored in English; clean up after storing").
+
+**A. Conversation-review coverage (`_review_ledger.py`, `/mem-review-backlog`)**
+- v4.0 only reviewed the LIVE session at the 15-turn cadence; conversations that ended early or
+  predate v4.0 were never reviewed. Live machine: 1058 transcripts under `~/.claude/projects`,
+  119 substantive unreviewed.
+- Machine-local ledger (`review-ledger.json`, gitignored — transcripts never leave the machine;
+  scores still go to the synced vault). Metadata-first: `--scan` is stat()-only; content is read
+  for one `--next` candidate at a time. Substance = ASSISTANT turns (a 349 KB autonomous session
+  had 7 user prompts); `"type"` is NOT the first JSON key in live transcript lines — substring
+  match only (the prefix-match bug wrongly skip-marked all 119 before dogfooding caught it).
+- Stop-hook self-review reason now appends the backlog count.
+
+**B. One-shot machine portability (`_setup.py`, `/mem-setup`)**
+- Backs up marketplaces (git URLs) + installed plugins + global MCP servers + `~/.claude/skills`
+  + `settings.json` + global `CLAUDE.md` into synced `shared/setup/`, ALL text through
+  `_privacy.sanitize` (first live run caught 2 real secrets sitting in skills files); MCP env
+  values become `<env:NAME>` pointers with a `required_env` manifest.
+- Generated `restore.sh` (file copies + MCP merge into `~/.claude.json`) + `RESTORE.md`
+  (one-paste `/plugin` block). New machine = clone vault → 1 script → 1 paste.
+
+**C. Handoff bullet-level rotation (`_handoff.py`)**
+- v3.6 rotation only handled dated `## <snapshot>` sections; real handoffs are flat `- host:`
+  bullet lists — never rotated (trade: 62 bullets / 57 KB, 43 stale, loaded EVERY session).
+- New pass archives `[done]` bullets older than 14d; `[doing]/[blocker]/[thread]/[next]` survive
+  at any age (live multi-machine threads). Live result: trade 57.7→37.3 KB, devops 33.3→23.8 KB,
+  ~7.4k tokens saved per bootstrap, 0 data loss (65/31 bullets reconciled).
+
+**D. English-storage policy (`_gate.py english_only`, vault AGENTS.md §7-LANG)**
+- Curated entries are stored in ENGLISH — enforced in code (>2 Vietnamese diacritics →
+  `not_english` reject), not docs (the v3.6 bloat postmortem proved docs alone don't hold).
+  Raw journal stays bilingual. Legacy files migrate translate-on-touch; verbatim operator quotes
+  are translated with a "(translated from Vietnamese)" provenance note.
+
+**E. Aspect retention — the ">3 months → archive" mechanism (`_forget.py --aspects`)**
+- `topic_layout.archive_threshold_days` existed in settings since v2.x but NO code honored it.
+  Now: aspects older than the threshold (default 90d; age = FILENAME date, not mtime — mtime is
+  perturbed by maintenance) are salvaged first (`- [type]` blocks → topic `lessons.md`, SHA1-
+  deduped + provenance line) then gzip-archived to `.archive/topics/<ws>/<slug>/`. Every topic
+  keeps its newest 3 aspects regardless of age; `00-README.md`/`lessons.md` never touched.
+  Stop-hook applies it when `topic_layout.auto_archive_enabled` (live settings: 90d, enabled).
+
+**F. Aspects born schema-conformant (`_topic.append_entry` → `_validate.fix_aspect`)**
+- Routed writes created aspects with tags-only frontmatter — invisible to wikilinks/recall/MOC
+  until a manual `_validate --fix`; 13 such files had accumulated in the live vault. New aspects
+  now get full path-derived frontmatter at creation.
+
+Live-vault cleanup shipped alongside: 8 empty husk topics deleted, 2 duplicate topics merged
+(content translated, numbers preserved verbatim), 15 docs-core files + 9 entries translated to
+English, full reindex + MOC regen; gate scan 0 junk, validate 0 schema issues.
+
+Settings: `gate.english_only`, `topic_layout.{archive_threshold_days,auto_archive_enabled}`.
+Test coverage: **399/399** green (+48 vs v4.0: ledger 9, setup 9, bullet-rotation 7, aspects 7,
+english gate 4, frontmatter-at-birth 1, + suite fixture updates).

@@ -317,5 +317,34 @@ class TestV40Calibration(unittest.TestCase):
         self.assertEqual(v.reason, "ref_without_source")
 
 
+class TestEnglishOnly(unittest.TestCase):
+    """v4.1: settings.gate.english_only — curated entries must be English.
+
+    Retention policy: required data is STORED in English (raw journal may stay
+    bilingual — the gate only guards the curated write path)."""
+
+    OK_EN = "[decision] use fcntl locks for index writes because SQLite WAL alone does not serialize schema migrations; verified in tests/test_index_tag_column.py"
+    VI = "[decision] chọn fcntl lock cho index vì SQLite WAL không đủ tuần tự hoá migration; đã kiểm chứng ở tests"
+
+    def test_default_off_allows_vietnamese(self):
+        r = GATE.evaluate(self.VI, strict=True, english_only=False)
+        self.assertTrue(r.ok, r.reason)
+
+    def test_on_rejects_vietnamese_entry(self):
+        r = GATE.evaluate(self.VI, strict=True, english_only=True)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.reason, "not_english")
+
+    def test_on_accepts_english_entry(self):
+        r = GATE.evaluate(self.OK_EN, strict=True, english_only=True)
+        self.assertTrue(r.ok, r.reason)
+
+    def test_on_tolerates_isolated_proper_noun(self):
+        # 1-2 diacritic chars (a name like "Nguyễn") must not trip the rule
+        e = "[ref] deploy owner is Nguyễn on the ops rota; Source: team registry page https://wiki.example/rota"
+        r = GATE.evaluate(e, strict=True, english_only=True)
+        self.assertTrue(r.ok, r.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

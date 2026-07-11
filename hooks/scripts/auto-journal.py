@@ -145,11 +145,21 @@ def _build_review_reason(ws: str, review_count: int, session_id: str) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     session_log = journal_dir(ws) / "sessions" / f"{today}-{sid8}.md"
     scores_path = journal_dir(ws) / "_scores.md"
-    return (
+    reason = (
         f"[gowth-mem:self-review ws={ws}] {review_count} turns logged. "
         f"Read {instructions_path} and review the session log at {session_log}. "
         f"Scores go to {scores_path}. Be honest — chân thật, thẳng thắn."
     )
+    # v4.1: surface the past-conversation review backlog (stat()-only, cheap).
+    try:
+        from _review_ledger import stats as _rl_stats  # type: ignore
+        backlog = _rl_stats().get("unreviewed", 0)
+        if backlog:
+            reason += (f" Backlog: {backlog} past conversation(s) unreviewed — "
+                       f"run /mem-review-backlog when idle.")
+    except Exception:
+        pass
+    return reason
 
 
 def _run_maintenance() -> None:

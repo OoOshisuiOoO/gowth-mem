@@ -482,6 +482,17 @@ def append_entry(content: str, ws: str | None = None,
         except Exception:
             pass
 
+    # v4.1: new aspects must be born schema-conformant. The routed write used
+    # to create tags-only frontmatter (no type/date/topic/slug/title), leaving
+    # the file invisible to wikilinks/recall/MOC until a manual
+    # `_validate --fix` (13 such files observed in the live vault).
+    if is_dated_aspect_filename(target.name):
+        try:
+            from _validate import fix_aspect  # type: ignore
+            fix_aspect(target)
+        except Exception:
+            pass  # best-effort; never block a write on frontmatter repair
+
     return target, True
 
 

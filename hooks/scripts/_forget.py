@@ -44,11 +44,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _debug import log_debug  # type: ignore
-from _home import gowth_home, journal_dir, list_workspaces, read_settings  # type: ignore
+from _home import (gowth_home, is_dated_aspect_filename, is_topic_folder,  # type: ignore
+                   journal_dir, list_workspaces, read_settings, workspace_dir)
 from _lock import file_lock  # type: ignore
 
 DEFAULT_TTL_DAYS = 7          # canon §3: raw journal lives 7 days, then forget
 DEFAULT_MAX_BYTES = 75_000    # canon §2: hard distill ceiling ~50-75 KB / file
+DEFAULT_ASPECT_THRESHOLD_DAYS = 90   # v4.1 retention: aspects >3 months → archive
+DEFAULT_ASPECT_KEEP_NEWEST = 3       # a topic ALWAYS keeps its newest N aspects
 SALVAGE_FILE = "_salvage.md"
 
 # A curated entry = bullet line opening with a 7-type prefix. Raw transcript
@@ -213,13 +216,14 @@ def _salvage_reviews(session_files: list[Path], jd: Path, dry_run: bool) -> int:
     return len(new_blocks)
 
 
-def _archive_one(f: Path, ws: str, gh: Path, dry_run: bool, subdir: str = "") -> bool:
-    """Gzip `f` into .archive/journal/<ws>/[<subdir>/] then remove the original."""
+def _archive_one(f: Path, ws: str, gh: Path, dry_run: bool, subdir: str = "",
+                 root: str = "journal") -> bool:
+    """Gzip `f` into .archive/<root>/<ws>/[<subdir>/] then remove the original."""
     try:
         mtime = int(f.stat().st_mtime)
     except OSError:
         return False
-    arc_dir = gh / ".archive" / "journal" / ws
+    arc_dir = gh / ".archive" / root / ws
     if subdir:
         arc_dir = arc_dir / subdir
     arc_path = arc_dir / f"{f.stem}-{mtime}.md.gz"
@@ -240,6 +244,92 @@ def _archive_one(f: Path, ws: str, gh: Path, dry_run: bool, subdir: str = "") ->
     except Exception as e:
         log_debug("forget", f"archive failed for {f}: {e}")
         return False
+
+
+def _aspect_date(name: str):
+    """datetime.date from a dated-aspect filename, or None."""
+    try:
+        return datetime.strptime(name[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _salvage_to_lessons(topic: Path, aspect_files: list[Path], dry_run: bool) -> int:
+    """Lift curated `- [type]` blocks from aspects into the topic's lessons.md,
+    verbatim + provenance line. SHA1-dedup against existing lessons content."""
+    lessons = topic / "lessons.md"
+    existing = lessons.read_text(errors="ignore") if lessons.is_file() else "# Lessons\n"
+    seen = {_norm_hash(b) for b in _entry_blocks(existing)}
+    adds: list[str] = []
+    for f in aspect_files:
+        try:
+            text = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        for block in _entry_blocks(text):
+            if len(block.strip()) < MIN_ENTRY_CHARS:
+                continue
+            h = _norm_hash(block)
+            if h in seen:
+                continue
+            seen.add(h)
+            adds.append(f"{block}\n  (salvaged from archived aspect {f.name})")
+    if adds and not dry_run:
+        section = "\n## Salvaged from archived aspects\n\n" if \
+            "## Salvaged from archived aspects" not in existing else "\n"
+        atomic_write(lessons, existing.rstrip() + section + "\n".join(adds) + "\n")
+    return len(adds)
+
+
+def forget_aspects(ws: str, threshold_days: int | None, keep_newest: int,
+                   dry_run: bool, gh: Path, today: str | None = None) -> dict:
+    """v4.1 retention: archive topic aspects older than the threshold.
+
+    Age = FILENAME date (the knowledge date) — mtime is perturbed by
+    maintenance (validate --fix, retag) and would mis-age files. Every topic
+    keeps its newest `keep_newest` aspects regardless of age; 00-README.md and
+    lessons.md are never candidates. Curated `- [type]` blocks are salvaged
+    into lessons.md BEFORE the gzip archive (required data survives in the
+    consolidated layer; raw episodic detail is forgotten).
+    """
+    if threshold_days is None:
+        try:
+            threshold_days = int(read_settings().get("topic_layout", {})
+                                 .get("archive_threshold_days", DEFAULT_ASPECT_THRESHOLD_DAYS))
+        except Exception:
+            threshold_days = DEFAULT_ASPECT_THRESHOLD_DAYS
+    today_d = (datetime.strptime(today, "%Y-%m-%d").date() if today
+               else datetime.now().date())
+
+    ws_root = workspace_dir(ws)
+    if not ws_root.is_dir():
+        return {"ws": ws, "archived": 0, "salvaged": 0, "topics": 0}
+
+    archived = salvaged = topics_touched = 0
+    for folder in sorted(p for p in ws_root.iterdir() if p.is_dir()):
+        if not is_topic_folder(folder):
+            continue
+        dated = [f for f in folder.glob("*.md")
+                 if is_dated_aspect_filename(f.name) and _aspect_date(f.name)]
+        dated.sort(key=lambda f: f.name)          # filename date order
+        protected = set(dated[-keep_newest:]) if keep_newest > 0 else set()
+        candidates = [f for f in dated
+                      if f not in protected
+                      and (today_d - _aspect_date(f.name)).days > threshold_days]
+        if not candidates:
+            continue
+        topics_touched += 1
+        try:
+            with file_lock(f"topic-forget-{ws}", timeout=5.0):
+                salvaged += _salvage_to_lessons(folder, candidates, dry_run)
+                for f in candidates:
+                    if _archive_one(f, ws, gh, dry_run, subdir=folder.name, root="topics"):
+                        archived += 1
+        except TimeoutError as e:
+            log_debug("forget", f"aspect lock timeout for {ws}/{folder.name}: {e}")
+            continue
+    return {"ws": ws, "archived": archived, "salvaged": salvaged,
+            "topics": topics_touched, "threshold_days": threshold_days}
 
 
 def forget_workspace(ws: str, ttl_days: int, max_bytes: int, salvage: bool,
@@ -325,6 +415,11 @@ def main() -> int:
     ap.add_argument("--max-bytes", type=int, default=None)
     ap.add_argument("--no-salvage", action="store_true")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--aspects", action="store_true",
+                    help="also archive topic aspects older than "
+                         "topic_layout.archive_threshold_days (v4.1 retention)")
+    ap.add_argument("--aspect-threshold-days", type=int, default=None)
+    ap.add_argument("--keep-newest", type=int, default=DEFAULT_ASPECT_KEEP_NEWEST)
     args = ap.parse_args()
 
     gh = gowth_home()
@@ -353,19 +448,39 @@ def main() -> int:
         total_salv += r["salvaged"]
         total_bytes += r["bytes"]
 
+    # v4.1 aspect retention: explicit --aspects, or settings opt-in
+    # topic_layout.auto_archive_enabled (so the Stop-hook run applies it).
+    try:
+        auto_aspects = bool(read_settings().get("topic_layout", {})
+                            .get("auto_archive_enabled", False))
+    except Exception:
+        auto_aspects = False
+    aspect_rows: list[dict] = []
+    if args.aspects or auto_aspects:
+        for ws in workspaces:
+            ar = forget_aspects(ws, args.aspect_threshold_days, args.keep_newest,
+                                args.dry_run, gh)
+            if ar["archived"] or ar["salvaged"]:
+                aspect_rows.append(ar)
+
     if args.quiet:
         return 0
 
     prefix = "[dry-run] " if args.dry_run else ""
-    if not rows:
+    if not rows and not aspect_rows:
         print(f"{prefix}forget: no journals older than {ttl_days}d or over {max_bytes} bytes. Buffer is clean.")
         return 0
-    mb = total_bytes / 1_000_000
-    print(f"{prefix}forget: archived {total_arch} journal file(s) ({mb:.1f} MB freed from active recall), "
-          f"salvaged {total_salv} curated entr(y/ies).")
-    for r in rows:
-        print(f"  [{r['ws']}] {len(r['candidates'])} file(s) → .archive/journal/{r['ws']}/  "
-              f"(+{r['salvaged']} salvaged)")
+    if rows:
+        mb = total_bytes / 1_000_000
+        print(f"{prefix}forget: archived {total_arch} journal file(s) ({mb:.1f} MB freed from active recall), "
+              f"salvaged {total_salv} curated entr(y/ies).")
+        for r in rows:
+            print(f"  [{r['ws']}] {len(r['candidates'])} file(s) → .archive/journal/{r['ws']}/  "
+                  f"(+{r['salvaged']} salvaged)")
+    for ar in aspect_rows:
+        print(f"{prefix}forget-aspects: [{ar['ws']}] archived {ar['archived']} aspect(s) "
+              f">{ar['threshold_days']}d across {ar['topics']} topic(s), "
+              f"salvaged {ar['salvaged']} entr(y/ies) into lessons.md — regen MOCs after.")
     if not args.dry_run:
         print("  recoverable via: gzip -d the .archive copy, or `git -C ~/.gowth-mem log` history.")
     return 0

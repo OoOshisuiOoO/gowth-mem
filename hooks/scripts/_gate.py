@@ -92,6 +92,12 @@ PLACEHOLDER_RE = re.compile(
     r"investigate later|placeholder|n/?a|\.\.\.|-+)\s*$",
     re.IGNORECASE,
 )
+# v4.1 retention policy: REQUIRED data is stored in ENGLISH (raw journal may
+# stay bilingual). Diacritic alphabet = deterministic Vietnamese detector.
+VIETNAMESE_RE = re.compile(
+    r"[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợ"
+    r"ùúủũụưứừửữựỳýỷỹỵÀÁẢÃẠĂÂĐÈÉẺẼẸÊÌÍỈĨỊÒÓỎÕỌÔƠÙÚỦŨỤƯỲÝ]")
+
 # canon §1a: secret patterns → BLOCK the write outright.
 SECRET_RES = [
     re.compile(r"AKIA[A-Z0-9]{16}"),
@@ -128,24 +134,41 @@ def has_secret(text: str) -> bool:
     return any(rx.search(text or "") for rx in SECRET_RES)
 
 
-def evaluate(content: str, *, strict: bool | None = None) -> GateResult:
+def evaluate(content: str, *, strict: bool | None = None,
+             english_only: bool | None = None) -> GateResult:
     """Deterministic hard gate for a single memory entry. First failure wins.
 
     `strict` (default from settings.gate.strict, else True) toggles the
     per-type schema rules (ref→Source, decision→rationale, tool→version).
     The base rules (empty / too-short / placeholder / secret) always apply.
+
+    `english_only` (default from settings.gate.english_only, else False)
+    enforces the v4.1 retention policy: REQUIRED data is stored in ENGLISH;
+    raw journal stays bilingual (this gate guards only the curated write
+    path — append_entry / append_lesson). Tolerates ≤2 diacritic chars so
+    an isolated proper noun ("Nguyễn") never blocks a valid entry.
     """
     if strict is None:
         try:
             strict = bool(read_settings().get("gate", {}).get("strict", True))
         except Exception:
             strict = True
+    if english_only is None:
+        try:
+            english_only = bool(read_settings().get("gate", {}).get("english_only", False))
+        except Exception:
+            english_only = False
 
     raw = content or ""
     if not raw.strip():
         return GateResult(False, "empty", "blank entry")
     if has_secret(raw):
         return GateResult(False, "secret_leak", "secret pattern detected — store a pointer, never the value")
+
+    if english_only and len(VIETNAMESE_RE.findall(raw)) > 2:
+        return GateResult(False, "not_english",
+                          "curated entries must be stored in English (retention policy); "
+                          "raw journal may stay bilingual")
 
     tag, body = _strip_prefix(raw)
 

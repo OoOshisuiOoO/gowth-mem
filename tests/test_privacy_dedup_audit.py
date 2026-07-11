@@ -372,7 +372,7 @@ class GitignoreBackfillTests(unittest.TestCase):
 
     def test_idempotent_when_entries_present(self):
         gi = self.tmp / ".gitignore"
-        gi.write_text("config.json\n.audit/\n.dedup-window.json\n")
+        gi.write_text("config.json\n.audit/\n.dedup-window.json\nreview-ledger.json\n")
         before = gi.read_text()
         self.sync.write_default_gitignore(self.tmp)
         self.assertEqual(gi.read_text(), before)
