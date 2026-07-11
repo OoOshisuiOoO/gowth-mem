@@ -1,6 +1,6 @@
 {
   "name": "gowth-mem",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v4.0 = metacognition: deterministic YAKE-lite auto-tagging (inline #tags + frontmatter union + weighted FTS5 keywords column, /mem-recall --keyword/--topic/--days, /mem-retag backfill) + session capture (prompt + actions trace per turn; thinking is encrypted in transcripts) + 15-turn honest self-review (anchored 1-5 rubric, verbatim-quote evidence, counterfactual gate, score trend in _scores.md via /mem-review). v3.9: provenance types [goal]/[hypothesis], self-explaining commits. v3.8: file+content schema validators, hard write-gate, active forgetting. Multi-session safe via fcntl locks, AI-mediated conflict resolution, mem0 ADD/UPDATE/DELETE/NOOP write semantics.",
   "author": {
     "name": "duynguyen",
