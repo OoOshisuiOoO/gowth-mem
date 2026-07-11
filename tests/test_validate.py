@@ -105,3 +105,25 @@ class TestValidate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixAspectSlugClamp(unittest.TestCase):
+    """v4.1.2: fix_aspect derived `slug: {topic}-{aspect}` unclamped — a long
+    topic+aspect pair produced a 71-char slug that route() later passed to
+    ensure_topic_folder → ValueError (live crash while routing a reflection)."""
+
+    def test_derived_slug_clamped_to_60_and_valid(self):
+        import re as _re
+        with tempfile.TemporaryDirectory() as tmp:
+            topic = Path(tmp) / "gowth-mem"
+            topic.mkdir()
+            p = topic / "2026-07-11-askuserquestion-counterfactual-unconfirmed-interrupted-refle.md"
+            p.write_text("body only, no frontmatter\n")
+            self.assertTrue(V.fix_aspect(p))
+            text = p.read_text()
+            m = _re.search(r"^slug: (.+)$", text, _re.MULTILINE)
+            self.assertIsNotNone(m)
+            slug = m.group(1).strip()
+            self.assertLessEqual(len(slug), 60, slug)
+            self.assertRegex(slug, r"^[a-z0-9][a-z0-9-]{0,59}$")
+            self.assertFalse(slug.endswith("-"), slug)

@@ -213,6 +213,34 @@ class TopicRouteV3Tests(unittest.TestCase):
             out = _run_in_home(code, home)
             self.assertIn("ok-frontmatter", out.stdout)
 
+    def test_route_survives_invalid_frontmatter_slug(self):
+        # v4.1.2 live crash: an aspect carrying a 71-char frontmatter slug
+        # (pre-clamp fix_aspect output) became best_slug and blew up
+        # ensure_topic_folder. Frontmatter slugs are untrusted input — route
+        # must fall back to the path-derived slug and keep writing.
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            long_slug = "gowth-mem-" + "x" * 65
+            code = (
+                "import sys; sys.path.insert(0, 'hooks/scripts');\n"
+                "from pathlib import Path\n"
+                "import os\n"
+                "home = Path(os.environ['GOWTH_MEM_HOME'])\n"
+                "topic = home/'workspaces'/'proj-1'/'gowth-mem'\n"
+                "topic.mkdir(parents=True)\n"
+                "(home/'workspaces'/'proj-1'/'workspace.json').write_text('{}')\n"
+                "(topic/'2026-07-11-existing.md').write_text(\n"
+                f"    '---\\nslug: {long_slug}\\n---\\n\\n'\n"
+                "    'gowth-mem routing reflection askuserquestion premise decision\\n')\n"
+                "from _topic import append_entry\n"
+                "p, w = append_entry('[reflection] gowth-mem routing reflection: confirm the premise "
+                "before an askuserquestion decision prompt because unconfirmed premises get interrupted', ws='proj-1')\n"
+                "assert w, 'write must succeed despite invalid frontmatter slug'\n"
+                "print('ok-slug-guard', p)\n"
+            )
+            out = _run_in_home(code, home)
+            self.assertIn("ok-slug-guard", out.stdout)
+
     def test_reserved_aspect_name_blocked(self):
         from importlib.util import spec_from_file_location, module_from_spec
 

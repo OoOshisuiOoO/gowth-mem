@@ -161,8 +161,12 @@ def fix_aspect(p: Path) -> bool:
     h1 = H1_RE.search(text)
     title = h1.group(1).strip() if h1 else aspect.replace("-", " ").strip().title()
     today = date.today().isoformat()
+    # v4.1.2: clamp to the SLUG_RE 60-char cap — a long topic+aspect pair
+    # produced a 71-char slug that route() later passed to
+    # ensure_topic_folder → ValueError (live crash routing a reflection).
+    derived_slug = f"{topic}-{aspect}"[:60].rstrip("-")
     derived = {
-        "slug": f"{topic}-{aspect}", "title": title, "type": "aspect",
+        "slug": derived_slug, "title": title, "type": "aspect",
         "date": d, "topic": topic, "aspect": aspect, "status": "active",
         "created": d, "last_touched": today,
     }

@@ -376,7 +376,14 @@ def route(content: str, ws: str | None = None,
             continue
         fm, _ = parse_file(f)
         slug = fm.get("slug") or slug_for_path(f, ws_root)
-        if SLUG_RE.match(slug) and slug not in slug_index:
+        # v4.1.2: never TRUST a frontmatter slug — an invalid one (e.g. >60
+        # chars from a pre-clamp fix_aspect) would flow into best_slug and
+        # crash ensure_topic_folder. Fall back to the path-derived slug.
+        if not SLUG_RE.match(slug):
+            slug = slug_for_path(f, ws_root)
+            if not SLUG_RE.match(slug):
+                continue
+        if slug not in slug_index:
             slug_index[slug] = f
         file_kws = _extract_keywords(text)
         overlap = len(kws & file_kws)
