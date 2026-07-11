@@ -123,6 +123,12 @@ def _write_text(path: Path, text: str, dry_run: bool) -> int:
     return n
 
 
+# VCS/tooling internals that must never enter the vault. Live bug: a skill
+# installed as a git CLONE leaked 78 `.git/objects/**` files into the synced
+# backup, and their 444 mode broke the next run's overwrite.
+SKIP_DIR_PARTS = {".git", ".hg", ".svn", "__pycache__", "node_modules"}
+
+
 def _copy_skills(src: Path, dst: Path, dry_run: bool) -> tuple[int, int]:
     """Copy the skills tree, sanitizing text files. Returns (files, redactions)."""
     if not src.is_dir():
@@ -131,9 +137,11 @@ def _copy_skills(src: Path, dst: Path, dry_run: bool) -> tuple[int, int]:
     for p in sorted(src.rglob("*")):
         if not p.is_file() or p.name == ".DS_Store":
             continue
+        rel = p.relative_to(src)
+        if SKIP_DIR_PARTS.intersection(rel.parts):
+            continue
         if p.stat().st_size > MAX_SKILL_FILE_BYTES:
             continue
-        rel = p.relative_to(src)
         target = dst / rel
         if p.suffix.lower() in TEXT_SUFFIXES:
             try:
@@ -142,6 +150,8 @@ def _copy_skills(src: Path, dst: Path, dry_run: bool) -> tuple[int, int]:
                 continue
         elif not dry_run:
             target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                target.unlink()   # older backups may hold read-only (444) copies
             shutil.copy2(p, target)
         files += 1
     return files, redactions

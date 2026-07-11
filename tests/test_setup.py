@@ -162,6 +162,36 @@ class TestBackup(unittest.TestCase):
         data = json.loads((self.out / "plugins.json").read_text())
         self.assertEqual(len(data["plugins"]), 2)
 
+    def test_skill_git_repos_excluded_and_rerun_survives_readonly(self):
+        # Live bug (v4.1.0): ~/.claude/skills/<name> can be a git CLONE. The
+        # first backup copied .git/objects/pack/* (mode 444) into the vault —
+        # 78 junk files synced — and the SECOND run crashed with
+        # PermissionError overwriting the read-only copy. `.git` internals
+        # must never enter the vault, and re-runs must survive read-only
+        # leftovers from older backups.
+        gitdir = self.claude / "skills" / "repo-skill" / ".git" / "objects" / "pack"
+        gitdir.mkdir(parents=True)
+        packed = gitdir / "pack-abc.idx"
+        packed.write_bytes(b"\x00binary")
+        packed.chmod(0o444)
+        (self.claude / "skills" / "repo-skill" / "SKILL.md").write_text(
+            "---\nname: repo-skill\n---\nreal content\n")
+
+        r1 = self._backup()
+        self.assertFalse((self.out / "skills" / "repo-skill" / ".git").exists(),
+                         ".git internals must never enter the vault")
+        self.assertTrue((self.out / "skills" / "repo-skill" / "SKILL.md").is_file())
+
+        # simulate a pre-fix vault: a read-only leftover at the destination
+        stale = self.out / "skills" / "my-skill" / "stale.bin"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"old")
+        stale.chmod(0o444)
+        (self.claude / "skills" / "my-skill" / "stale.bin").write_bytes(b"new")
+        r2 = self._backup()   # must not raise PermissionError
+        self.assertEqual((self.out / "skills" / "my-skill" / "stale.bin").read_bytes(), b"new")
+        self.assertGreaterEqual(r2["skills"], r1["skills"])
+
 
 if __name__ == "__main__":
     unittest.main()
