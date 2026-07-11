@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "gowth-mem",
-      "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v3.9: provenance & verification — TYPE-encoded epistemic status (verified [ref] vs new UNVERIFIED [hypothesis] with a Verify: path that promotes to [ref] when confirmed) + new [goal] type (user intent: Status lifecycle + verifiable Done-when); commits state WHY/WHAT/WHEN deterministically. v3.8: file+content schema validators, hard write-gate, active forgetting. v3.4: tag-aware FTS5, /mem-dream (Light/REM/Deep), /mem-recall. Multi-session safe via fcntl locks, AI-mediated conflict resolution.",
-      "version": "3.9.0",
+      "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v3.9: provenance & verification \u2014 TYPE-encoded epistemic status (verified [ref] vs new UNVERIFIED [hypothesis] with a Verify: path that promotes to [ref] when confirmed) + new [goal] type (user intent: Status lifecycle + verifiable Done-when); commits state WHY/WHAT/WHEN deterministically. v3.8: file+content schema validators, hard write-gate, active forgetting. v3.4: tag-aware FTS5, /mem-dream (Light/REM/Deep), /mem-recall. Multi-session safe via fcntl locks, AI-mediated conflict resolution.",
+      "version": "4.1.0",
       "author": {
         "name": "duynguyen"
       },
@@ -33,5 +33,5 @@
       ]
     }
   ],
-  "version": "3.9.0"
+  "version": "4.1.0"
 }
