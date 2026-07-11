@@ -34,10 +34,7 @@ Outputs (deterministic format):
   the normal write path (they pass the quality gate); generic advice stays in the reply,
 - one row appended to `<ws>/journal/_scores.md` (`| date | sid | turn | prompting |
   reasoning | collab | delta-vs-last |`) — the improvement trend,
-- a full **insights report** replied to the user in their language (Claude Code /insights style:
-  Activity Overview / Area Distribution / Interaction Style / Friction Points / Outcomes /
-  paste-ready Suggestions — evidence-quoted, no rubric/process narration). Small windows
-  (<10 turns) still get the full report; only the scores row is skipped.
+- a 3-line summary replied to the user, in the user's language.
 
 ## When to invoke
 
@@ -46,8 +43,8 @@ Outputs (deterministic format):
 - Any time you want a score without waiting for the 15-turn auto-trigger.
 - With `--history` to see whether the scores are trending up.
 
-Short sessions (<10 turns) still get the full insights report from available evidence;
-only the _scores.md row is skipped (no fabricated trend points).
+Short sessions are skipped: if the log has fewer than 10 turns there is too little signal,
+and the review reports that instead of scoring.
 
 ## Usage
 
