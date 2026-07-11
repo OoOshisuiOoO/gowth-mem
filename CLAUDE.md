@@ -152,6 +152,7 @@ Distilled insights in `.claude/research/`:
 - Topic routing goes through `_topic.py` — never write directly to topic files.
 - New entries must pass `_gate.py` (content) and `_validate.py` (file structure) — the gate/validator are the enforcement layer; docs alone proved insufficient.
 - Before claiming done: full suite + compile check (see Commands); `bin/test-install.sh` for anything touching hooks, install, or migration.
+- **Before `bin/release.sh`: exercise every NEW/changed code path once on real data** (run the new command, route a real entry). v4.1.0 tagged two untested paths; both broke on first live use (`.git` leak into the synced vault, slug crash) → two same-day patches that a 2-minute pre-tag smoke test would have prevented.
 
 ## Anti-patterns
 
