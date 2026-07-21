@@ -1,29 +1,36 @@
 ---
 name: mem-install
-description: First-time install wizard for ~/.gowth-mem/. Scaffolds layout, gathers git remote+branch+token, writes settings.json + config.json, runs initial sync.
+description: First-time install wizard for ~/.gowth-mem/. Scaffolds shared + workspace v3 layout (topic-folder + dated aspect), gathers git remote+branch+token, writes settings.json + config.json, runs initial sync. Upgrade-aware — detects v2/v3 mismatch and prompts for /mem-migrate-v3.
 ---
 
 # mem-install
 
-The wizard for a fresh v2.0 install. Run when the user has the plugin installed but no `~/.gowth-mem/` directory yet.
+The wizard for a fresh v3.0 install. Run when the user has the plugin installed but no `~/.gowth-mem/` directory yet. Never destroys data.
 
-## Pre-flight
+## Pre-flight — upgrade detection (run BEFORE anything else)
 
-If `~/.gowth-mem/shared/AGENTS.md` already exists, abort with: "Already installed. Use `/mem-config` to change remote, `/mem-sync` to sync, or `/mem-migrate-global` to import v1.0 data."
+If `~/.gowth-mem/shared/AGENTS.md` already exists, this is a re-run or an upgrade — do NOT scaffold or copy anything. Read `~/.gowth-mem/settings.json` `layout_version`:
 
-## Step 1 — scaffold layout
+- `layout_version = 3`: already installed. Print `[mem-install] already on v3.0` and stop. Suggest `/mem-config` to change remote, `/mem-sync` to sync.
+- `layout_version < 3`: **v2 → v3 upgrade**. Dry-run `/mem-migrate-v3` so the user sees what would change, then ask to proceed. On yes run `/mem-migrate-v3`; otherwise abort with `[mem-install] upgrade declined — re-run when ready`.
+- `settings.json` missing but vault exists: corrupt install — refuse and suggest `/mem-doctor`.
+
+## Step 1 — scaffold layout (fresh install only)
 
 ```bash
-# v2.3 layout: shared/ + workspaces/<ws>/{docs,journal,skills,<slug>.md,...}
-mkdir -p ~/.gowth-mem/shared/skills
+# v3 layout: shared/ + workspaces/<ws>/{docs,journal,skills,research,<slug>/...}
+mkdir -p ~/.gowth-mem/shared/skills ~/.gowth-mem/shared/research
 cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" ~/.gowth-mem/shared/AGENTS.md
-cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v2.json" ~/.gowth-mem/settings.json
+cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v3.json" ~/.gowth-mem/settings.json
 cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md" ~/.gowth-mem/shared/secrets.md
 cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md" ~/.gowth-mem/shared/tools.md
-# Default workspace scaffolded by _workspace.py:
+cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/shared/research/data-quality-2026.md" ~/.gowth-mem/shared/research/data-quality-2026.md
+# Default workspace scaffolded by _workspace.py (creates docs/, journal/, skills/, research/, misc/00-README.md):
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" create default --title "Default Fallback"
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py" --all
 ```
+
+`settings.example.v3.json` carries `layout_version: 3`. `data-quality-2026.md` is the canonical write-quality canon referenced from `shared/AGENTS.md` §7.
 
 ## Step 2 — gather config
 
