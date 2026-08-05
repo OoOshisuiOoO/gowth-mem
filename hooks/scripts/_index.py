@@ -50,12 +50,18 @@ from _home import (  # type: ignore
     shared_dir,
     workspace_dir,
 )
+from _debug import log_debug  # type: ignore
 from _lock import file_lock  # type: ignore
 from _tags import TAG_TOKEN_RE, strip_tags_text  # type: ignore  # v4.0 keywords + tag-stable hash
 
 CHUNK_SIZE = 1500
 
-TAG_RE = re.compile(r"^(?:#{2,6}\s*)?\[([a-z-]+)\]\s*")  # v3.8: bullet OR `## [type]` block
+# v4.3: also tolerate a leading list bullet (`- [exp] …`), which is the dominant
+# on-disk entry form, matching _tags.TYPE_PREFIX_RE's `[-*]` allowance.
+TAG_RE = re.compile(r"^(?:[-*]\s*)?(?:#{2,6}\s*)?\[([a-z-]+)\]\s*")
+
+# YAML frontmatter delimited by --- at the very start of a file.
+FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---[ \t]*\r?\n?", re.DOTALL)
 KNOWN_TAGS = {"decision", "exp", "ref", "tool", "reflection", "skill-ref",
               "secret-ref", "goal", "hypothesis"}  # v3.9: +goal (intent) +hypothesis (unverified)
 
@@ -572,41 +578,9 @@ def main() -> int:
             text = f.read_text(errors="ignore")
         except Exception:
             continue
-        old_ids = [r[0] for r in db.execute("SELECT id FROM chunks WHERE path=?", (rel,))]
-        for oid in old_ids:
-            db.execute("DELETE FROM chunks_fts WHERE rowid=?", (oid,))
-            if use_vec:
-                db.execute("DELETE FROM chunks_vec WHERE id=?", (oid,))
-        db.execute("DELETE FROM chunks WHERE path=?", (rel,))
-        for ci, (heading, content) in enumerate(split_chunks(text)):
-            # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
-            # entry whether or not it carries inline #tags.
-            h = hashlib.sha1(strip_tags_text(content).encode()).hexdigest()[:16]
-            # v4.3: split_chunks() lifts `## [decision] Title` into `heading`, so a
-            # content-only probe missed every block-form entry — live vault had 4,714
-            # chunks with a `[tag]` heading but only 54 rows with `tag` set, which made
-            # the 5.0 BM25 tag weight and the --type filter apply to 0.4% of the corpus.
-            tag = _extract_tag(heading) or _extract_tag(content)
-            keywords = _chunk_keywords(content, text if ci == 0 else None)
-            cid = db.execute(
-                "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (rel, heading, content, mtime, h, tag, keywords),
-            ).lastrowid
-            db.execute(
-                "INSERT INTO chunks_fts(rowid, tag, keywords, heading, content) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (cid, tag, keywords, heading or "", content),
-            )
-            if use_vec:
-                vec = embed_one(content)
-                if vec:
-                    db.execute(
-                        "INSERT INTO chunks_vec(id, embedding) VALUES (?, ?)",
-                        (cid, serialize_vec(vec)),
-                    )
-                    embed_calls += 1
-            indexed_chunks += 1
+        n = _index_one(db, rel, text, mtime, use_vec)
+        indexed_chunks += n
+        embed_calls += n if use_vec else 0
         indexed_files += 1
 
     slug_count = _index_slugs(db, sources, args.full)
@@ -625,6 +599,139 @@ def main() -> int:
             reason.append("no embedding API key")
         print(f"vector: skipped ({'; '.join(reason) if reason else 'unknown'}) — FTS5-only index")
     return 0
+
+
+def _drop_path_rows(db: sqlite3.Connection, rel: str, use_vec: bool) -> None:
+    """Delete every row for *rel*, FTS FIRST.
+
+    chunks_fts is an FTS5 external-content table (content='chunks'), so its rowids
+    must go before the chunks rows they mirror — deleting the content row first
+    leaves the FTS index pointing at rows that no longer exist.
+    """
+    old_ids = [r[0] for r in db.execute("SELECT id FROM chunks WHERE path=?", (rel,))]
+    for oid in old_ids:
+        db.execute("DELETE FROM chunks_fts WHERE rowid=?", (oid,))
+        if use_vec:
+            db.execute("DELETE FROM chunks_vec WHERE id=?", (oid,))
+    db.execute("DELETE FROM chunks WHERE path=?", (rel,))
+
+
+def _index_one(
+    db: sqlite3.Connection,
+    rel: str,
+    text: str,
+    mtime: float,
+    use_vec: bool,
+) -> int:
+    """Replace all rows for one file. Returns the number of chunks written.
+
+    Single indexing path shared by `main()` (full/incremental sweep) and
+    `reindex_paths()` (write-time refresh), so the two can never drift.
+    """
+    _drop_path_rows(db, rel, use_vec)
+    written = 0
+    # Chunk the BODY, not the frontmatter. A routed write produces
+    # `frontmatter + [type] entry` with no `##` heading, so the file was one chunk
+    # whose content began with `---` — the [type] marker was never at content start
+    # and every such entry landed untagged (635 live chunks, 81 with a recoverable
+    # marker). Frontmatter `tags:` are unaffected: `_chunk_keywords` still receives
+    # the ORIGINAL text and harvests them into the keywords column.
+    body = FRONTMATTER_RE.sub("", text, count=1)
+    for ci, (heading, content) in enumerate(split_chunks(body)):
+        # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
+        # entry whether or not it carries inline #tags.
+        h = hashlib.sha1(strip_tags_text(content).encode()).hexdigest()[:16]
+        # v4.3: split_chunks() lifts `## [decision] Title` into `heading`, so a
+        # content-only probe missed every block-form entry — live vault had 4,714
+        # chunks with a `[tag]` heading but only 54 rows with `tag` set, which made
+        # the 5.0 BM25 tag weight and the --type filter apply to 0.4% of the corpus.
+        tag = _extract_tag(heading) or _extract_tag(content)
+        keywords = _chunk_keywords(content, text if ci == 0 else None)
+        cid = db.execute(
+            "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (rel, heading, content, mtime, h, tag, keywords),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO chunks_fts(rowid, tag, keywords, heading, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (cid, tag, keywords, heading or "", content),
+        )
+        if use_vec:
+            vec = embed_one(content)
+            if vec:
+                db.execute(
+                    "INSERT INTO chunks_vec(id, embedding) VALUES (?, ?)",
+                    (cid, serialize_vec(vec)),
+                )
+        written += 1
+    return written
+
+
+def reindex_paths(paths) -> int:
+    """Refresh the index for specific files. Returns the number of files indexed.
+
+    Called right after a routed write (`_topic.append_entry`, `_lesson.append_lesson`)
+    so a just-captured memory is recallable IMMEDIATELY. Before v4.3 nothing on the
+    write path touched index.db, so new entries stayed invisible to /mem-recall until
+    someone remembered to run /mem-reindex — the live vault's index was 5 days stale.
+
+    Contract, because this runs on the Stop-hook path:
+      * never raises — returns 0 on any failure;
+      * never CREATES index.db (a missing index must be built by /mem-reindex as a
+        whole, not silently half-populated from whichever file was written last);
+      * a path whose file no longer exists has its rows dropped;
+      * serialised under file_lock("index-write") so concurrent sessions can't
+        interleave the delete/insert pair for the same file.
+    """
+    try:
+        gh = gowth_home()
+        db_path = index_db()
+        if not db_path.is_file():
+            return 0
+        targets: list[tuple[str, Path]] = []
+        for p in paths or []:
+            try:
+                rel = str(Path(p).resolve().relative_to(gh.resolve()))
+            except Exception:
+                continue
+            targets.append((rel, Path(p)))
+        if not targets:
+            return 0
+
+        try:
+            lock_cm = file_lock("index-write", timeout=5.0)
+        except Exception:
+            lock_cm = None
+
+        def _work() -> int:
+            db = sqlite3.connect(str(db_path))
+            try:
+                db.execute("PRAGMA busy_timeout=5000")
+                done = 0
+                for rel, p in targets:
+                    if not p.is_file():
+                        _drop_path_rows(db, rel, False)
+                        continue
+                    try:
+                        text = p.read_text(errors="ignore")
+                        mtime = p.stat().st_mtime
+                    except Exception:
+                        continue
+                    _index_one(db, rel, text, mtime, False)
+                    done += 1
+                db.commit()
+                return done
+            finally:
+                db.close()
+
+        if lock_cm is not None:
+            with lock_cm:
+                return _work()
+        return _work()
+    except Exception as exc:
+        log_debug("index", f"reindex_paths failed: {exc}")
+        return 0
 
 
 if __name__ == "__main__":

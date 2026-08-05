@@ -131,6 +131,15 @@ def append_lesson(
         new = HEADER + entry
 
     safe_write(target, new)
+
+    # v4.3: refresh the index for this ledger so the lesson is recallable NOW
+    # (see _index.reindex_paths — best-effort, never fails a write).
+    try:
+        from _index import reindex_paths  # type: ignore
+        reindex_paths([target])
+    except Exception:
+        pass
+
     return target
 
 

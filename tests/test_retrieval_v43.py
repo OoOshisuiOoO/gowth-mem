@@ -76,6 +76,41 @@ class TestTagFromHeading(unittest.TestCase):
         tags = [r[0] for r in db.execute("SELECT tag FROM chunks WHERE tag<>''")]
         self.assertIn("exp", tags)
 
+    def test_entry_below_frontmatter_is_tagged(self):
+        """A routed write creates `frontmatter + [type] entry` with no `##` heading,
+        so the whole file is ONE chunk whose content starts with `---` — the [type]
+        marker was never at content start and the entry landed untagged. Live vault:
+        635 chunks start with frontmatter, all untagged, 81 carry a [type] marker."""
+        db = self._index_file(
+            "workspaces/demo/topicfm/2026-08-05-thing.md",
+            "---\nslug: topicfm\ntype: aspect\ntags: [a, b]\n---\n\n"
+            "[decision] Adopt frontmatter stripping before chunking. "
+            "Rationale: metadata is not content.\n",
+        )
+        tags = [r[0] for r in db.execute("SELECT tag FROM chunks WHERE tag<>''")]
+        self.assertIn("decision", tags)
+
+    def test_frontmatter_tags_still_reach_keywords(self):
+        """Stripping frontmatter from the CHUNK BODY must not lose its `tags:` —
+        those are harvested into the keywords column from the whole file text."""
+        db = self._index_file(
+            "workspaces/demo/topickw/2026-08-05-thing.md",
+            "---\nslug: topickw\ntags: [zebrakeyword, other]\n---\n\n"
+            "[ref] Something true. Source: somewhere\n",
+        )
+        kws = " ".join(r[0] for r in db.execute("SELECT keywords FROM chunks"))
+        self.assertIn("zebrakeyword", kws)
+
+    def test_bullet_prefixed_entry_is_tagged(self):
+        """`- [exp] …` is the dominant on-disk entry form and must be recognised."""
+        db = self._index_file(
+            "workspaces/demo/topicb/2026-08-05-thing.md",
+            "---\nslug: topicb\n---\n\n## Entries\n\n"
+            "- [exp] Index went stale. Root cause: no write-path reindex.\n",
+        )
+        tags = [r[0] for r in db.execute("SELECT tag FROM chunks WHERE tag<>''")]
+        self.assertIn("exp", tags)
+
     def test_heading_tag_is_searchable_via_type_filter(self):
         self._index_file(
             "workspaces/demo/topicz/2026-08-05-thing.md",

@@ -500,6 +500,15 @@ def append_entry(content: str, ws: str | None = None,
         except Exception:
             pass  # best-effort; never block a write on frontmatter repair
 
+    # v4.3: refresh the index for just this file so the entry is recallable NOW.
+    # Nothing on the write path used to touch index.db, so a captured memory stayed
+    # invisible to /mem-recall until a manual /mem-reindex (live index: 5 days stale).
+    try:
+        from _index import reindex_paths  # type: ignore
+        reindex_paths([target])
+    except Exception:
+        pass  # best-effort; a stale index must never fail a write
+
     return target, True
 
 
