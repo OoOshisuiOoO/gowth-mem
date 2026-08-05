@@ -42,6 +42,11 @@ _DEFAULT_GITIGNORE = (
     ".audit/\n"
     ".dedup-window.json\n"
     "review-ledger.json\n"
+    ".archive/\n"
+    ".backup/\n"
+    ".session-workspace\n"
+    "hook-errors.log\n"
+    "*.log\n"
     "__pycache__/\n"
     "*.pyc\n"
     "SYNC-CONFLICT.md\n"
@@ -49,7 +54,16 @@ _DEFAULT_GITIGNORE = (
 
 # review-ledger.json is machine-local: it references transcript paths under
 # this machine's ~/.claude/projects, which other machines don't have.
-_REQUIRED_IGNORES = (".audit/", ".dedup-window.json", "review-ledger.json")
+#
+# `.session-workspace` MUST be ignored: _home.py resolves it at priority 2, ABOVE
+# config.json's workspace_map, so syncing it would pin every other machine to whatever
+# workspace this machine last selected.
+#
+# `.archive/`, `.backup/` and `*.log` were missing from the default, so a fresh
+# (non-clone) install would start committing gzip archive blobs and per-machine hook
+# logs. Listed in _REQUIRED_IGNORES too so existing vaults backfill them.
+_REQUIRED_IGNORES = (".audit/", ".dedup-window.json", "review-ledger.json",
+                     ".archive/", ".backup/", ".session-workspace", "*.log")
 
 
 def _gitignore_has_entry(existing: str, entry: str) -> bool:
@@ -163,7 +177,12 @@ def main() -> int:
                             remote=remote, token=token)
                     print(f"init: pulled origin/{branch}")
                 except subprocess.CalledProcessError as e:
-                    err = (e.stderr or "")
+                    # git prints "CONFLICT (add/add)" on STDOUT, not stderr. Dropping
+                    # stdout here meant `--init` on a SECOND machine never detected the
+                    # conflict: it pushed anyway (rejected), and left raw `<<<<<<<`
+                    # markers in shared/AGENTS.md — the file injected into every
+                    # session — with no SYNC-CONFLICT.md to nudge the user.
+                    err = (e.stderr or "") + (e.stdout or "")
                     if "couldn't find remote ref" in err.lower():
                         print(f"init: remote {branch} doesn't exist yet — will create on push")
                     elif "CONFLICT" in err:

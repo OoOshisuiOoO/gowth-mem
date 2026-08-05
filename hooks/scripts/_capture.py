@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore
 from _debug import log_debug  # type: ignore
 from _home import journal_dir  # type: ignore
 from _lock import file_lock  # type: ignore
@@ -288,7 +288,12 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
                 last = _last_turn_no(existing)
                 if last is not None and last == turn_no:
                     return True  # idempotent: this turn already captured
-            atomic_write(target, (existing if existing else header) + block)
+            # safe_write (NOT atomic_write): this is RAW conversation text going
+            # into the synced vault, so it must pass the privacy sanitizer. A
+            # live GitLab-PAT-shaped string reached the remote through this path.
+            red = safe_write(target, (existing if existing else header) + block)
+            if red:
+                log_debug("capture", f"redacted {red} secret(s) in {target.name}")
         return True
     except TimeoutError as e:
         log_debug("capture", f"lock timeout ws={ws} turn={turn_no}: {e}")

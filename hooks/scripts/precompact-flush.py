@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore
 from _debug import log_debug  # type: ignore
 from _home import active_workspace, journal_dir, workspace_dir  # type: ignore
 from _lock import file_lock  # type: ignore
@@ -186,7 +186,11 @@ def raw_dump_to_journal(text: str, ws: str) -> bool:
 
         with file_lock(f"journal-{ws}", timeout=5.0):
             existing = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
-            atomic_write(target, existing + snapshot)
+            # safe_write: raw transcript dump into the synced vault must be
+            # sanitized (same defect class as _capture.py).
+            red = safe_write(target, existing + snapshot)
+            if red:
+                log_debug("precompact-flush", f"redacted {red} secret(s)")
         return True
     except Exception as e:
         log_debug("precompact-flush", f"raw_dump failed: {e}")

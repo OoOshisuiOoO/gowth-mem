@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -58,6 +59,41 @@ def ensure_repo(gh: Path, remote: str, branch: str, token: Optional[str], quiet:
     return True
 
 
+# Only the real git sentinels. A bare `=======` line is legal markdown (setext h2
+# underline), so matching it would refuse ordinary documents.
+_MARKER_RE = re.compile(r"^(?:<{7}|>{7})(?: |$)", re.M)
+
+
+def _conflict_marker_files(gh: Path) -> list[str]:
+    """Return staged text files containing raw git conflict markers.
+
+    This is the last gate before corruption becomes SHARED state, so it runs at the
+    commit boundary and therefore catches every cause (stash-pop conflict, aborted
+    rebase, hand-edited file), not just the one that was diagnosed. 16 commits in the
+    live vault's history had introduced marker strings before this existed.
+    """
+    out: list[str] = []
+    names = run_git(gh, "diff", "--cached", "--name-only", check=False).stdout.split("\n")
+    for name in (n.strip() for n in names):
+        if not name:
+            continue
+        f = gh / name
+        try:
+            if not f.is_file() or f.stat().st_size > 4_000_000:
+                continue
+            if _MARKER_RE.search(f.read_text(errors="ignore")):
+                out.append(name)
+        except Exception:
+            continue
+    return out
+
+
+def _unmerged_paths(gh: Path) -> list[str]:
+    """Paths git reports as unmerged — a merge/rebase is mid-flight."""
+    r = run_git(gh, "ls-files", "-u", check=False)
+    return sorted({ln.split("\t")[-1] for ln in r.stdout.splitlines() if "\t" in ln})
+
+
 def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -> bool:
     """Stage and commit. Returns True if a commit was made.
 
@@ -66,9 +102,28 @@ def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -
     instead of "auto-sync from <host>". `context` names the hook that fired
     (e.g. "pre-compact", "auto-sync") and lands in a `Context:` trailer.
     """
+    unmerged = _unmerged_paths(gh)
+    if unmerged:
+        log(f"sync: REFUSING to commit — {len(unmerged)} unmerged path(s), a merge or "
+            f"rebase is mid-flight (e.g. {unmerged[0]}). Resolve first: cd {gh} && "
+            f"git status", quiet=quiet, err=True)
+        return False
+
     run_git(gh, "add", "-A", check=False)
     status = run_git(gh, "status", "--porcelain", check=False).stdout
     if not status.strip():
+        return False
+
+    marked = _conflict_marker_files(gh)
+    if marked:
+        # Unstage them so the NEXT run cannot sweep them in, and make the problem
+        # visible instead of pushing corruption to the other machine.
+        for name in marked:
+            run_git(gh, "restore", "--staged", "--", name, check=False)
+        log(f"sync: REFUSING to commit — raw conflict markers in {len(marked)} file(s): "
+            f"{', '.join(marked[:3])}. Fix the markers, then sync again.",
+            quiet=quiet, err=True)
+        log_debug("auto-sync", f"conflict markers blocked commit: {marked}")
         return False
     try:
         msg = build_message(gh, host=host, context=context)
@@ -149,24 +204,35 @@ def _stash_if_dirty(gh: Path, quiet: bool):
     return _STASH_MSG
 
 
-def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> None:
+def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
+    """Pop the auto-stash. Returns False when the tree is left needing attention.
+
+    A failed pop used to be logged and forgotten — with a message that wrongly said
+    "changes safe in stash" — while the working tree was left holding raw `<<<<<<<`
+    markers, and the caller still reported success. The next commit then published the
+    corruption. Now the failure is propagated so `pull_rebase` can return 2 and the
+    marker guard in `commit_local` has a chance to refuse.
+    """
     if not pull_ok:
         log(
             f"sync: dirty changes preserved in stash '{_STASH_MSG}'. "
             f"After resolving: cd {gh} && git stash list && git stash pop",
             quiet=quiet, err=True,
         )
-        return
+        return False
     r = run_git(gh, "stash", "pop", check=False)
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip()[:300]
         log(
-            f"sync: pull ok but stash pop conflict — changes safe in stash. "
-            f"Resolve: cd {gh} && git stash pop. Detail: {err}",
+            f"sync: stash pop CONFLICTED — the working tree now holds conflict "
+            f"markers and the stash entry was kept. Nothing will be committed until "
+            f"you resolve it: cd {gh} && git status. Detail: {err}",
             quiet=quiet, err=True,
         )
-    else:
-        log("sync: restored stashed changes", quiet=quiet)
+        log_debug("auto-sync", f"stash pop conflict: {err}")
+        return False
+    log("sync: restored stashed changes", quiet=quiet)
+    return True
 
 
 def pull_rebase(gh: Path, branch: str, quiet: bool,
@@ -199,7 +265,10 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
             rc = 1
 
     if stash_ref:
-        _restore_stash(gh, pull_ok=(rc == 0), quiet=quiet)
+        # A conflicted pop leaves markers in the tree; surface it as a conflict so the
+        # caller stops (and commit_local's marker guard refuses) instead of publishing.
+        if not _restore_stash(gh, pull_ok=(rc == 0), quiet=quiet) and rc == 0:
+            rc = 2
     return rc
 
 

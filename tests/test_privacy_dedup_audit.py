@@ -371,11 +371,27 @@ class GitignoreBackfillTests(unittest.TestCase):
         self.assertIn("config.json", out)  # preserved
 
     def test_idempotent_when_entries_present(self):
+        """Derive the fixture from _REQUIRED_IGNORES so adding a required entry
+        cannot silently make this test assert stale behaviour."""
         gi = self.tmp / ".gitignore"
-        gi.write_text("config.json\n.audit/\n.dedup-window.json\nreview-ledger.json\n")
+        gi.write_text("config.json\n" + "".join(
+            f"{e}\n" for e in self.sync._REQUIRED_IGNORES))
         before = gi.read_text()
         self.sync.write_default_gitignore(self.tmp)
         self.assertEqual(gi.read_text(), before)
+
+    def test_backfills_newly_required_ignores(self):
+        """v4.6: `.archive/`, `.backup/`, `.session-workspace` and `*.log` were missing
+        from the default, so a fresh non-clone install committed gzip archive blobs and
+        per-machine hook logs. `.session-workspace` is the dangerous one: _home.py
+        resolves it ABOVE config.json's workspace_map, so syncing it pins every other
+        machine to this machine's last selected workspace."""
+        gi = self.tmp / ".gitignore"
+        gi.write_text("config.json\n")
+        self.sync.write_default_gitignore(self.tmp)
+        out = gi.read_text()
+        for entry in (".archive/", ".backup/", ".session-workspace", "*.log"):
+            self.assertIn(entry, out, f"{entry} must be backfilled")
 
     def test_comment_only_mention_does_not_block_backfill(self):
         # v3.1.1: substring check used to skip backfill when a comment merely
