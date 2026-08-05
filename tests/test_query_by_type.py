@@ -324,7 +324,14 @@ class QueryCLISmokeTest(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("GOWTH_MEM_HOME", None)
 
-    def test_cli_no_db_prints_no_results(self):
+    def test_cli_missing_db_reports_actionable_cause(self):
+        """v4.3: a MISSING index must not report '(no results)'.
+
+        'no results' told the user their memory contained no matching entry, when in
+        fact nothing had been indexed — the same class of silent-empty defect as the
+        swallowed FTS5 syntax errors. The CLI now names the cause and the fix.
+        `query_by_type` still returns [] (fail-open API contract unchanged).
+        """
         result = subprocess.run(
             [sys.executable, str(SCRIPTS / "_query.py"),
              "--ws", "ws1", "--type", "decision"],
@@ -332,7 +339,8 @@ class QueryCLISmokeTest(unittest.TestCase):
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0)
-        self.assertIn("no results", result.stdout)
+        self.assertIn("index.db not found", result.stdout)
+        self.assertIn("/mem-reindex", result.stdout)
 
     def test_cli_compiles(self):
         subprocess.run(

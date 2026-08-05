@@ -21,6 +21,101 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _home import index_db  # type: ignore
+from _profile import fts_match, profile  # type: ignore  # v4.3 phi(q) + safe FTS5 expr
+
+
+def _fts_cols(db) -> list[str]:
+    """Return chunks_fts's declared column names, in table order."""
+    try:
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='chunks_fts' AND type='table'"
+        ).fetchone()
+    except sqlite3.Error:
+        return []
+    if not row or not row[0]:
+        return []
+    inner = row[0][row[0].find("(") + 1: row[0].rfind(")")]
+    cols: list[str] = []
+    for part in inner.split(","):
+        name = part.strip().split("=")[0].strip()
+        if name and "'" not in name and name in _COLUMN_WEIGHTS:
+            cols.append(name)
+    return cols
+
+
+# Per-column BM25 weights. A term found in an entry's `[type] Title` is worth more
+# than the same term buried in prose; the schema tag is the strongest signal.
+_COLUMN_WEIGHTS = {"tag": 5.0, "heading": 4.0, "keywords": 3.0, "content": 1.0}
+
+
+def _score_expr(cols: list[str]) -> str:
+    """Build `bm25(chunks_fts, ...)` with one weight per indexed column, in order."""
+    if not cols:
+        return "bm25(chunks_fts)"
+    weights = ", ".join(f"{_COLUMN_WEIGHTS[c]}" for c in cols)
+    return f"bm25(chunks_fts, {weights})"
+
+
+def _ws_predicate(ws: str, params: list) -> str:
+    """Return a SQL fragment restricting rows to one workspace.
+
+    v4.3 (D4): this used to be a Python post-filter applied AFTER `ORDER BY score
+    LIMIT ?`, so a workspace whose hits ranked below the limit returned NOTHING —
+    live repro: `--ws personal --limit 20 "python"` found 0 rows while 3 personal
+    chunks matched. Filtering in SQL makes the limit mean "N hits in this
+    workspace" instead of "N hits anywhere, then discard".
+    """
+    if not ws or ws == "*":
+        return ""
+    if ws == "shared":
+        params.append("shared/%")
+    else:
+        params.append(f"workspaces/{ws}/%")
+    return " AND c.path LIKE ?"
+
+
+def query_ex(
+    ws: str,
+    tag: str,
+    query: str = "",
+    limit: int = 20,
+    *,
+    keyword: str = "",
+    topic: str = "",
+    days: int = 0,
+) -> dict:
+    """Like `query_by_type` but reports WHY a result set is empty.
+
+    Returns ``{"hits": list[dict], "error": str | None}``.
+
+    `query_by_type` is a documented fail-open API returning ``list[dict]``, so it
+    cannot distinguish "nothing matched" from "your query was invalid". That
+    swallowed two real defects: FTS5 raised `no such column: recall` on
+    `vector-recall` and every natural-language query hit FTS5's implicit AND —
+    both surfaced to the user as a bare "(no results)". Callers that want the
+    distinction (the /mem-recall CLI) use this; existing callers keep the old
+    contract.
+    """
+    db_path = index_db()
+    if not db_path.is_file():
+        return {"hits": [], "error": f"index.db not found at {db_path} — run /mem-reindex"}
+
+    match_expr = ""
+    if query.strip():
+        prof = profile(query, days=days)
+        match_expr = fts_match(prof)
+        if not match_expr:
+            return {"hits": [],
+                    "error": "query has no searchable terms (only stopwords or "
+                             "punctuation) — try a distinctive word or identifier"}
+    try:
+        hits = _run_query(db_path, ws, tag, match_expr, limit,
+                          keyword=keyword, topic=topic, days=days)
+    except sqlite3.Error as e:
+        return {"hits": [], "error": f"sqlite/FTS5 error: {e}"}
+    except Exception as e:  # pragma: no cover - defensive, hooks must never raise
+        return {"hits": [], "error": f"{type(e).__name__}: {e}"}
+    return {"hits": hits, "error": None}
 
 
 def query_by_type(
@@ -43,8 +138,12 @@ def query_by_type(
         Schema tag to filter on: "decision", "exp", "ref", "tool", "reflection",
         "skill-ref", "secret-ref", "goal", "hypothesis". Pass "" to skip tag filtering.
     query:
-        FTS5 query string. When empty, results are ordered by rowid DESC (most recent
-        first). When non-empty, results are ranked by a column-weighted BM25 —
+        Free-text query. v4.3: parsed into a profile by `_profile.profile()` and
+        rendered as a SAFE FTS5 expression (quoted phrases joined by OR) — raw text
+        is never passed to FTS5, because bare multi-word text is implicit-AND (0 hits
+        for any question) and punctuation raises OperationalError. When empty,
+        results are ordered by rowid DESC (most recent first). When non-empty,
+        results are ranked by a column-weighted BM25 —
         `bm25(chunks_fts, 5.0, 3.0, 1.0)` — so tag/keyword hits outrank body hits.
     limit:
         Maximum number of results to return.
@@ -58,87 +157,104 @@ def query_by_type(
 
     Returns
     -------
-    list of dicts with keys: path, line_no, content, tag, keywords, bm25_score.
+    list of dicts with keys: path, heading, line_no, content, tag, keywords,
+    bm25_score. `heading` (v4.3) carries the chunk's section title — for curated
+    entries that is the `[type] Title` marker, for session logs the
+    `turn N — HH:MM` anchor; neither is reachable through the content column.
     line_no is always 0 (chunks table does not store per-line offsets).
-    Returns empty list on any error (fail-open).
+    Returns empty list on any error (fail-open). Use `query_ex` when you need to
+    tell "no matches" apart from "invalid query".
     """
-    db_path = index_db()
-    if not db_path.is_file():
-        return []
+    return query_ex(ws, tag, query, limit,
+                    keyword=keyword, topic=topic, days=days)["hits"]
+
+
+def _run_query(
+    db_path,
+    ws: str,
+    tag: str,
+    match_expr: str,
+    limit: int,
+    *,
+    keyword: str = "",
+    topic: str = "",
+    days: int = 0,
+) -> list[dict]:
+    """Execute the query. Raises on SQL/FTS5 errors so `query_ex` can report them.
+
+    `match_expr` is already a safe FTS5 expression built by `_profile.fts_match`
+    (quoted phrases joined by OR) — never raw user text. An empty `match_expr`
+    means "no text query": rows are returned most-recent-first.
+    """
+    db = sqlite3.connect(str(db_path))
     try:
-        db = sqlite3.connect(str(db_path))
         db.execute("PRAGMA busy_timeout=2000")
         cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
         if "tag" not in cols:
-            db.close()
-            return []
+            raise sqlite3.Error("index predates v3.4 (no tag column) — run /mem-reindex")
         has_keywords = "keywords" in cols
 
         import time as _time
         mtime_cutoff = (_time.time() - days * 86400) if days and days > 0 else None
 
-        # Shared non-FTS predicates (tag / keyword / topic / days).
+        # Shared non-FTS predicates (workspace / tag / keyword / topic / days).
+        # Each clause is appended to the SQL and its parameter to `params` in the
+        # SAME step — placeholder order must equal bind order.
         def _extra_where(params: list) -> str:
-            clauses = []
+            sql = _ws_predicate(ws, params)
             if tag:
-                clauses.append("c.tag = ?")
+                sql += " AND c.tag = ?"
                 params.append(tag)
             if keyword and has_keywords:
-                clauses.append("c.keywords LIKE ?")
+                sql += " AND c.keywords LIKE ?"
                 params.append(f"%{keyword.lower()}%")
             if topic:
-                clauses.append("c.path LIKE ?")
+                sql += " AND c.path LIKE ?"
                 params.append(f"%/{topic}/%")
             if mtime_cutoff is not None:
-                clauses.append("c.mtime >= ?")
+                sql += " AND c.mtime >= ?"
                 params.append(mtime_cutoff)
-            return "".join(f" AND {c}" for c in clauses)
+            return sql
 
         kw_sel = "c.keywords" if has_keywords else "'' AS keywords"
         results: list[dict] = []
 
-        if query.strip():
-            params: list = [query]
-            # Weighted BM25: tag(5) > keywords(3) > content(1) when keywords exist,
-            # else fall back to (tag, content) 2-column weighting for older indexes.
-            score_expr = ("bm25(chunks_fts, 5.0, 3.0, 1.0)"
-                          if has_keywords else "bm25(chunks_fts, 5.0, 1.0)")
+        if match_expr:
+            params: list = [match_expr]
+            # bm25() weights are POSITIONAL over the chunks_fts columns, so they must
+            # match the arity of whatever schema version this index is at. Weighting:
+            # tag(5) > heading(4) > keywords(3) > content(1) — a hit in an entry's
+            # `[type] Title` outranks a hit buried in prose.
+            score_expr = _score_expr(_fts_cols(db))
             sql = (
-                f"SELECT c.path, c.content, c.tag, {kw_sel}, {score_expr} AS score "
+                f"SELECT c.path, c.heading, c.content, c.tag, {kw_sel}, "
+                f"{score_expr} AS score "
                 "FROM chunks_fts JOIN chunks c ON chunks_fts.rowid = c.id "
                 "WHERE chunks_fts MATCH ?"
                 + _extra_where(params)
                 + " ORDER BY score LIMIT ?"
             )
             params.append(limit)
-            rows = db.execute(sql, params).fetchall()
-            for path, content, chunk_tag, kw, score in rows:
-                if ws and ws != "*" and not _path_in_ws(path, ws):
-                    continue
-                results.append({"path": path, "line_no": 0, "content": content,
-                                "tag": chunk_tag, "keywords": kw, "bm25_score": score})
+            for path, heading, content, chunk_tag, kw, score in db.execute(sql, params):
+                results.append({"path": path, "heading": heading or "", "line_no": 0,
+                                "content": content, "tag": chunk_tag,
+                                "keywords": kw, "bm25_score": score})
         else:
             params = []
             sql = (
-                f"SELECT c.path, c.content, c.tag, {kw_sel} "
+                f"SELECT c.path, c.heading, c.content, c.tag, {kw_sel} "
                 "FROM chunks c WHERE 1=1"
                 + _extra_where(params)
                 + " ORDER BY c.id DESC LIMIT ?"
             )
-            params.append(limit * 3)
-            rows = db.execute(sql, params).fetchall()
-            for path, content, chunk_tag, kw in rows:
-                if ws and ws != "*" and not _path_in_ws(path, ws):
-                    continue
-                results.append({"path": path, "line_no": 0, "content": content,
-                                "tag": chunk_tag, "keywords": kw, "bm25_score": 0.0})
-                if len(results) >= limit:
-                    break
-
-        db.close()
+            params.append(limit)
+            for path, heading, content, chunk_tag, kw in db.execute(sql, params):
+                results.append({"path": path, "heading": heading or "", "line_no": 0,
+                                "content": content, "tag": chunk_tag,
+                                "keywords": kw, "bm25_score": 0.0})
         return results
-    except Exception:
-        return []
+    finally:
+        db.close()
 
 
 def _path_in_ws(rel_path: str, ws: str) -> bool:
@@ -182,8 +298,14 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     query = args.query or " ".join(args.query_pos)
-    hits = query_by_type(ws=args.ws, tag=args.tag, query=query, limit=args.limit,
-                         keyword=args.keyword, topic=args.topic, days=args.days)
+    res = query_ex(ws=args.ws, tag=args.tag, query=query, limit=args.limit,
+                   keyword=args.keyword, topic=args.topic, days=args.days)
+    hits = res["hits"]
+    if res["error"]:
+        # v4.3: an invalid or unsearchable query is NOT "no results" — say so, or the
+        # user silently concludes the vault is empty.
+        print(f"(query problem: {res['error']})")
+        sys.exit(0)
     if not hits:
         print("(no results)")
         sys.exit(0)
@@ -193,6 +315,11 @@ if __name__ == "__main__":
         kw = hit.get("keywords") or ""
         kw_str = f"  kw={kw}" if kw else ""
         print(f"{hit['path']}  {tag_str}{score_str}{kw_str}")
+        # The heading carries the `[type] Title` marker (curated entries) or the
+        # `turn N — HH:MM` anchor (session logs) — the most locating line available.
+        heading = (hit.get("heading") or "").strip()
+        if heading:
+            print(f"  § {heading[:110]}")
         # Compact content preview (first 120 chars, single line)
         preview = hit["content"].replace("\n", " ")[:120]
         print(f"  {preview}")

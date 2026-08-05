@@ -234,6 +234,22 @@ def _migrate_tag_column_inner(db: sqlite3.Connection) -> None:
         db.execute(f"UPDATE chunks SET tag = '' WHERE tag NOT IN ('{known}')")
         db.commit()
 
+    # v4.3 self-healing backfill: block-form entries (`## [decision] Title`) keep
+    # their marker in `heading`, not `content`, so the content-only backfill above
+    # left them untagged. Runs on every migration pass and is idempotent (only
+    # touches rows still at tag='').
+    db.execute("""
+        UPDATE chunks SET tag = LOWER(SUBSTR(LTRIM(heading), 2,
+                                             INSTR(LTRIM(heading), ']') - 2))
+        WHERE tag = ''
+          AND heading IS NOT NULL
+          AND SUBSTR(LTRIM(heading), 1, 1) = '['
+          AND INSTR(LTRIM(heading), ']') > 2
+    """)
+    known = "','".join(KNOWN_TAGS)
+    db.execute(f"UPDATE chunks SET tag = '' WHERE tag NOT IN ('{known}') AND tag <> ''")
+    db.commit()
+
     # Create tag index if absent (safe after column is guaranteed to exist).
     db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tag ON chunks(tag)")
     db.commit()
@@ -326,6 +342,61 @@ def _migrate_keywords_column_inner(db: sqlite3.Connection) -> None:
         db.commit()
 
 
+def _migrate_heading_column(db: sqlite3.Connection) -> None:
+    """Idempotent v4.3 migration: index `heading` in chunks_fts.
+
+    chunks_fts was (tag, keywords, content) — the heading was stored in `chunks`
+    but never indexed, so the `[type] Title` line of every curated entry and the
+    `turn N — HH:MM` anchor of every session log were UNSEARCHABLE. A query for a
+    word that appears only in a title returned nothing.
+
+    Mirrors `_migrate_tag_column` / `_migrate_keywords_column`: wrapped in
+    `file_lock("index-migrate")` and self-refilling from `chunks` (never delegating
+    the refill to a command the user must remember to run).
+    """
+    try:
+        lock_cm = file_lock("index-migrate", timeout=10.0)
+    except Exception:
+        lock_cm = None
+    if lock_cm is not None:
+        with lock_cm:
+            _migrate_heading_column_inner(db)
+    else:
+        _migrate_heading_column_inner(db)
+
+
+def _migrate_heading_column_inner(db: sqlite3.Connection) -> None:
+    if "heading" in _fts_columns(db):
+        return
+    try:
+        db.execute("DROP TABLE IF EXISTS chunks_fts")
+    except Exception:
+        pass
+    db.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+        "tag, keywords, heading, content, content='chunks', content_rowid='id', "
+        "tokenize='unicode61')"
+    )
+    db.execute(
+        "INSERT INTO chunks_fts(rowid, tag, keywords, heading, content) "
+        "SELECT id, tag, keywords, COALESCE(heading, ''), content FROM chunks"
+    )
+    db.commit()
+
+
+def _fts_columns(db: sqlite3.Connection) -> set[str]:
+    """Return the column names declared on the chunks_fts virtual table."""
+    try:
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='chunks_fts' AND type='table'"
+        ).fetchone()
+    except Exception:
+        return set()
+    if not row or not row[0]:
+        return set()
+    return set(re.findall(r"\b(\w+)\b", row[0]))
+
+
 def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> None:
     # NOTE: idx_chunks_tag is NOT created here because the old `chunks` table may
     # already exist without the `tag` column. _migrate_tag_column() adds the column
@@ -360,11 +431,13 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
     """)
     db.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-        "tag, keywords, content, content='chunks', content_rowid='id', tokenize='unicode61')"
+        "tag, keywords, heading, content, content='chunks', content_rowid='id', "
+        "tokenize='unicode61')"
     )
-    # Run migrations in case DB was created by older code without tag/keywords.
+    # Run migrations in case DB was created by older code without tag/keywords/heading.
     _migrate_tag_column(db)
     _migrate_keywords_column(db)
+    _migrate_heading_column(db)
     if use_vec:
         sqlite_vec.load(db)  # type: ignore
         db.execute(
@@ -509,7 +582,11 @@ def main() -> int:
             # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
             # entry whether or not it carries inline #tags.
             h = hashlib.sha1(strip_tags_text(content).encode()).hexdigest()[:16]
-            tag = _extract_tag(content)
+            # v4.3: split_chunks() lifts `## [decision] Title` into `heading`, so a
+            # content-only probe missed every block-form entry — live vault had 4,714
+            # chunks with a `[tag]` heading but only 54 rows with `tag` set, which made
+            # the 5.0 BM25 tag weight and the --type filter apply to 0.4% of the corpus.
+            tag = _extract_tag(heading) or _extract_tag(content)
             keywords = _chunk_keywords(content, text if ci == 0 else None)
             cid = db.execute(
                 "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
@@ -517,8 +594,9 @@ def main() -> int:
                 (rel, heading, content, mtime, h, tag, keywords),
             ).lastrowid
             db.execute(
-                "INSERT INTO chunks_fts(rowid, tag, keywords, content) VALUES (?, ?, ?, ?)",
-                (cid, tag, keywords, content),
+                "INSERT INTO chunks_fts(rowid, tag, keywords, heading, content) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (cid, tag, keywords, heading or "", content),
             )
             if use_vec:
                 vec = embed_one(content)
