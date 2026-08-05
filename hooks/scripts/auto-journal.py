@@ -282,6 +282,16 @@ def main() -> int:
         except Exception as e:
             log_debug("auto-journal", f"capture_turn wrapper failed: {e}")
 
+    # v4.4: debounced vault push. hooks.json wires auto-sync to PostCompact ONLY, so
+    # a session that never compacts never pushed — a live vault was found holding 116
+    # uncommitted changes at ahead=0/behind=0, invisible to the user's other machine.
+    # Debounced (default 30 min) + spawned detached, so a turn never waits on network.
+    try:
+        from _sync import maybe_autosync  # type: ignore
+        maybe_autosync()
+    except Exception as e:
+        log_debug("auto-journal", f"maybe_autosync failed: {e}")
+
     reasons: list[str] = []
 
     # Journal cadence.

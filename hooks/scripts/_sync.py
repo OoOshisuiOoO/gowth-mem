@@ -14,17 +14,20 @@ User then runs /mem-sync-resolve.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
 from _git import auth_url, git_cmd, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
-from _home import conflict_md, gowth_home  # type: ignore
+from _home import conflict_md, gowth_home, read_settings  # type: ignore
+from _debug import log_debug  # type: ignore
 from _lock import file_lock  # type: ignore
 
 
@@ -235,3 +238,98 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ── debounced auto-push (v4.4) ───────────────────────────────────────────
+#
+# Coverage gap this closes: hooks/hooks.json wires auto-sync to PostCompact ONLY, so a
+# session that never compacts never pushes. Observed on a live vault: 116 uncommitted
+# changes at ahead=0/behind=0 — a full session of hook writes (journal, forget
+# deletions, _MAP, handoff) that a second machine could not see. The longer the drift,
+# the worse the eventual conflict.
+#
+# The Stop hook runs every turn, so it is the right trigger — but it must never turn a
+# turn into a network round-trip. Hence: debounce on a machine-local timestamp, and
+# spawn the sync DETACHED so the hook returns immediately.
+
+DEFAULT_AUTOSYNC_MINUTES = 30
+MIN_AUTOSYNC_MINUTES = 5
+
+
+def _sync_settings() -> dict:
+    try:
+        s = read_settings()
+        v = s.get("sync") if isinstance(s, dict) else None
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _record_autosync() -> None:
+    """Stamp `last_autosync` in state.json without clobbering other keys."""
+    try:
+        p = gowth_home() / "state.json"
+        try:
+            d = json.loads(p.read_text()) if p.is_file() else {}
+            if not isinstance(d, dict):
+                d = {}
+        except Exception:
+            d = {}
+        d["last_autosync"] = time.time()
+        atomic_write(p, json.dumps(d, indent=2) + "\n")
+    except Exception as exc:
+        log_debug("sync", f"could not record last_autosync: {exc}")
+
+
+def maybe_autosync(dry_run: bool = False) -> dict:
+    """Push the vault if the debounce window has elapsed. Never raises.
+
+    Returns {"due": bool, "interval_minutes": int, "spawned": bool}.
+    Settings: `sync.auto_sync_on_stop` (default true),
+              `sync.min_interval_minutes` (default 30, floor 5).
+    """
+    out = {"due": False, "interval_minutes": DEFAULT_AUTOSYNC_MINUTES, "spawned": False}
+    try:
+        cfg = _sync_settings()
+        if not cfg.get("auto_sync_on_stop", True):
+            return out
+        try:
+            minutes = int(cfg.get("min_interval_minutes", DEFAULT_AUTOSYNC_MINUTES))
+        except Exception:
+            minutes = DEFAULT_AUTOSYNC_MINUTES
+        minutes = max(MIN_AUTOSYNC_MINUTES, minutes)
+        out["interval_minutes"] = minutes
+
+        gh = gowth_home()
+        if not (gh / ".git").exists():
+            return out          # not a synced vault; nothing to push
+
+        last = 0.0
+        try:
+            p = gh / "state.json"
+            if p.is_file():
+                last = float(json.loads(p.read_text()).get("last_autosync") or 0.0)
+        except Exception:
+            last = 0.0
+
+        if time.time() - last < minutes * 60:
+            return out
+        out["due"] = True
+        if dry_run:
+            return out
+
+        script = Path(__file__).parent / "auto-sync.py"
+        if not script.is_file():
+            return out
+        # Detached: the Stop hook must not wait on the network.
+        subprocess.Popen(
+            ["python3", str(script), "--pull-rebase-push", "--quiet"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+        _record_autosync()
+        out["spawned"] = True
+        return out
+    except Exception as exc:
+        log_debug("sync", f"maybe_autosync failed: {exc}")
+        return out

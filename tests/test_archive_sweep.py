@@ -255,3 +255,44 @@ class ArchiveWorkspaceFilterTest(unittest.TestCase):
         hits = self.q.query_by_type(ws="trade", tag="", query="clusterpivot",
                                     include_archive=True)
         self.assertEqual(hits, [], "must not leak another workspace's archive")
+
+
+class ArchiveSettingTest(unittest.TestCase):
+    """`retrieval.index_archive` must actually be read — a documented setting that
+    does nothing is worse than no setting."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gowth_archset_")
+        os.environ["GOWTH_MEM_HOME"] = self.tmp
+        self.home = Path(self.tmp)
+        wsd = self.home / "workspaces" / "demo"
+        wsd.mkdir(parents=True, exist_ok=True)
+        (wsd / "workspace.json").write_text('{"name": "demo"}')
+        d = self.home / ".archive" / "journal" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        with gzip.open(d / "2026-06-01-1780000009.md.gz", "wt") as fh:
+            fh.write("# a\n\n[exp] settingprobe lesson\n")
+
+    def tearDown(self):
+        os.environ.pop("GOWTH_MEM_HOME", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self):
+        r = subprocess.run([sys.executable, str(SCRIPTS / "_index.py"), "--full"],
+                           capture_output=True, text=True,
+                           env={**os.environ, "GOWTH_MEM_HOME": self.tmp})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        db = sqlite3.connect(str(self.home / "index.db"))
+        try:
+            return db.execute(
+                "SELECT count(*) FROM chunks WHERE path LIKE '.archive/%'").fetchone()[0]
+        finally:
+            db.close()
+
+    def test_enabled_by_default(self):
+        self.assertGreater(self._run(), 0)
+
+    def test_setting_false_skips_archive(self):
+        (self.home / "settings.json").write_text(
+            '{"retrieval": {"index_archive": false}}')
+        self.assertEqual(self._run(), 0)

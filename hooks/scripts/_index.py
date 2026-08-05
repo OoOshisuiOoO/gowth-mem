@@ -752,7 +752,14 @@ def main() -> int:
 
     archived_files = 0
     archived_chunks = 0
-    if not args.no_archive:
+    # settings.retrieval.index_archive (default true) — the CLI flag is an override.
+    try:
+        from _home import read_settings  # type: ignore
+        _r = (read_settings() or {}).get("retrieval") or {}
+        _archive_enabled = bool(_r.get("index_archive", True))
+    except Exception:
+        _archive_enabled = True
+    if not args.no_archive and _archive_enabled:
         for gz in _collect_archive_sources():
             rel = str(gz.relative_to(gh))
             mtime = gz.stat().st_mtime

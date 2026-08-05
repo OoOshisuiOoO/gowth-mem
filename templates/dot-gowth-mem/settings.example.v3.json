@@ -44,8 +44,17 @@
     "readme_filename": "00-README.md",
     "aspect_filename_pattern": "YYYY-MM-DD-<aspect>.md",
     "lessons_filename": "lessons.md",
-    "reserved_aspect_names": ["readme", "lessons", "00-readme"],
-    "reserved_subdirs": ["docs", "journal", "skills", "research"],
+    "reserved_aspect_names": [
+      "readme",
+      "lessons",
+      "00-readme"
+    ],
+    "reserved_subdirs": [
+      "docs",
+      "journal",
+      "skills",
+      "research"
+    ],
     "promote_lines": 800,
     "lazy_nest_threshold": 5,
     "max_depth": 3,
@@ -66,8 +75,16 @@
   },
   "moc": {
     "auto_rebuild": true,
-    "workspace_sections": ["topics", "docs", "journal"],
-    "topic_readme_sections": ["TL;DR", "Aspects (auto)", "Cross-links (manual)"],
+    "workspace_sections": [
+      "topics",
+      "docs",
+      "journal"
+    ],
+    "topic_readme_sections": [
+      "TL;DR",
+      "Aspects (auto)",
+      "Cross-links (manual)"
+    ],
     "preserve_manual": "## Cross-links (manual)"
   },
   "embedding": {
@@ -81,7 +98,8 @@
     "fts5_top_k": 12,
     "jaccard_min_score": 0.15,
     "jaccard_top_k": 10,
-    "jaccard_n": 3
+    "jaccard_n": 3,
+    "index_archive": true
   },
   "context_budget": {
     "enabled": false,
@@ -99,12 +117,21 @@
     "enabled": false,
     "min_repeat": 3,
     "max_per_group": 5,
-    "modes": ["journal", "aspect", "log"]
+    "modes": [
+      "journal",
+      "aspect",
+      "log"
+    ]
   },
   "contradictions": {
     "enabled": true,
     "min_entity_overlap": 3,
-    "scan_types": ["ref", "decision", "tool", "hypothesis"]
+    "scan_types": [
+      "ref",
+      "decision",
+      "tool",
+      "hypothesis"
+    ]
   },
   "recall": {
     "max_chars_per_file": 15000,
@@ -143,7 +170,7 @@
   "_notes": {
     "version": "schema 3.0 = topic-FOLDER + dated-aspect layout (replaces v2.4 single-file-per-topic)",
     "layout_version": "Integer schema version. v3 is current. Read-path stays permissive across v3/v2.4/v2.3; write-path is strict v3.",
-    "journal": "v3.6 active-forgetting (canon §3). Journals = ephemeral hippocampal buffer. raw_ttl_days: archive raw journals older than N days. max_bytes: also archive a >1-day-old journal over this size. salvage: lift curated `- [type]` entries into journal/_salvage.md before archiving. auto_forget_enabled: run _forget.py on the Stop hook. Archives go to .archive/ (gitignored) + stay in memory-repo git history.",
+    "journal": "v3.6 active-forgetting (canon \u00a73). Journals = ephemeral hippocampal buffer. raw_ttl_days: archive raw journals older than N days. max_bytes: also archive a >1-day-old journal over this size. salvage: lift curated `- [type]` entries into journal/_salvage.md before archiving. auto_forget_enabled: run _forget.py on the Stop hook. Archives go to .archive/ (gitignored) + stay in memory-repo git history.",
     "topic_layout.mode": "folder (v3 only). Each topic = workspaces/<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}.",
     "topic_layout.reserved_aspect_names": "Blocked aspect slugs (would collide with structural files).",
     "topic_layout.reserved_subdirs": "Cannot be used as topic slugs at workspace root.",
@@ -155,5 +182,9 @@
     "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest.",
     "tags": "v4.0 deterministic auto-tagging. Write path appends inline #tags to each entry (stdlib keyword extraction, no LLM) + unions them into aspect frontmatter tags:. Indexed as a weighted FTS5 column; /mem-recall --keyword filters on it. Dedup hashes are computed on tag-stripped content so tags never break dedup.",
     "reflection": "v4.0 session self-review loop. Stop hook captures each turn's user prompt + thinking digest into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals). Every turn_interval turns, injects a self-review directive (templates/self-review-instructions.md): honest 3-dimension scoring (user prompting / Claude reasoning / collaboration) with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md."
+  },
+  "sync": {
+    "auto_sync_on_stop": true,
+    "min_interval_minutes": 30
   }
 }
