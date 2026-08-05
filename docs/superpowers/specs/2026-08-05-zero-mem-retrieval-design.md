@@ -1,6 +1,6 @@
 # Zero-Mem Retrieval Repair (v4.3) — Design Spec
 
-Date: 2026-08-05 · Status: approved by user · Source: arXiv 2607.29377v1
+Date: 2026-08-05 · Status: Tier 1 SHIPPED, Tier 2 partial · Source: arXiv 2607.29377v1
 ("Zero-Mem: Zero-Token Memory Operations for LLM Agents", Xiao et al., 31 Jul 2026)
 
 ## Problem
@@ -83,27 +83,35 @@ previews (violates "never sync real secret values").
 Two tiers. Tier 1 is verified defects with small diffs; Tier 2 is additive and measured
 only after Tier 1 lands.
 
-### Tier 1 — repair what exists
+### Tier 1 — repair what exists  ✅ SHIPPED
+
+Shipped in commits f6e0fd9, 724872c, 320712b, fa751a3, d826a60. Two defects found
+*while* fixing these and also shipped: the heading was never indexed in chunks_fts
+(so a term appearing only in an entry title was unsearchable), and frontmatter was
+chunked as content (so every routed write landed untagged).
 
 | Task | Change | Files |
 |---|---|---|
-| T1 | `_extract_tag(heading) or _extract_tag(content)`; return `heading` from recall rows | `_index.py`, `_query.py` |
-| T2 | Workspace predicate moves into SQL (`path LIKE 'workspaces/'||?||'/%'` / `'shared/%'`) so it filters *before* `LIMIT` | `_query.py` |
-| T3 | `_profile.py` (new): `profile(query)` → φ(q); `fts_match(profile)` → safe OR-joined quoted expression. `query_ex()` (new sibling) returns `{"hits", "error"}`; `query_by_type` keeps its `list[dict]` contract | `_profile.py`, `_query.py` |
-| T4 | `reindex_paths(paths)` in `_index.py`, wired into `append_entry`/`append_lesson`, try/except-pass | `_index.py`, `_topic.py`, `_lesson.py` |
-| T5 | Bootstrap: `MAX_PER_FILE` + an explicit **reserved floor** for `docs/handoff.md` and workspace `AGENTS.md`, loaded before large static files. `MAX_TOTAL` stays 15,000 | `bootstrap-load.py` |
-| T6 | Repoint the 6 dead-layout commands at `~/.gowth-mem/workspaces/<ws>/` via `_home.py` | `commands/mem-{journal,cost,distill,reflect,promote,skillify}.md` |
+| T1 ✅ | `_extract_tag(heading) or _extract_tag(content)`; return `heading` from recall rows | `_index.py`, `_query.py` |
+| T2 ✅ | Workspace predicate moves into SQL (`path LIKE 'workspaces/'||?||'/%'` / `'shared/%'`) so it filters *before* `LIMIT` | `_query.py` |
+| T3 ✅ | `_profile.py` (new): `profile(query)` → φ(q); `fts_match(profile)` → safe OR-joined quoted expression. `query_ex()` (new sibling) returns `{"hits", "error"}`; `query_by_type` keeps its `list[dict]` contract | `_profile.py`, `_query.py` |
+| T4 ✅ | `reindex_paths(paths)` in `_index.py`, wired into `append_entry`/`append_lesson`, try/except-pass | `_index.py`, `_topic.py`, `_lesson.py` |
+| T5 ✅ | Bootstrap: `MAX_PER_FILE` + an explicit **reserved floor** for `docs/handoff.md` and workspace `AGENTS.md`, loaded before large static files. `MAX_TOTAL` stays 15,000 | `bootstrap-load.py` |
+| T6 ✅ | Repoint the 6 dead-layout commands at `~/.gowth-mem/workspaces/<ws>/` via `_home.py` | `commands/mem-{journal,cost,distill,reflect,promote,skillify}.md` |
 
 `query_by_type`'s signature and return type are unchanged — 21 tests in
 `tests/test_query_by_type.py` assert `list[dict]` and it is documented public API.
 
-### Tier 2 — additive, sequenced
+### Tier 2 — additive, sequenced  ◐ PARTIAL
+
+T9's per-path collapse shipped (d826a60) — it was the only measured ranking win.
+T7/T8/T10/T11/T12 remain open.
 
 | Task | Change | Gate |
 |---|---|---|
 | T7 | `.archive/manifest.jsonl` + index archived `.gz` at a low layer weight; never bootstrap-loaded | must land **before** T8 |
 | T8 | `sweep_orphans()` — `chunks_fts` rowids deleted **before** `chunks` rows (external-content table); `--dry-run` default; prints counts | after T7 |
-| T9 | Closure `N_h` (limit 1) + per-path collapse; rows labelled `support`/`primary` so `--type` never returns untagged prose as a typed entry; `N_g` default **off** | measure after T1 whether returning `heading` already fixes interpretability |
+| T9 ◐ | Closure `N_h` (limit 1) + per-path collapse; rows labelled `support`/`primary` so `--type` never returns untagged prose as a typed entry; `N_g` default **off** | measure after T1 whether returning `heading` already fixes interpretability |
 | T10 | Calibration multipliers (type match 1.35, MOC 1.20, `journal/sessions` 0.6, temporal decay) behind `settings.retrieval.*` | after T9 |
 | T11 | `source=` on `append_entry`/`append_lesson` → `(from journal/sessions/<date>-<sid>.md#turn-N)`. The trailer **must be stripped before hashing** — it lands in the indexed chunk and would otherwise silently re-break `sha1(strip_tags_text(content))` dedup | independent |
 | T12 | `conflict-detect` once-per-session suppression via `state.json` (~16,800 tokens/day while a conflict is open) | independent |
