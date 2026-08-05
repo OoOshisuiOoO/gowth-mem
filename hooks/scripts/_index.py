@@ -578,9 +578,9 @@ def main() -> int:
             text = f.read_text(errors="ignore")
         except Exception:
             continue
-        n = _index_one(db, rel, text, mtime, use_vec)
+        n, embedded = _index_one(db, rel, text, mtime, use_vec)
         indexed_chunks += n
-        embed_calls += n if use_vec else 0
+        embed_calls += embedded
         indexed_files += 1
 
     slug_count = _index_slugs(db, sources, args.full)
@@ -622,14 +622,15 @@ def _index_one(
     text: str,
     mtime: float,
     use_vec: bool,
-) -> int:
-    """Replace all rows for one file. Returns the number of chunks written.
+) -> tuple[int, int]:
+    """Replace all rows for one file. Returns (chunks_written, embeddings_stored).
 
     Single indexing path shared by `main()` (full/incremental sweep) and
     `reindex_paths()` (write-time refresh), so the two can never drift.
     """
     _drop_path_rows(db, rel, use_vec)
     written = 0
+    embedded = 0
     # Chunk the BODY, not the frontmatter. A routed write produces
     # `frontmatter + [type] entry` with no `##` heading, so the file was one chunk
     # whose content began with `---` — the [type] marker was never at content start
@@ -664,8 +665,9 @@ def _index_one(
                     "INSERT INTO chunks_vec(id, embedding) VALUES (?, ?)",
                     (cid, serialize_vec(vec)),
                 )
+                embedded += 1
         written += 1
-    return written
+    return written, embedded
 
 
 def reindex_paths(paths) -> int:
