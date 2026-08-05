@@ -56,7 +56,7 @@ def _score_expr(cols: list[str]) -> str:
     return f"bm25(chunks_fts, {weights})"
 
 
-def _ws_predicate(ws: str, params: list) -> str:
+def _ws_predicate(ws: str, params: list, archive: bool = False) -> str:
     """Return a SQL fragment restricting rows to one workspace.
 
     v4.3 (D4): this used to be a Python post-filter applied AFTER `ORDER BY score
@@ -67,6 +67,11 @@ def _ws_predicate(ws: str, params: list) -> str:
     """
     if not ws or ws == "*":
         return ""
+    if archive:
+        # Archived paths are `.archive/<kind>/<ws>/…`, so the live prefix pattern
+        # would match nothing — filter on an embedded `/<ws>/` segment instead.
+        params.append(f"%/{ws}/%")
+        return " AND c.path LIKE ?"
     if ws == "shared":
         params.append("shared/%")
     else:
@@ -84,6 +89,7 @@ def query_ex(
     topic: str = "",
     days: int = 0,
     collapse: bool = True,
+    include_archive: bool = False,
 ) -> dict:
     """Like `query_by_type` but reports WHY a result set is empty.
 
@@ -111,7 +117,8 @@ def query_ex(
                              "punctuation) — try a distinctive word or identifier"}
     try:
         hits = _run_query(db_path, ws, tag, match_expr, limit,
-                          keyword=keyword, topic=topic, days=days, collapse=collapse)
+                          keyword=keyword, topic=topic, days=days, collapse=collapse,
+                          include_archive=include_archive)
     except sqlite3.Error as e:
         return {"hits": [], "error": f"sqlite/FTS5 error: {e}"}
     except Exception as e:  # pragma: no cover - defensive, hooks must never raise
@@ -129,6 +136,7 @@ def query_by_type(
     topic: str = "",
     days: int = 0,
     collapse: bool = True,
+    include_archive: bool = False,
 ) -> list[dict]:
     """Return chunks filtered by tag/keyword/topic/date, optionally ranked by BM25.
 
@@ -151,6 +159,10 @@ def query_by_type(
         column arity, so an older index still scores correctly.
     limit:
         Maximum number of results to return.
+    include_archive:
+        v4.3 — search ONLY `.archive/**.gz` (forgotten memory past its raw TTL)
+        instead of live content. Archived material is indexed but excluded by
+        default so raw transcript cannot crowd out curated entries.
     collapse:
         v4.3 — keep only the best-ranked chunk per FILE (default True). Without it a
         single long file can fill every slot of `limit`. Pass False for chunk-level
@@ -174,7 +186,8 @@ def query_by_type(
     tell "no matches" apart from "invalid query".
     """
     return query_ex(ws, tag, query, limit, keyword=keyword, topic=topic,
-                    days=days, collapse=collapse)["hits"]
+                    days=days, collapse=collapse,
+                    include_archive=include_archive)["hits"]
 
 
 def _collapse_per_path(rows: list[dict], limit: int) -> list[dict]:
@@ -213,6 +226,7 @@ def _run_query(
     topic: str = "",
     days: int = 0,
     collapse: bool = True,
+    include_archive: bool = False,
 ) -> list[dict]:
     """Execute the query. Raises on SQL/FTS5 errors so `query_ex` can report them.
 
@@ -235,7 +249,15 @@ def _run_query(
         # Each clause is appended to the SQL and its parameter to `params` in the
         # SAME step — placeholder order must equal bind order.
         def _extra_where(params: list) -> str:
-            sql = _ws_predicate(ws, params)
+            sql = _ws_predicate(ws, params, archive=include_archive)
+            if not include_archive:
+                # v4.3: `.archive/**.gz` is indexed so forgotten memory stays
+                # FINDABLE, but archived raw transcript must not pollute normal
+                # recall — opt in with include_archive / `--archive`.
+                sql += " AND c.path NOT LIKE '.archive/%'"
+            else:
+                sql += " AND c.path LIKE '.archive/%'"
+
             if tag:
                 sql += " AND c.tag = ?"
                 params.append(tag)
@@ -334,12 +356,16 @@ if __name__ == "__main__":
     ap.add_argument("--topic", default="", help="Filter to a topic slug (path /<slug>/)")
     ap.add_argument("--days", type=int, default=0, help="Only chunks modified within N days")
     ap.add_argument("--limit", type=int, default=20, help="Max results (default 20)")
+    ap.add_argument("--archive", action="store_true",
+                    help="search archived (forgotten) memory under .archive/ instead "
+                         "of live content")
     ap.add_argument("query_pos", nargs="*", help="Query terms (joined; same as --query)")
     args = ap.parse_args()
 
     query = args.query or " ".join(args.query_pos)
     res = query_ex(ws=args.ws, tag=args.tag, query=query, limit=args.limit,
-                   keyword=args.keyword, topic=args.topic, days=args.days)
+                   keyword=args.keyword, topic=args.topic, days=args.days,
+                   include_archive=args.archive)
     hits = res["hits"]
     if res["error"]:
         # v4.3: an invalid or unsearchable query is NOT "no results" — say so, or the

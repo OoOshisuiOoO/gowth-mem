@@ -93,7 +93,24 @@ if [ "$PUSH" -eq 1 ]; then
   git push origin main
   git push origin "v$NEXT"
   echo ""
-  echo "DONE. Other machines: claude /plugin marketplace update gowth-mem"
+  cat <<EOM
+
+DONE — v$NEXT is live.
+
+On your OTHER machines, run these in Claude Code (all three; the first alone is NOT
+enough — 'marketplace update' only refreshes the catalog, it does not upgrade the
+installed plugin):
+
+  /plugin marketplace update gowth-mem     # fetch the new marketplace.json
+  /plugin update gowth-mem@gowth-mem       # upgrade the installed plugin to $NEXT
+  /reload-plugins                          # hooks/MCP need this (or restart Claude Code)
+
+Skills and slash commands live-reload; HOOKS do not, so skipping /reload-plugins
+leaves the old hook scripts running until the next launch.
+
+Then verify: bin/doctor.sh --dry-run   (checks installed_plugins.json / installPath)
+Memory vault is a SEPARATE repo — sync it with /mem-sync, not with the plugin.
+EOM
 else
   echo ""
   echo "skipped push (--no-push). Run: git push origin main && git push origin v$NEXT"

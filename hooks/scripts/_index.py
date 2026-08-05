@@ -27,6 +27,7 @@ import hashlib
 import re
 import sqlite3
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -189,6 +190,149 @@ def _collect_sources() -> list[tuple[str, Path]]:
                 if p.is_file():
                     out.append((ws, p))
     return out
+
+
+ARCHIVE_DIR = ".archive"
+_ARCH_EPOCH_RE = re.compile(r"-\d{9,}$")   # _forget.py appends -<epoch> when archiving
+
+
+def _collect_archive_sources() -> list[Path]:
+    """Return every gzipped file under `.archive/`.
+
+    `_forget.py` gzip-archives raw journal and aged aspects here. Nothing indexed
+    them, so archived memory was unsearchable — recoverable only by hand-gunzipping
+    or reading git history. Forgetting is meant to keep the BOOTSTRAP cheap, not to
+    make knowledge unfindable, so archives are indexed (index.db is gitignored,
+    machine-local and rebuildable, so this costs zero synced bytes and zero tokens
+    until something is actually retrieved) and excluded from recall by default.
+    """
+    root = gowth_home() / ARCHIVE_DIR
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.rglob("*.gz") if p.is_file())
+
+
+def read_source_text(path: Path) -> str:
+    """Read a source file, transparently decompressing `.gz`.
+
+    Returns "" on any failure — a corrupt archive must never stop the indexer.
+    """
+    try:
+        if path.suffix == ".gz":
+            import gzip
+            with gzip.open(path, "rt", errors="ignore") as fh:
+                return fh.read()
+        return path.read_text(errors="ignore")
+    except Exception as exc:
+        log_debug("index", f"unreadable source {path}: {exc}")
+        return ""
+
+
+def _archive_stems() -> set[str]:
+    """Stems of archived files, with `_forget.py`'s `-<epoch>` suffix removed.
+
+    Used to decide whether a vanished live file still has a recoverable copy.
+    """
+    out: set[str] = set()
+    for p in _collect_archive_sources():
+        name = p.name[:-3] if p.name.endswith(".gz") else p.name
+        out.add(_ARCH_EPOCH_RE.sub("", Path(name).stem))
+    return out
+
+
+def _git_deleted_paths() -> set[str]:
+    """Vault-relative paths that git history still holds (deleted in some commit).
+
+    One subprocess call, best-effort: an empty set just means "cannot prove
+    recoverability", which makes the sweep MORE conservative, never less.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "log", "--diff-filter=D", "--name-only", "--format="],
+            cwd=str(gowth_home()), capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return set()
+        return {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
+    except Exception:
+        return set()
+
+
+def sweep_orphans(apply: bool = False, force: bool = False) -> dict:
+    """Remove index rows whose file no longer exists on disk.
+
+    27% of the live index (4,031 rows across 237 paths) pointed at files
+    `_forget.py` had archived away, so recall cited files the user could not open
+    and the dead rows skewed BM25 statistics.
+
+    Data safety first (priority 1): each orphan is classified by whether its content
+    survives elsewhere — an archived `.gz` copy, or git history. Rows with NO other
+    copy are KEPT unless `force=True`, because for those index.db is the last
+    searchable copy in existence. Dry-run is the default.
+
+    Returns a summary dict; never raises.
+    """
+    summary = {"orphan_paths": 0, "orphan_rows": 0, "recoverable": 0,
+               "unrecoverable": 0, "deleted_paths": 0, "deleted_rows": 0,
+               "unrecoverable_paths": [], "applied": bool(apply)}
+    try:
+        db_path = index_db()
+        if not db_path.is_file():
+            return summary
+        gh = gowth_home()
+        db = sqlite3.connect(str(db_path))
+        try:
+            db.execute("PRAGMA busy_timeout=5000")
+            rows = db.execute(
+                "SELECT path, count(*) FROM chunks GROUP BY path").fetchall()
+            orphans = [(p, n) for p, n in rows
+                       if not p.startswith(ARCHIVE_DIR + "/") and not (gh / p).exists()]
+            summary["orphan_paths"] = len(orphans)
+            summary["orphan_rows"] = sum(n for _, n in orphans)
+            if not orphans:
+                return summary
+
+            stems = _archive_stems()
+            git_deleted = _git_deleted_paths()
+            deletable: list[tuple[str, int]] = []
+            for p, n in orphans:
+                recoverable = (_ARCH_EPOCH_RE.sub("", Path(p).stem) in stems
+                               or p in git_deleted)
+                if recoverable:
+                    summary["recoverable"] += 1
+                    deletable.append((p, n))
+                else:
+                    summary["unrecoverable"] += 1
+                    summary["unrecoverable_paths"].append(p)
+                    if force:
+                        deletable.append((p, n))
+
+            if not apply:
+                return summary
+
+            try:
+                lock_cm = file_lock("index-write", timeout=10.0)
+            except Exception:
+                lock_cm = None
+
+            def _work() -> None:
+                for p, n in deletable:
+                    _drop_path_rows(db, p, False)
+                    summary["deleted_paths"] += 1
+                    summary["deleted_rows"] += n
+                db.commit()
+
+            if lock_cm is not None:
+                with lock_cm:
+                    _work()
+            else:
+                _work()
+            return summary
+        finally:
+            db.close()
+    except Exception as exc:
+        log_debug("index", f"sweep_orphans failed: {exc}")
+        return summary
 
 
 def _migrate_tag_column(db: sqlite3.Connection) -> None:
@@ -524,7 +668,31 @@ def _index_slugs(db: sqlite3.Connection, sources: list[tuple[str, Path]], full: 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true")
+    ap.add_argument("--sweep", action="store_true",
+                    help="remove index rows whose file no longer exists (dry-run "
+                         "unless --apply)")
+    ap.add_argument("--apply", action="store_true", help="with --sweep: actually delete")
+    ap.add_argument("--force", action="store_true",
+                    help="with --sweep --apply: also delete orphans whose content has "
+                         "no archived copy and no git history (index.db is their last "
+                         "searchable copy)")
+    ap.add_argument("--no-archive", action="store_true",
+                    help="skip indexing .archive/**.gz")
     args = ap.parse_args()
+
+    if args.sweep:
+        s = sweep_orphans(apply=args.apply, force=args.force)
+        print(f"orphan paths: {s['orphan_paths']}  rows: {s['orphan_rows']}")
+        print(f"  recoverable elsewhere (archive copy or git history): {s['recoverable']}")
+        print(f"  NO other copy — index.db is the last one:            {s['unrecoverable']}")
+        for p in s["unrecoverable_paths"][:10]:
+            print(f"      {p}")
+        if s["applied"]:
+            print(f"deleted: {s['deleted_paths']} paths, {s['deleted_rows']} rows")
+        else:
+            print("dry-run — nothing deleted. Re-run with --apply (add --force to "
+                  "delete unrecoverable rows too).")
+        return 0
 
     gh = gowth_home()
     gh.mkdir(parents=True, exist_ok=True)
@@ -574,20 +742,38 @@ def main() -> int:
         row = cur.fetchone()
         if row and abs(row[0] - mtime) < 1e-6 and not args.full:
             continue
-        try:
-            text = f.read_text(errors="ignore")
-        except Exception:
+        text = read_source_text(f)
+        if not text.strip():
             continue
         n, embedded = _index_one(db, rel, text, mtime, use_vec)
         indexed_chunks += n
         embed_calls += embedded
         indexed_files += 1
 
+    archived_files = 0
+    archived_chunks = 0
+    if not args.no_archive:
+        for gz in _collect_archive_sources():
+            rel = str(gz.relative_to(gh))
+            mtime = gz.stat().st_mtime
+            row = db.execute("SELECT mtime FROM chunks WHERE path=? LIMIT 1",
+                             (rel,)).fetchone()
+            if row and abs(row[0] - mtime) < 1e-6 and not args.full:
+                continue
+            text = read_source_text(gz)
+            if not text.strip():
+                continue
+            n, _ = _index_one(db, rel, text, mtime, False)
+            archived_chunks += n
+            archived_files += 1
+
     slug_count = _index_slugs(db, sources, args.full)
     db.commit()
     db.close()
 
     print(f"indexed: {indexed_files} files, {indexed_chunks} chunks at ~/.gowth-mem/index.db")
+    print(f"archive: {archived_files} files, {archived_chunks} chunks "
+          f"(searchable via /mem-recall --archive; excluded from normal recall)")
     print(f"slugs: {slug_count} rows across {len({ws for ws, _ in sources})} sources")
     if use_vec:
         print(f"vector: {embed_calls} embeddings via {provider_info[0]} (dim={sample_dim})")
@@ -715,10 +901,14 @@ def reindex_paths(paths) -> int:
                     if not p.is_file():
                         _drop_path_rows(db, rel, False)
                         continue
+                    # read_source_text (not read_text) so archived `.gz` is
+                    # decompressed — reading a gzip as text yields mojibake.
+                    text = read_source_text(p)
+                    if not text.strip():
+                        continue
                     try:
-                        text = p.read_text(errors="ignore")
                         mtime = p.stat().st_mtime
-                    except Exception:
+                    except OSError:
                         continue
                     _index_one(db, rel, text, mtime, False)
                     done += 1

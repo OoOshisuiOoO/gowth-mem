@@ -79,3 +79,27 @@ the chunks carrying that tag), not the default boosted ranking.
 
 - `/mem-retag` — backfill the frontmatter `tags:` that feed the `--keyword` filter
 - `/mem-budget` — the 4-tier weighted context planner (the real multi-signal scorer)
+
+## Searching forgotten memory (v4.3)
+
+`_forget.py` gzip-archives raw journal past `journal.raw_ttl_days` and aged aspects past
+`topic_layout.archive_threshold_days` into `~/.gowth-mem/.archive/`. Those archives are
+now INDEXED, so forgotten memory is findable again — but excluded from normal recall so
+raw transcript cannot crowd out curated entries:
+
+```bash
+# normal recall — live, curated memory only
+python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_query.py" --ws <ws> --limit 10 "<query>"
+
+# search ONLY the archive (forgotten material)
+python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_query.py" --ws <ws> --archive --limit 10 "<query>"
+```
+
+Archive rows live in the machine-local `index.db` (gitignored, rebuildable), so this
+costs zero synced bytes and zero tokens until something is actually retrieved. On a new
+machine `.archive/` is only present if it was synced; otherwise run `/mem-reindex` after
+the vault clone and archived material will be indexed from whatever `.archive/` holds.
+
+Results are collapsed to the best-ranked chunk per file, and each hit prints its `§`
+heading — for curated entries that is the `[type] Title`, for session logs the
+`turn N — HH:MM` anchor.
