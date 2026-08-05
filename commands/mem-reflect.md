@@ -1,5 +1,5 @@
 ---
-description: Generative-Agents-style reflection. Reads recent journal + docs/exp.md, generates 1-3 high-level reflections (importance × recency × novelty), writes to docs/exp.md § Reflections. Promote stable reflections to wiki/concepts via /save when ready.
+description: Generative-Agents-style reflection over recent vault journal + docs/exp.md. Generates 1-3 high-level reflections (importance × recency × novelty) and appends them under docs/exp.md § Reflections.
 ---
 
 Invoke the `mem-reflect` skill to produce high-level reflections from recent activity.
@@ -11,10 +11,10 @@ When to use:
 
 The skill will:
 
-1. Read `docs/journal/*.md` from the last 7 days + current `docs/exp.md`.
+1. Read `~/.gowth-mem/workspaces/<ws>/journal/*.md` from the last 7 days + current `~/.gowth-mem/workspaces/<ws>/docs/exp.md`.
 2. Score entries by importance × recency × novelty (Generative Agents pattern).
 3. Synthesize 1-3 high-level reflections (Andy Matuschak-style "evergreen" claims).
-4. Append under `docs/exp.md § Reflections`.
+4. Append under `~/.gowth-mem/workspaces/<ws>/docs/exp.md § Reflections`.
 5. Suggest `/save` (claude-obsidian) for any reflection worth promoting to `wiki/concepts/`.
 
 ## Why this beats raw distillation

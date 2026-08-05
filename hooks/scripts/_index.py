@@ -50,12 +50,18 @@ from _home import (  # type: ignore
     shared_dir,
     workspace_dir,
 )
+from _debug import log_debug  # type: ignore
 from _lock import file_lock  # type: ignore
 from _tags import TAG_TOKEN_RE, strip_tags_text  # type: ignore  # v4.0 keywords + tag-stable hash
 
 CHUNK_SIZE = 1500
 
-TAG_RE = re.compile(r"^(?:#{2,6}\s*)?\[([a-z-]+)\]\s*")  # v3.8: bullet OR `## [type]` block
+# v4.3: also tolerate a leading list bullet (`- [exp] …`), which is the dominant
+# on-disk entry form, matching _tags.TYPE_PREFIX_RE's `[-*]` allowance.
+TAG_RE = re.compile(r"^(?:[-*]\s*)?(?:#{2,6}\s*)?\[([a-z-]+)\]\s*")
+
+# YAML frontmatter delimited by --- at the very start of a file.
+FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---[ \t]*\r?\n?", re.DOTALL)
 KNOWN_TAGS = {"decision", "exp", "ref", "tool", "reflection", "skill-ref",
               "secret-ref", "goal", "hypothesis"}  # v3.9: +goal (intent) +hypothesis (unverified)
 
@@ -234,6 +240,22 @@ def _migrate_tag_column_inner(db: sqlite3.Connection) -> None:
         db.execute(f"UPDATE chunks SET tag = '' WHERE tag NOT IN ('{known}')")
         db.commit()
 
+    # v4.3 self-healing backfill: block-form entries (`## [decision] Title`) keep
+    # their marker in `heading`, not `content`, so the content-only backfill above
+    # left them untagged. Runs on every migration pass and is idempotent (only
+    # touches rows still at tag='').
+    db.execute("""
+        UPDATE chunks SET tag = LOWER(SUBSTR(LTRIM(heading), 2,
+                                             INSTR(LTRIM(heading), ']') - 2))
+        WHERE tag = ''
+          AND heading IS NOT NULL
+          AND SUBSTR(LTRIM(heading), 1, 1) = '['
+          AND INSTR(LTRIM(heading), ']') > 2
+    """)
+    known = "','".join(KNOWN_TAGS)
+    db.execute(f"UPDATE chunks SET tag = '' WHERE tag NOT IN ('{known}') AND tag <> ''")
+    db.commit()
+
     # Create tag index if absent (safe after column is guaranteed to exist).
     db.execute("CREATE INDEX IF NOT EXISTS idx_chunks_tag ON chunks(tag)")
     db.commit()
@@ -326,6 +348,61 @@ def _migrate_keywords_column_inner(db: sqlite3.Connection) -> None:
         db.commit()
 
 
+def _migrate_heading_column(db: sqlite3.Connection) -> None:
+    """Idempotent v4.3 migration: index `heading` in chunks_fts.
+
+    chunks_fts was (tag, keywords, content) — the heading was stored in `chunks`
+    but never indexed, so the `[type] Title` line of every curated entry and the
+    `turn N — HH:MM` anchor of every session log were UNSEARCHABLE. A query for a
+    word that appears only in a title returned nothing.
+
+    Mirrors `_migrate_tag_column` / `_migrate_keywords_column`: wrapped in
+    `file_lock("index-migrate")` and self-refilling from `chunks` (never delegating
+    the refill to a command the user must remember to run).
+    """
+    try:
+        lock_cm = file_lock("index-migrate", timeout=10.0)
+    except Exception:
+        lock_cm = None
+    if lock_cm is not None:
+        with lock_cm:
+            _migrate_heading_column_inner(db)
+    else:
+        _migrate_heading_column_inner(db)
+
+
+def _migrate_heading_column_inner(db: sqlite3.Connection) -> None:
+    if "heading" in _fts_columns(db):
+        return
+    try:
+        db.execute("DROP TABLE IF EXISTS chunks_fts")
+    except Exception:
+        pass
+    db.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+        "tag, keywords, heading, content, content='chunks', content_rowid='id', "
+        "tokenize='unicode61')"
+    )
+    db.execute(
+        "INSERT INTO chunks_fts(rowid, tag, keywords, heading, content) "
+        "SELECT id, tag, keywords, COALESCE(heading, ''), content FROM chunks"
+    )
+    db.commit()
+
+
+def _fts_columns(db: sqlite3.Connection) -> set[str]:
+    """Return the column names declared on the chunks_fts virtual table."""
+    try:
+        row = db.execute(
+            "SELECT sql FROM sqlite_master WHERE name='chunks_fts' AND type='table'"
+        ).fetchone()
+    except Exception:
+        return set()
+    if not row or not row[0]:
+        return set()
+    return set(re.findall(r"\b(\w+)\b", row[0]))
+
+
 def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> None:
     # NOTE: idx_chunks_tag is NOT created here because the old `chunks` table may
     # already exist without the `tag` column. _migrate_tag_column() adds the column
@@ -360,11 +437,13 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
     """)
     db.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
-        "tag, keywords, content, content='chunks', content_rowid='id', tokenize='unicode61')"
+        "tag, keywords, heading, content, content='chunks', content_rowid='id', "
+        "tokenize='unicode61')"
     )
-    # Run migrations in case DB was created by older code without tag/keywords.
+    # Run migrations in case DB was created by older code without tag/keywords/heading.
     _migrate_tag_column(db)
     _migrate_keywords_column(db)
+    _migrate_heading_column(db)
     if use_vec:
         sqlite_vec.load(db)  # type: ignore
         db.execute(
@@ -499,36 +578,9 @@ def main() -> int:
             text = f.read_text(errors="ignore")
         except Exception:
             continue
-        old_ids = [r[0] for r in db.execute("SELECT id FROM chunks WHERE path=?", (rel,))]
-        for oid in old_ids:
-            db.execute("DELETE FROM chunks_fts WHERE rowid=?", (oid,))
-            if use_vec:
-                db.execute("DELETE FROM chunks_vec WHERE id=?", (oid,))
-        db.execute("DELETE FROM chunks WHERE path=?", (rel,))
-        for ci, (heading, content) in enumerate(split_chunks(text)):
-            # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
-            # entry whether or not it carries inline #tags.
-            h = hashlib.sha1(strip_tags_text(content).encode()).hexdigest()[:16]
-            tag = _extract_tag(content)
-            keywords = _chunk_keywords(content, text if ci == 0 else None)
-            cid = db.execute(
-                "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (rel, heading, content, mtime, h, tag, keywords),
-            ).lastrowid
-            db.execute(
-                "INSERT INTO chunks_fts(rowid, tag, keywords, content) VALUES (?, ?, ?, ?)",
-                (cid, tag, keywords, content),
-            )
-            if use_vec:
-                vec = embed_one(content)
-                if vec:
-                    db.execute(
-                        "INSERT INTO chunks_vec(id, embedding) VALUES (?, ?)",
-                        (cid, serialize_vec(vec)),
-                    )
-                    embed_calls += 1
-            indexed_chunks += 1
+        n, embedded = _index_one(db, rel, text, mtime, use_vec)
+        indexed_chunks += n
+        embed_calls += embedded
         indexed_files += 1
 
     slug_count = _index_slugs(db, sources, args.full)
@@ -547,6 +599,141 @@ def main() -> int:
             reason.append("no embedding API key")
         print(f"vector: skipped ({'; '.join(reason) if reason else 'unknown'}) — FTS5-only index")
     return 0
+
+
+def _drop_path_rows(db: sqlite3.Connection, rel: str, use_vec: bool) -> None:
+    """Delete every row for *rel*, FTS FIRST.
+
+    chunks_fts is an FTS5 external-content table (content='chunks'), so its rowids
+    must go before the chunks rows they mirror — deleting the content row first
+    leaves the FTS index pointing at rows that no longer exist.
+    """
+    old_ids = [r[0] for r in db.execute("SELECT id FROM chunks WHERE path=?", (rel,))]
+    for oid in old_ids:
+        db.execute("DELETE FROM chunks_fts WHERE rowid=?", (oid,))
+        if use_vec:
+            db.execute("DELETE FROM chunks_vec WHERE id=?", (oid,))
+    db.execute("DELETE FROM chunks WHERE path=?", (rel,))
+
+
+def _index_one(
+    db: sqlite3.Connection,
+    rel: str,
+    text: str,
+    mtime: float,
+    use_vec: bool,
+) -> tuple[int, int]:
+    """Replace all rows for one file. Returns (chunks_written, embeddings_stored).
+
+    Single indexing path shared by `main()` (full/incremental sweep) and
+    `reindex_paths()` (write-time refresh), so the two can never drift.
+    """
+    _drop_path_rows(db, rel, use_vec)
+    written = 0
+    embedded = 0
+    # Chunk the BODY, not the frontmatter. A routed write produces
+    # `frontmatter + [type] entry` with no `##` heading, so the file was one chunk
+    # whose content began with `---` — the [type] marker was never at content start
+    # and every such entry landed untagged (635 live chunks, 81 with a recoverable
+    # marker). Frontmatter `tags:` are unaffected: `_chunk_keywords` still receives
+    # the ORIGINAL text and harvests them into the keywords column.
+    body = FRONTMATTER_RE.sub("", text, count=1)
+    for ci, (heading, content) in enumerate(split_chunks(body)):
+        # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
+        # entry whether or not it carries inline #tags.
+        h = hashlib.sha1(strip_tags_text(content).encode()).hexdigest()[:16]
+        # v4.3: split_chunks() lifts `## [decision] Title` into `heading`, so a
+        # content-only probe missed every block-form entry — live vault had 4,714
+        # chunks with a `[tag]` heading but only 54 rows with `tag` set, which made
+        # the 5.0 BM25 tag weight and the --type filter apply to 0.4% of the corpus.
+        tag = _extract_tag(heading) or _extract_tag(content)
+        keywords = _chunk_keywords(content, text if ci == 0 else None)
+        cid = db.execute(
+            "INSERT INTO chunks (path, heading, content, mtime, hash, tag, keywords) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (rel, heading, content, mtime, h, tag, keywords),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO chunks_fts(rowid, tag, keywords, heading, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (cid, tag, keywords, heading or "", content),
+        )
+        if use_vec:
+            vec = embed_one(content)
+            if vec:
+                db.execute(
+                    "INSERT INTO chunks_vec(id, embedding) VALUES (?, ?)",
+                    (cid, serialize_vec(vec)),
+                )
+                embedded += 1
+        written += 1
+    return written, embedded
+
+
+def reindex_paths(paths) -> int:
+    """Refresh the index for specific files. Returns the number of files indexed.
+
+    Called right after a routed write (`_topic.append_entry`, `_lesson.append_lesson`)
+    so a just-captured memory is recallable IMMEDIATELY. Before v4.3 nothing on the
+    write path touched index.db, so new entries stayed invisible to /mem-recall until
+    someone remembered to run /mem-reindex — the live vault's index was 5 days stale.
+
+    Contract, because this runs on the Stop-hook path:
+      * never raises — returns 0 on any failure;
+      * never CREATES index.db (a missing index must be built by /mem-reindex as a
+        whole, not silently half-populated from whichever file was written last);
+      * a path whose file no longer exists has its rows dropped;
+      * serialised under file_lock("index-write") so concurrent sessions can't
+        interleave the delete/insert pair for the same file.
+    """
+    try:
+        gh = gowth_home()
+        db_path = index_db()
+        if not db_path.is_file():
+            return 0
+        targets: list[tuple[str, Path]] = []
+        for p in paths or []:
+            try:
+                rel = str(Path(p).resolve().relative_to(gh.resolve()))
+            except Exception:
+                continue
+            targets.append((rel, Path(p)))
+        if not targets:
+            return 0
+
+        try:
+            lock_cm = file_lock("index-write", timeout=5.0)
+        except Exception:
+            lock_cm = None
+
+        def _work() -> int:
+            db = sqlite3.connect(str(db_path))
+            try:
+                db.execute("PRAGMA busy_timeout=5000")
+                done = 0
+                for rel, p in targets:
+                    if not p.is_file():
+                        _drop_path_rows(db, rel, False)
+                        continue
+                    try:
+                        text = p.read_text(errors="ignore")
+                        mtime = p.stat().st_mtime
+                    except Exception:
+                        continue
+                    _index_one(db, rel, text, mtime, False)
+                    done += 1
+                db.commit()
+                return done
+            finally:
+                db.close()
+
+        if lock_cm is not None:
+            with lock_cm:
+                return _work()
+        return _work()
+    except Exception as exc:
+        log_debug("index", f"reindex_paths failed: {exc}")
+        return 0
 
 
 if __name__ == "__main__":

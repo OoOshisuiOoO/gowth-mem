@@ -1,36 +1,45 @@
 ---
-description: Open today's journal entry (docs/journal/YYYY-MM-DD.md). Creates from template if missing. Use to log raw observations, questions, wins, pains.
+description: Open today's journal entry in the synced vault at workspaces/<ws>/journal/<date>.md. Creates it from the template if missing. Use to log raw observations, questions, wins, pains.
 ---
 
-Open or create today's journal entry.
+Open or create today's journal entry for the active workspace.
 
 Run with the Bash tool:
 
 ```bash
-WS="${CLAUDE_PROJECT_DIR:-$PWD}"
-TODAY=$(date +%Y-%m-%d)
-JOURNAL_DIR="$WS/docs/journal"
-JOURNAL="$JOURNAL_DIR/$TODAY.md"
-mkdir -p "$JOURNAL_DIR"
-if [ ! -f "$JOURNAL" ]; then
-  cp "${CLAUDE_PLUGIN_ROOT}/templates/journal-day.md" "$JOURNAL"
-  # Replace YYYY-MM-DD placeholder with today's actual date in the heading
-  python3 -c "
-import sys
-p='$JOURNAL'
-t='$TODAY'
-content = open(p).read().replace('YYYY-MM-DD', t)
-open(p, 'w').write(content)
-"
-  echo "created: docs/journal/$TODAY.md"
-else
-  echo "exists: docs/journal/$TODAY.md"
-fi
-cat "$JOURNAL"
+python3 - <<'PY'
+import os, sys
+from datetime import date
+sys.path.insert(0, os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "hooks", "scripts"))
+from _home import active_workspace, journal_dir  # noqa: E402
+
+ws = active_workspace()
+d = journal_dir(ws)
+d.mkdir(parents=True, exist_ok=True)
+today = date.today().isoformat()
+j = d / f"{today}.md"
+if not j.is_file():
+    tpl = os.path.join(os.environ["CLAUDE_PLUGIN_ROOT"], "templates", "journal-day.md")
+    text = open(tpl).read().replace("YYYY-MM-DD", today) if os.path.isfile(tpl) else f"# {today}\n"
+    j.write_text(text)
+    print(f"created: {j}")
+else:
+    print(f"exists: {j}")
+print(f"workspace: {ws}")
+print("---")
+print(j.read_text())
+PY
 ```
 
-After showing the journal, ask the user what to log and under which section (Logs / Questions / Wins / Pains).
+After showing the journal, ask the user what to log and under which section (Logs /
+Questions / Wins / Pains). For Logs entries, prefix with a timestamp `HH:MM — `.
 
-For Logs entries, prefix with timestamp `HH:MM — `.
+Paths resolve through `_home.py` (honouring `GOWTH_MEM_HOME` and the active workspace).
+Before v4.3 this command wrote to `$PWD/docs/journal/` — inside whatever repo you
+happened to be in, so entries landed outside the vault: never git-synced to your other
+machines, never indexed, invisible to every hook and to `/mem-recall`.
 
-This is layer 1 (raw daily journal). At end of day or before `/compact`, run `/mem-distill` to promote signal entries up to the curated layer (`docs/exp.md` / `docs/ref.md` / `docs/tools.md`).
+This is the ephemeral capture layer, not permanent storage. `_forget.py` archives raw
+journal past `journal.raw_ttl_days` (default 7), salvaging curated `- [type]` entries
+first — so anything worth keeping should be promoted with `/mem-distill`, or written
+straight to a topic via `/mem-lesson` / `/mem-goal`, before the TTL expires.

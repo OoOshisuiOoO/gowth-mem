@@ -400,3 +400,112 @@ English, full reindex + MOC regen; gate scan 0 junk, validate 0 schema issues.
 Settings: `gate.english_only`, `topic_layout.{archive_threshold_days,auto_archive_enabled}`.
 Test coverage: **399/399** green (+48 vs v4.0: ledger 9, setup 9, bullet-rotation 7, aspects 7,
 english gate 4, frontmatter-at-birth 1, + suite fixture updates).
+
+---
+
+## v4.3 — Zero-Mem retrieval repair (2026-08-05)
+
+Grounded in **arXiv 2607.29377v1**, "Zero-Mem: Zero-Token Memory Operations for LLM Agents"
+(Xiao et al., 31 Jul 2026). Design + full rejection rationale:
+`docs/superpowers/specs/2026-08-05-zero-mem-retrieval-design.md`.
+
+The paper's thesis — every memory operation outside final question answering should cost zero
+LLM tokens — is this repo's own priority list. Auditing against it found the deterministic
+machinery already here was **not working**. Every figure below was measured on the live vault
+(15,145 chunks, 5 workspaces).
+
+**A. `/mem-recall` returned 0 hits for any natural-language query (`_profile.py`, new)**
+- FTS5 ANDs bare terms: `why did we drop vector recall` → **0 hits**; the same terms OR-joined
+  → **991**. Punctuation was worse — `vector-recall` raised `no such column: recall` and
+  `forget: ttl` raised `no such column: forget`, both swallowed by `except Exception: return []`
+  into a silent "(no results)".
+- Adopts Zero-Mem eq (6) `phi(q) = {subject, keywords, answer-type, temporal-cues, boundary}`,
+  reusing `_tags._harvest_priority` so `_forget.py` / `raw_ttl_days` / `prop-firm-funding`
+  survive tokenisation. `fts_match()` emits ONLY quoted phrases joined by OR, so no user input
+  can be read as FTS5 syntax; quoting also makes `vector-recall` match as a phrase.
+- New `query_ex() -> {"hits", "error"}` reports WHY a set is empty. `query_by_type` keeps its
+  documented `list[dict]` fail-open contract (21 existing tests untouched).
+
+**B. The `tag` column was inert — 54 of 15,145 rows (0.4%) (`_index.py`)**
+- Three independent causes, all fixed: `split_chunks` lifts `## [decision] Title` into
+  `heading` but `_extract_tag` probed only `content` (4,714 chunks affected); frontmatter was
+  chunked as content so every routed write landed untagged (635 chunks, ALL untagged); and
+  `- [exp] …`, the dominant on-disk form, was not recognised.
+- Result: tagged chunks **54 → 2,528** (46.8×) — exp 790, ref 615, decision 514, tool 266,
+  reflection 212, goal 77, hypothesis 31, secret-ref 23. The 5.0 BM25 tag weight and the
+  `--type` filter now apply to 16.7% of the corpus instead of 0.4%.
+- Self-healing SQL backfill runs on every migration pass (0.43s on the real 25 MB index,
+  idempotent), so no user has to remember a reindex.
+
+**C. The heading was never searchable (`chunks_fts` 4th column)**
+- `chunks_fts` indexed `(tag, keywords, content)`, so a term appearing only in an entry's
+  `[type] Title` — or a session log's `turn N — HH:MM` anchor — could not be found at all.
+  Added as an indexed column at weight 4.0; `bm25()` weights are now derived from the index's
+  actual column arity (tag 5 > heading 4 > keywords 3 > content 1) instead of assumed.
+  Recall output prints the heading, which is the most locating line a hit has.
+
+**D. Per-workspace recall silently returned nothing (`_query.py`)**
+- The workspace filter ran in Python AFTER `ORDER BY score LIMIT ?`, so a workspace whose hits
+  ranked below the limit got zero rows: `--ws personal --limit 20 python` → nothing, while 3
+  personal chunks matched. Now a SQL predicate, so the limit means "N hits in this workspace".
+
+**E. Writes were invisible until a manual reindex (`_index.reindex_paths`)**
+- Nothing on the write path touched index.db; the live index was 5 days stale. `append_entry`
+  and `append_lesson` now refresh just the file they wrote — lock-guarded, never raising, and
+  deliberately refusing to CREATE index.db (a missing index must be built whole by
+  `/mem-reindex`, not half-populated from whichever file was written last).
+- The per-file indexing body is factored into `_index_one()` so the full sweep and the
+  write-time refresh cannot drift; `_drop_path_rows()` deletes `chunks_fts` rowids BEFORE the
+  `chunks` rows they mirror (external-content table — the reverse order corrupts the index).
+
+**F. Bootstrap dropped `docs/handoff.md` from every session (`bootstrap-load.py`)**
+- The first file was handed the ENTIRE budget, so `shared/AGENTS.md` (13,281 B) plus a
+  truncated `shared/secrets.md` (13,520 B) consumed the 15,000-char cap and the loop broke at
+  `room <= 200`: `[bootstrap: loaded 2/5 files]`. The workspace `AGENTS.md` and `handoff.md` —
+  the files carrying CURRENT state — never reached the model. v4.1 had shipped `_handoff.py`
+  rotation to save ~7.4k tokens/bootstrap on a file that was not being loaded at all. At 32.5
+  sessions/day this was the largest memory-token line item (~124,500 tokens/day) buying strictly
+  less recall than designed.
+- Budget is now allocated BEFORE reading, reserving the small per-session deltas first, with
+  `MAX_PER_FILE = 4,000`. `MAX_TOTAL` stays 15,000 — recall quality outranks token efficiency.
+  Emission order is unchanged (statics first) because CLAUDE.md requires a stable prompt-cache
+  prefix and `handoff.md` changes every session. Live result: 2/5 → **5/5, 5/5, 4/5** across
+  trade/personal/devops. Verified `handoff.md` is newest-FIRST, so head-truncation preserves
+  current state (head[:4000] of the 167,624-char trade handoff = its 3 newest `host:` lines);
+  there is a test asserting a tail-truncating implementation would fail.
+
+**G. Per-path collapse (`_query._collapse_per_path`)**
+- Zero-Mem's `Dedup` (eq 14) scoped to the real failure mode: one long file filled every slot
+  of the caller's limit (`--ws personal --limit 3 python` returned 3 chunks of ONE session log).
+  Over-fetches then trims, because trimming first returns fewer than `limit` distinct files.
+
+**H. Six commands + seven skills targeted the dead pre-v2.7 layout**
+- `/mem-journal` WROTE memory to `$PWD/docs/journal/` — outside the vault, so never synced,
+  never indexed, invisible to every hook. Silent data loss.
+- `/mem-cost` measured 0 of 9 files and quoted a 60,000-char cap the code never used. The one
+  tool for detecting bootstrap bloat was blind, which is *why* F survived. It now calls a new
+  `bootstrap-load.py --report` sharing `_plan()` with the hook, so it cannot drift again.
+- `skills/mem-prune` called the journal "the immutable raw log" that must "never" be pruned —
+  contradicting v3.6 active forgetting, teaching the model to leave data where `_forget.py`
+  will archive it.
+
+**REJECTED: the entity-context graph + Personalized PageRank (eq 3–4, 8–10)** — the paper's
+largest ablation delta (−17.19 F1). A working stdlib prototype (regex identifier harvest for
+spaCy NER, frontier-limited PPR at 16–39 ms/query over 15,145 chunks, γ=0.6) was ablated on 5
+real vault queries and **lowered** quality at every ρ: MRR 1.000 (bm25+collapse) vs 0.900
+(ρ=0.4) vs 0.767 (ρ=0.6). The gain initially credited to it came from per-path collapse. Also:
+`V_e` needs spaCy and `η₀ = cos(e, ê)` needs BGE-M3, both violating the zero-pip rule; and the
+paper attributes the graph's dominance to HotpotQA cross-document reasoning while its ONLY
+reported loss anywhere is LoCoMo multi-hop — the conversational regime this vault occupies.
+Honest loss: no multi-hop bridging to evidence sharing no surface overlap with the query.
+
+Also rejected: min-max dual-view fusion (nothing to fuse without the graph); the hard `Filter`
+that deletes candidates; post-reader answer calibration; and syncing `.audit/` prune previews
+(would violate "never sync real secret values").
+
+Still open (see spec Tier 2): archive indexing then orphan sweep — **4,031 chunk rows (27% of
+the index) still cite files `_forget.py` deleted**, and the 272 archived `.gz` are unsearchable;
+provenance backlinks; `conflict-detect` once-per-session suppression; calibration multipliers.
+
+Test coverage: **463/463** green (+61 vs v4.1: profile 19, retrieval 22, bootstrap 11,
+freshness 7, command hygiene 6, minus fixture updates). `bin/test-install.sh` all green.

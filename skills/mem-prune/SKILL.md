@@ -1,6 +1,6 @@
 ---
 name: mem-prune
-description: Use periodically (weekly, after distill, before /compact) or whenever knowledge feels stale. Actively DELETES outdated, superseded, deprecated, and duplicate entries from docs/*.md. Skips docs/journal (permanent log). Per-line surgery, no rewrite.
+description: Use periodically (weekly, after distill, before /compact) or whenever knowledge feels stale. Actively DELETES outdated, superseded, deprecated, and duplicate entries from docs/*.md. Skips journal/, which _forget.py owns (raw TTL then gzip archive). Per-line surgery, no rewrite.
 ---
 
 # mem-prune
@@ -9,7 +9,7 @@ Active deletion pass over `docs/*.md`.
 
 ## Inputs
 
-- Workspace root (`$CLAUDE_PROJECT_DIR` or `$PWD`)
+- Vault workspace root: `~/.gowth-mem/workspaces/<ws>/` (resolved via `_home.py`, honours `GOWTH_MEM_HOME`)
 - Optional `--dry-run` flag
 
 ## Pruning rules (applied in order, line-level)
@@ -36,7 +36,7 @@ An "entry" = one line starting with `- [type]` (or `* [type]`) plus any indented
 ## Scope
 
 - Files included: `docs/**/*.md`
-- Files excluded: `docs/journal/**` (raw log, never prune)
+- Files excluded: `journal/**` — not because it is permanent, but because `_forget.py` owns it
 - Other markdown (wiki/, AGENTS.md, README.md): not touched (out of scope for this plugin)
 
 ## When NOT to run
@@ -46,7 +46,9 @@ An "entry" = one line starting with `- [type]` (or `* [type]`) plus any indented
 
 ## Hard rules
 
-- DO NOT prune `docs/journal/`. Journal is the immutable raw log.
+- DO NOT prune `journal/` by hand. Since v3.6 the journal is the EPHEMERAL capture buffer,
+  not an immutable log: `_forget.py` salvages curated `- [type]` entries and gzip-archives the
+  rest past `journal.raw_ttl_days` (default 7). Use `/mem-forget`, not per-line deletion.
 - DO NOT prune entries that lack any of the trigger markers (no false-positive rule).
 - Always commit before pruning so `git diff` shows what was removed.
 
