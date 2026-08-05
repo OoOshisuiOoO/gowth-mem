@@ -208,6 +208,46 @@ class TestQueryRows(unittest.TestCase):
         self.assertEqual(res["hits"], [])
         self.assertIsNotNone(res["error"])
 
+    def test_collapse_returns_one_hit_per_file(self):
+        """Per-path collapse was the ONLY mechanism that measurably improved ranking
+        on the real vault (MRR 1.000 vs 0.900/0.767 for the graph variants). Without
+        it one long file can occupy every slot of the caller's limit — observed live:
+        `--ws personal --limit 3 python` returned 3 chunks of ONE session log."""
+        for i in range(4):
+            self._insert("workspaces/w1/t/2026-08-05-long.md", f"part {i}",
+                         f"zebra content chunk {i}")
+        self._insert("workspaces/w1/t/2026-08-05-other.md", "", "zebra elsewhere")
+        hits = self.q.query_by_type(ws="w1", tag="", query="zebra", limit=5)
+        paths = [h["path"] for h in hits]
+        self.assertEqual(len(paths), len(set(paths)), f"duplicate paths: {paths}")
+        self.assertEqual(len(paths), 2)
+
+    def test_collapse_keeps_the_best_scoring_chunk(self):
+        self._insert("workspaces/w1/t/2026-08-05-p.md", "weak", "zebra once")
+        self._insert("workspaces/w1/t/2026-08-05-p.md", "strong",
+                     "zebra zebra zebra concentrated")
+        hits = self.q.query_by_type(ws="w1", tag="", query="zebra", limit=5)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["heading"], "strong")
+
+    def test_collapse_can_be_disabled(self):
+        for i in range(3):
+            self._insert("workspaces/w1/t/2026-08-05-q.md", f"h{i}", f"zebra {i}")
+        hits = self.q.query_by_type(ws="w1", tag="", query="zebra", limit=5,
+                                    collapse=False)
+        self.assertEqual(len(hits), 3)
+
+    def test_limit_still_honoured_after_collapse(self):
+        """Collapse must over-fetch then trim, not trim then collapse — otherwise a
+        limit of N returns fewer than N distinct files."""
+        for f in range(4):
+            for c in range(3):
+                self._insert(f"workspaces/w1/t/2026-08-05-f{f}.md", f"h{c}",
+                             f"zebra file {f} chunk {c}")
+        hits = self.q.query_by_type(ws="w1", tag="", query="zebra", limit=3)
+        self.assertEqual(len(hits), 3)
+        self.assertEqual(len({h["path"] for h in hits}), 3)
+
     def test_query_by_type_still_returns_list_of_dicts(self):
         """Public contract: 21 existing tests assert list[dict]; do not break it."""
         out = self.q.query_by_type(ws="w1", tag="", query="anything")

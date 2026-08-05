@@ -83,6 +83,7 @@ def query_ex(
     keyword: str = "",
     topic: str = "",
     days: int = 0,
+    collapse: bool = True,
 ) -> dict:
     """Like `query_by_type` but reports WHY a result set is empty.
 
@@ -110,7 +111,7 @@ def query_ex(
                              "punctuation) — try a distinctive word or identifier"}
     try:
         hits = _run_query(db_path, ws, tag, match_expr, limit,
-                          keyword=keyword, topic=topic, days=days)
+                          keyword=keyword, topic=topic, days=days, collapse=collapse)
     except sqlite3.Error as e:
         return {"hits": [], "error": f"sqlite/FTS5 error: {e}"}
     except Exception as e:  # pragma: no cover - defensive, hooks must never raise
@@ -127,6 +128,7 @@ def query_by_type(
     keyword: str = "",
     topic: str = "",
     days: int = 0,
+    collapse: bool = True,
 ) -> list[dict]:
     """Return chunks filtered by tag/keyword/topic/date, optionally ranked by BM25.
 
@@ -143,10 +145,16 @@ def query_by_type(
         is never passed to FTS5, because bare multi-word text is implicit-AND (0 hits
         for any question) and punctuation raises OperationalError. When empty,
         results are ordered by rowid DESC (most recent first). When non-empty,
-        results are ranked by a column-weighted BM25 —
-        `bm25(chunks_fts, 5.0, 3.0, 1.0)` — so tag/keyword hits outrank body hits.
+        results are ranked by a column-weighted BM25 (tag 5 > heading 4 >
+        keywords 3 > content 1), so a hit in an entry's `[type] Title` outranks the
+        same term buried in prose. Weights are derived from the index's actual
+        column arity, so an older index still scores correctly.
     limit:
         Maximum number of results to return.
+    collapse:
+        v4.3 — keep only the best-ranked chunk per FILE (default True). Without it a
+        single long file can fill every slot of `limit`. Pass False for chunk-level
+        results.
     keyword:
         v4.0 — filter to chunks whose `keywords` column contains this token
         (auto-tag / frontmatter-tag match). LIKE substring, case-insensitive.
@@ -165,8 +173,33 @@ def query_by_type(
     Returns empty list on any error (fail-open). Use `query_ex` when you need to
     tell "no matches" apart from "invalid query".
     """
-    return query_ex(ws, tag, query, limit,
-                    keyword=keyword, topic=topic, days=days)["hits"]
+    return query_ex(ws, tag, query, limit, keyword=keyword, topic=topic,
+                    days=days, collapse=collapse)["hits"]
+
+
+def _collapse_per_path(rows: list[dict], limit: int) -> list[dict]:
+    """Keep the best-ranked chunk per file, preserving overall rank order.
+
+    Zero-Mem's `Dedup` step (eq 14) applied to gowth-mem's real failure mode: one long
+    file can otherwise fill every slot of the caller's limit. Observed live before
+    this: `--ws personal --limit 3 python` returned three chunks of the SAME session
+    log. In a 5-query ablation on the live vault, per-path collapse was the only
+    change that measurably improved ranking (MRR 1.000, vs 0.900 and 0.767 for the
+    paper's entity-graph variants, which is why the graph was rejected).
+
+    `rows` must already be in rank order; the first row seen for a path wins.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in rows:
+        p = r.get("path") or ""
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _run_query(
@@ -179,6 +212,7 @@ def _run_query(
     keyword: str = "",
     topic: str = "",
     days: int = 0,
+    collapse: bool = True,
 ) -> list[dict]:
     """Execute the query. Raises on SQL/FTS5 errors so `query_ex` can report them.
 
@@ -219,6 +253,10 @@ def _run_query(
         kw_sel = "c.keywords" if has_keywords else "'' AS keywords"
         results: list[dict] = []
 
+        # Collapse discards rows, so fetch a wider window first and trim after —
+        # trimming before collapsing would return fewer than `limit` distinct files.
+        fetch = min(limit * 4, 400) if collapse else limit
+
         if match_expr:
             params: list = [match_expr]
             # bm25() weights are POSITIONAL over the chunks_fts columns, so they must
@@ -234,7 +272,7 @@ def _run_query(
                 + _extra_where(params)
                 + " ORDER BY score LIMIT ?"
             )
-            params.append(limit)
+            params.append(fetch)
             for path, heading, content, chunk_tag, kw, score in db.execute(sql, params):
                 results.append({"path": path, "heading": heading or "", "line_no": 0,
                                 "content": content, "tag": chunk_tag,
@@ -247,12 +285,14 @@ def _run_query(
                 + _extra_where(params)
                 + " ORDER BY c.id DESC LIMIT ?"
             )
-            params.append(limit)
+            params.append(fetch)
             for path, heading, content, chunk_tag, kw in db.execute(sql, params):
                 results.append({"path": path, "heading": heading or "", "line_no": 0,
                                 "content": content, "tag": chunk_tag,
                                 "keywords": kw, "bm25_score": 0.0})
-        return results
+        if collapse:
+            results = _collapse_per_path(results, limit)
+        return results[:limit]
     finally:
         db.close()
 
