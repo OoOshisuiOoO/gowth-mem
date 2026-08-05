@@ -64,7 +64,7 @@ Scan ALL user turns and your replies in this conversation (not just the last 10)
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_topic.py" --route "<your text>" --ws "$WS"
 ```
 
-Pick existing `workspaces/$WS/**/<slug>.md` (excluding docs/journal/skills) if keywords overlap (>=3 common words); otherwise create new `workspaces/$WS/<new-slug>.md` with v2.3 frontmatter.
+Pick existing `workspaces/$WS/**/<slug>.md` (excluding journal/skills) if keywords overlap (>=3 common words); otherwise create new `workspaces/$WS/<new-slug>.md` with v2.3 frontmatter.
 
 Reserved names: docs, journal, skills, _MAP.md, AGENTS.md, workspace.json.
 

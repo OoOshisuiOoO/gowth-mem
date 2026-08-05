@@ -10,11 +10,11 @@ Generative-Agents-inspired reflection: extract patterns across many entries that
 ## Inputs
 
 - Optional date range. Default: last 7 days.
-- Workspace root (`$CLAUDE_PROJECT_DIR` or `$PWD`).
+- Vault workspace root: `~/.gowth-mem/workspaces/<ws>/` (resolved via `_home.py`, honours `GOWTH_MEM_HOME`)
 
 ## Sources
 
-- `docs/journal/*.md` (last 7 days)
+- `journal/*.md` (last 7 days)
 - `docs/exp.md` (existing lessons)
 
 ## Steps
@@ -40,7 +40,7 @@ Generative-Agents-inspired reflection: extract patterns across many entries that
 **Claim**: <evergreen 1-line>
 
 **Evidence**:
-- docs/journal/2026-04-15.md:23 — <line>
+- journal/2026-04-15.md:23 — <line>
 - docs/exp.md § Lessons — <existing fact>
 
 **Implication**: <1-line action / rule>

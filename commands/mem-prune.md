@@ -1,5 +1,5 @@
 ---
-description: Actively DELETE outdated, superseded, deprecated, or duplicate entries from docs/*.md (skips docs/journal). Per-line surgery, not just marking. Use after /mem-distill or weekly to keep working memory lean.
+description: Actively DELETE outdated, superseded, deprecated, or duplicate entries from the vault's curated docs/*.md (skips journal/, which _forget.py handles). Per-line surgery, not just marking. Use after /mem-distill or weekly to keep working memory lean.
 ---
 
 Run an active prune over docs/*.md. Removes entries that match strict outdated criteria.

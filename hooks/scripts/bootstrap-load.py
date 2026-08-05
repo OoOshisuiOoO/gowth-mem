@@ -119,6 +119,62 @@ def _allocate(
     return allow
 
 
+def _plan(ws: str, today) -> tuple[list, list, dict, dict]:
+    """Return (statics, deltas, texts, allowances) for one workspace.
+
+    Shared by the hook and `--report` so /mem-cost can never drift from what the
+    hook actually injects — the previous /mem-cost measured a pre-v2.7 layout that
+    no longer exists (0 of 9 files) and quoted a 60,000-char cap the code does not
+    use, which is precisely why the 2-of-5-files bootstrap regression went unnoticed.
+    """
+    statics: list[Path] = [agents_md(), secrets_md(), shared_tools_md()]
+    deltas: list[Path] = [workspace_agents_md(ws), docs_dir(ws) / "handoff.md"]
+    today_journal = journal_dir(ws) / f"{today.isoformat()}.md"
+    if today_journal.is_file():
+        deltas.append(today_journal)
+    texts = {f: _read_text(f) for f in statics + deltas}
+    return statics, deltas, texts, _allocate(texts, statics, deltas)
+
+
+def _report(ws: str, gh: Path, today) -> int:
+    """Print what the SessionStart hook would inject, per file. Used by /mem-cost."""
+    statics, deltas, texts, allow = _plan(ws, today)
+    print(f"bootstrap plan for workspace={ws}   cap={MAX_TOTAL} chars "
+          f"(per-file {MAX_PER_FILE})")
+    print(f"{'file':<52} {'on-disk':>8} {'loaded':>7} {'~tok':>6}  status")
+    print("-" * 88)
+    total = 0
+    loaded = 0
+    present = 0
+    for f, kind in [(f, "static") for f in statics] + [(f, "delta") for f in deltas]:
+        raw = texts.get(f, "")
+        a = allow.get(f, 0)
+        try:
+            label = str(f.relative_to(gh))
+        except ValueError:
+            label = str(f)
+        if not raw:
+            print(f"{label:<52} {'-':>8} {'-':>7} {'-':>6}  missing/empty ({kind})")
+            continue
+        present += 1
+        if a <= 0:
+            status = f"DROPPED — no budget left ({kind})"
+        elif a < len(raw):
+            status = f"truncated, {len(raw) - a} chars omitted ({kind})"
+        else:
+            status = f"full ({kind})"
+        if a > 0:
+            loaded += 1
+            total += a
+        print(f"{label:<52} {len(raw):>8} {a:>7} {a // 4:>6}  {status}")
+    print("-" * 88)
+    print(f"{'TOTAL':<52} {'':>8} {total:>7} {total // 4:>6}  loaded {loaded}/{present}")
+    if loaded < present:
+        print("\nSome files got no budget. Trim the largest static file — shared/secrets.md "
+              "is meant to hold env-var POINTERS only, not prose.")
+    return 0
+
+
 def _budget_planner_enabled(settings: dict) -> bool:
     if not isinstance(settings, dict):
         return False
@@ -164,6 +220,9 @@ def main() -> int:
         today = date.today()
         settings = read_settings()
 
+        if "--report" in sys.argv[1:]:
+            return _report(ws, gh, today)
+
         if _budget_planner_enabled(settings):
             parts, total, loaded, attempted = _load_via_budget_planner(ws, gh, settings)
             if loaded > 0:
@@ -180,22 +239,8 @@ def main() -> int:
                 return 0
             log_debug("bootstrap-load", "budget planner returned 0 files; falling back to stable prefix")
 
-        # Large, slow-changing shared files — the stable prompt-cache prefix.
-        statics: list[Path] = [agents_md(), secrets_md(), shared_tools_md()]
-
-        # Small per-session deltas carrying CURRENT state. Budget is reserved for
-        # these before the statics are allocated, so they can never be starved.
-        deltas: list[Path] = [
-            workspace_agents_md(ws),
-            docs_dir(ws) / "handoff.md",
-        ]
-        today_journal = journal_dir(ws) / f"{today.isoformat()}.md"
-        if today_journal.is_file():
-            deltas.append(today_journal)
-
+        statics, deltas, texts, allow = _plan(ws, today)
         stable = statics + deltas
-        texts = {f: _read_text(f) for f in stable}
-        allow = _allocate(texts, statics, deltas)
 
         parts: list[str] = []
         total = 0

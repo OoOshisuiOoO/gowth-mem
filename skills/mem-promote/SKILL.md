@@ -15,7 +15,7 @@ Aggregate distilled entries about a topic into a single Obsidian topic page.
 ## Inputs
 
 - Topic name (e.g. "EMA Cross", "Position Sizing", "Sierra Chart"). Case-insensitive grep.
-- Workspace root (`$CLAUDE_PROJECT_DIR` or `$PWD`).
+- Vault workspace root: `~/.gowth-mem/workspaces/<ws>/` (resolved via `_home.py`, honours `GOWTH_MEM_HOME`)
 
 ## Steps
 

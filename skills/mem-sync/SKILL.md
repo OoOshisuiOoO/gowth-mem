@@ -26,7 +26,7 @@ Multi-machine sync of `.gowth-mem/` (AGENTS.md + docs/* + settings.json + skills
 Synced (cross-machine):
 - `AGENTS.md`
 - `docs/handoff.md`, `exp.md`, `ref.md`, `tools.md`, `secrets.md` (POINTER only — never values), `files.md`
-- `docs/journal/<date>.md` — daily logs
+- `journal/<date>.md` — daily logs
 - `docs/skills/<name>.md` — Voyager skills
 - `settings.json` — plugin behavior
 

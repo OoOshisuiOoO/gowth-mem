@@ -10,7 +10,7 @@ Distill journal entries into the curated working layer using strict schema + noi
 ## Inputs
 
 - Optional date or date range. Default: today + yesterday.
-- Workspace root (`$CLAUDE_PROJECT_DIR` or `$PWD`).
+- Vault workspace root: `~/.gowth-mem/workspaces/<ws>/` (resolved via `_home.py`, honours `GOWTH_MEM_HOME`)
 
 ## Strict schema (mempalace-inspired 5-type + 2 plugin-specific)
 

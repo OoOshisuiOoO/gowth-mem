@@ -9,14 +9,14 @@ Quick token-cost estimator for the bootstrap layer.
 
 ## Inputs
 
-- Workspace root (`$CLAUDE_PROJECT_DIR` or `$PWD`).
+- Vault workspace root: `~/.gowth-mem/workspaces/<ws>/` (resolved via `_home.py`, honours `GOWTH_MEM_HOME`)
 
 ## Steps
 
 1. Sum char count of each bootstrap file:
    - `AGENTS.md`
    - `docs/handoff.md`, `docs/exp.md`, `docs/ref.md`, `docs/tools.md`, `docs/secrets.md`, `docs/files.md`
-   - `docs/journal/<today>.md`, `docs/journal/<yesterday>.md`
+   - `journal/<today>.md`, `journal/<yesterday>.md`
 2. Estimate tokens: chars ÷ 4 (rough English/Vietnamese OpenAI / Anthropic tokenizer ratio).
 3. Compare against bootstrap cap (60,000 chars ≈ 15,000 tokens).
 4. Print per-file breakdown + total + warning if over cap.
