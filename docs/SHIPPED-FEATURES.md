@@ -509,3 +509,38 @@ provenance backlinks; `conflict-detect` once-per-session suppression; calibratio
 
 Test coverage: **463/463** green (+61 vs v4.1: profile 19, retrieval 22, bootstrap 11,
 freshness 7, command hygiene 6, minus fixture updates). `bin/test-install.sh` all green.
+
+## v4.7 — Delegation-first cadence blocks (2026-08-18)
+
+**Problem (user-reported):** every N turns the Stop hook `decision:block`ed the MAIN session
+into doing the journal routing (classify → route → gate → handoff → `_moc.py`) and the
+self-review inline — 10-20 unrelated tool calls polluting the main context, diluting flow.
+
+**Fix — the main session's only cost is one dispatch call:**
+
+- **Journal cadence** → reason instructs dispatching ONE background subagent (memory teammate);
+  turn source = the `_capture.py` session log. Inline fallback only when no session log exists
+  or the harness has no subagent tool. The teammate prompt carries an anti-recursion sentinel.
+- **Review cadence** → main session ONLY dispatches a fresh-context background judge (must NOT
+  be a context-inheriting fork — anti-self-preference) and relays its 3-line summary. No
+  session log → review is DEFERRED (counter kept, fires as soon as a log exists) with a
+  once-per-session `[gowth-mem:review-paused]` notice naming the fix knob — never a judge
+  pointed at a nonexistent file.
+- **Capture gating** — `reflection.capture_enabled`, defaulting to `reflection.enabled`: the
+  documented pre-v4.7 privacy opt-out survives (session logs sync to the git remote);
+  journal-only users opt into delegation explicitly.
+- **Collision turn** (both cadences) → `[gowth-mem:both-cadences]` header directing TWO
+  SEPARATE subagents, keyed off what actually fired (not `len(reasons)`).
+- **Templates** open with SKIP guards so a dispatched teammate/judge reading its own
+  instructions cannot re-dispatch; teammate protocol gains Anchors (vault root derived from
+  the session-log path — `GOWTH_MEM_HOME`-safe; scripts at `<template>/../hooks/scripts/`);
+  dead `{prune_summary}`/`{consolidation_summary}`/`{ws_list_str}` placeholders removed.
+- **Forget coverage** — `_run_forget()` factored out; review cadence runs it when the journal
+  cadence is disabled (journal-off + reflection-on used to capture forever without archiving),
+  guarded against per-Stop subprocess spawns at `turn_interval: 1`.
+
+Process: brainstorm → approved design → TDD (17 RED→GREEN) → 3 adversarial review rounds by a
+fresh-context reviewer (12 + 4 + 2 findings, all fixed, final verdict APPROVE). Every changed
+path exercised live per the pre-tag rule: real 596KB transcript, scratch-vault smoke of
+delegate/inline/deferred/opt-out/collision/notice-once/forget paths, `bin/test-install.sh`
+ALL GREEN ×3. Test coverage: **517/517** (+54 vs v4.3).

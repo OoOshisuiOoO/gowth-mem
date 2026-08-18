@@ -18,6 +18,24 @@ v4.0 changes (metacognition — .claude/research/v4.0-metacognition.md §3/§4):
     default 15) triggers an honest self-review. `total_turns` is monotonic and
     used as the capture turn number. Journal and review cadences never collide:
     when both fire on one Stop, a single block joins both reasons.
+
+v4.7 changes (delegation-first — keep the main context clean):
+  - Both cadence reasons now instruct the MAIN session to dispatch a
+    background subagent teammate instead of doing the work inline (the inline
+    path cost 10-20 unrelated tool calls in the main context every N turns).
+    The teammate's turn source is the captured session log. Journal falls back
+    to the inline instruction when no session log exists; review is DEFERRED
+    (counter kept) until a log exists — a zero-context judge pointed at a
+    missing file can only fabricate or hit the signal floor.
+  - Capture gating: `reflection.capture_enabled` (defaults to
+    `reflection.enabled`, preserving the documented pre-v4.7 privacy opt-out —
+    session logs sync to the git remote). Journal-only users opt into
+    delegation with `reflection.capture_enabled: true`.
+  - When both cadences fire on one Stop, the joined block explicitly directs
+    TWO separate subagents (teammate may be a fork; judge must not be).
+  - `_forget.py` also runs on the review cadence when the journal cadence is
+    disabled (journal-off + reflection-on used to capture without ever
+    forgetting).
 """
 from __future__ import annotations
 
@@ -109,15 +127,59 @@ def _is_subagent(data: dict) -> bool:
     return False
 
 
-def _build_reason(ws: str, journal_every: int) -> str:
-    """Build the journal reason string: short pointer + TL;DR (≤400 chars total)."""
+def _session_log_path(ws: str, session_id: str) -> Path:
+    """Today's per-session capture log (written by _capture.capture_turn)."""
+    sid8 = (session_id or "default")[:8] or "default"
+    today = datetime.now().strftime("%Y-%m-%d")
+    return journal_dir(ws) / "sessions" / f"{today}-{sid8}.md"
+
+
+def _build_reason(ws: str, journal_every: int, session_log: Path) -> str:
+    """Build the journal reason string: short pointer (≤650 chars with real paths).
+
+    v4.7 delegation-first: the cadence work (classify/route/gate/handoff/MOC)
+    polluted the MAIN session's context with 10-20 unrelated tool calls every
+    N turns. When a session log exists, the reason now instructs dispatching
+    ONE background subagent teammate whose turn source is that log — the main
+    session's only cost is the dispatch call. Inline fallback stays for
+    sessions with no captured log (capture disabled, older Claude Code without
+    transcript_path, or any capture miss: a fresh subagent would have no turn
+    source).
+    """
     instructions_path = Path(__file__).parent.parent.parent / "templates" / "auto-journal-instructions.md"
+    if session_log.is_file():
+        return (
+            f"[gowth-mem:auto-journal ws={ws}] {journal_every} turns elapsed. "
+            f"DELEGATE — do NOT do this in the main context: dispatch ONE background subagent "
+            f"(memory teammate) whose prompt is: \"You are the dispatched gowth-mem memory "
+            f"teammate — never dispatch further subagents. Read {instructions_path} and execute "
+            f"its teammate protocol for ws={ws}. Turn source = session log {session_log}.\" "
+            f"Then continue your work immediately. Inline only if no subagent tool exists."
+        )
     return (
         f"[gowth-mem:auto-journal ws={ws}] {journal_every} turns elapsed. "
         f"Read {instructions_path} for the full protocol, then update journal. "
         f"TL;DR: classify items as [goal]/[decision]/[exp]/[ref]/[tool]/[hypothesis]/[secret-ref], "
         f"route to topic folders, apply quality gates, update handoff.md."
     )
+
+
+def _capture_enabled(refl_enabled: bool) -> bool:
+    """v4.7.1: whether per-turn capture (session logs) runs.
+
+    `reflection.capture_enabled` — defaults to `reflection.enabled`, so the
+    documented pre-v4.7 privacy opt-out (`reflection.enabled: false` = no
+    raw-turn capture; session logs sync to the git remote) keeps working.
+    Journal-only users set `reflection.capture_enabled: true` to give the
+    delegation teammate a session-log turn source."""
+    try:
+        s = read_settings()
+        r = s.get("reflection", {}) if isinstance(s, dict) else {}
+        if not isinstance(r, dict):
+            r = {}
+        return bool(r.get("capture_enabled", refl_enabled))
+    except Exception:
+        return refl_enabled
 
 
 def _read_reflection_settings() -> tuple[bool, int]:
@@ -137,18 +199,18 @@ def _read_reflection_settings() -> tuple[bool, int]:
         return True, 15
 
 
-def _build_review_reason(ws: str, review_count: int, session_id: str) -> str:
-    """Build the self-review reason: short pointer to the anti-sycophancy contract
-    + the session log path + the score-ledger path."""
+def _build_review_reason(ws: str, review_count: int, session_log: Path) -> str:
+    """Build the self-review reason: dispatch directive for a fresh-context
+    judge + the session log path + the score-ledger path. Callers must only
+    call this when session_log exists (main() defers the review otherwise)."""
     instructions_path = Path(__file__).parent.parent.parent / "templates" / "self-review-instructions.md"
-    sid8 = (session_id or "default")[:8] or "default"
-    today = datetime.now().strftime("%Y-%m-%d")
-    session_log = journal_dir(ws) / "sessions" / f"{today}-{sid8}.md"
     scores_path = journal_dir(ws) / "_scores.md"
     reason = (
         f"[gowth-mem:self-review ws={ws}] {review_count} turns logged. "
-        f"Read {instructions_path} and review the session log at {session_log}. "
-        f"Scores go to {scores_path}. Be honest — chân thật, thẳng thắn."
+        f"DISPATCH a fresh-context background subagent as the judge (do NOT review in the "
+        f"main context): pass it {instructions_path} + the session log {session_log}; "
+        f"scores go to {scores_path}. Relay its 3-line summary when it completes. "
+        f"Be honest — chân thật, thẳng thắn."
     )
     # v4.1: surface the past-conversation review backlog (stat()-only, cheap).
     try:
@@ -193,9 +255,17 @@ def _run_maintenance() -> None:
         except Exception as e:
             log_debug("auto-journal", f"consolidate subprocess failed: {e}")
 
-    # v3.6: active forgetting — archive journal raw older than journal.raw_ttl_days
-    # (canon §3). Near-noop when nothing is past TTL; gated by auto_forget_enabled.
-    # Archived files stay recoverable (gz under .archive/ + memory-repo git history).
+    _run_forget()
+
+
+def _run_forget() -> None:
+    """v3.6 active forgetting — archive journal raw older than journal.raw_ttl_days
+    (canon §3). Near-noop when nothing is past TTL; gated by auto_forget_enabled.
+    Archived files stay recoverable (gz under .archive/ + memory-repo git history).
+
+    v4.7.1: factored out of _run_maintenance so the review cadence can run it
+    when the journal cadence is disabled — journal-off + reflection-on captures
+    every turn and would otherwise never archive."""
     forget_script = Path(__file__).parent / "_forget.py"
     if forget_script.is_file() and _auto_forget_enabled():
         try:
@@ -274,9 +344,15 @@ def main() -> int:
     except Exception:
         ws = active_workspace()
 
+    # The session-log path is computed ONCE and threaded through capture-check,
+    # reason builders, and the review gate — so a Stop straddling midnight
+    # cannot point a reason at a path capture did not write.
+    session_log = _session_log_path(ws, session_id)
+
     # v4.0: best-effort per-turn capture (prompt + thinking). Missing
     # transcript_path (older Claude Code) → capture_turn returns False silently.
-    if refl_enabled:
+    # v4.7.1: gated by reflection.capture_enabled (defaults to reflection.enabled).
+    if _capture_enabled(refl_enabled):
         try:
             _capture.capture_turn(transcript_path, ws, session_id, total_turns, read_settings())
         except Exception as e:
@@ -293,20 +369,74 @@ def main() -> int:
         log_debug("auto-journal", f"maybe_autosync failed: {e}")
 
     reasons: list[str] = []
+    journal_fired = False
+    review_fired = False
 
     # Journal cadence.
     if journal_enabled and turn >= journal_every:
         _reset_counters(session_id, ["turn_count"])
         _run_maintenance()
-        reasons.append(_build_reason(ws, journal_every))
+        reasons.append(_build_reason(ws, journal_every, session_log))
+        journal_fired = True
 
-    # Review cadence (independent counter).
+    # Review cadence (independent counter). v4.7.1: the review is DEFERRED
+    # while no session log exists — a fresh-context judge pointed at a missing
+    # file can only fabricate or hit the signal floor. The counter is kept, so
+    # the review fires on the first Stop after a log appears (or never, when
+    # capture is off — no evidence, no review).
     if refl_enabled and review_count >= turn_interval:
-        _reset_counters(session_id, ["review_count"])
-        reasons.append(_build_review_reason(ws, review_count, session_id))
+        if session_log.is_file():
+            _reset_counters(session_id, ["review_count"])
+            reasons.append(_build_review_reason(ws, review_count, session_log))
+            review_fired = True
+        elif review_count == turn_interval:
+            # Exactly once per session (the counter never resets while
+            # deferred, so this == crossing cannot repeat): a user-visible
+            # signal + one debug line — NOT a line per Stop in hook-errors.log.
+            log_debug("auto-journal",
+                      f"self-review deferred (count={review_count}): no session log at {session_log}")
+            # Prefix is deliberately NOT [gowth-mem:self-review …]: external
+            # consumers (session-insights-style skills, _classify in tests)
+            # key on that token and would treat a nothing-to-review notice as
+            # a live review directive.
+            reasons.append(
+                f"[gowth-mem:review-paused ws={ws}] session review paused — no session log "
+                f"captured (transcript_path missing, or reflection.capture_enabled is false). "
+                f"Reviews resume automatically once capture produces a log; opt in via "
+                f"settings.reflection.capture_enabled: true. Tell the user this in ONE line, "
+                f"then continue."
+            )
+        # v4.7.1: journal-off + reflection-on never reaches _run_maintenance
+        # (sole _forget caller) — archive on this cadence instead. Runs on real
+        # fires and, while deferred, on interval multiples (NOT every Stop —
+        # the subprocess must not run per turn, hence the turn_interval > 1
+        # guard on the modulo: at interval 1 it would otherwise be true on
+        # every Stop, so deferred sessions there forget only at the first
+        # crossing). journal/<date>.md keeps arriving from /mem-journal and
+        # precompact-flush.py even with capture off, so this must not sit
+        # behind the session-log gate.
+        if not journal_enabled and (
+            review_fired
+            or review_count == turn_interval
+            or (turn_interval > 1 and review_count % turn_interval == 0)
+        ):
+            _run_forget()
 
     if reasons:
-        print(json.dumps({"decision": "block", "reason": "\n\n".join(reasons)}))
+        reason = "\n\n".join(reasons)
+        if journal_fired and review_fired:
+            # Both cadences DISPATCHED: the two directives conflict (teammate
+            # may be a context-inheriting fork; the judge must NOT be). Say it
+            # once, explicitly, so a model cannot collapse them into one
+            # agent. Keyed off what fired — a paused-review notice joining an
+            # inline journal reason must not grow this header.
+            reason = (
+                "[gowth-mem:both-cadences] Two cadences fired this turn. Dispatch TWO SEPARATE "
+                "background subagents — (1) the memory teammate (a context-inheriting fork is "
+                "fine), (2) the fresh-context judge (must NOT be a fork). Never merge them into "
+                "one agent.\n\n" + reason
+            )
+        print(json.dumps({"decision": "block", "reason": reason}))
         return 0
 
     print(json.dumps({"continue": True, "suppressOutput": True}))

@@ -52,18 +52,22 @@ class ReviewBase(unittest.TestCase):
         self._tmp.cleanup()
 
     def _write_settings(self, reflection_enabled: bool = True, journal_every: int = 10,
-                         turn_interval: int = 15) -> None:
+                         turn_interval: int = 15, capture_enabled: bool | None = None,
+                         journal_enabled: bool = True, auto_forget: bool = False) -> None:
+        reflection: dict = {
+            "enabled": reflection_enabled,
+            "turn_interval": turn_interval,
+            "capture_thinking": True,
+            "max_prompt_chars": 2000,
+            "max_thinking_chars": 1500,
+        }
+        if capture_enabled is not None:
+            reflection["capture_enabled"] = capture_enabled
         settings = {
-            "auto_journal": {"journal_every": journal_every, "auto_journal_enabled": True},
-            "reflection": {
-                "enabled": reflection_enabled,
-                "turn_interval": turn_interval,
-                "capture_thinking": True,
-                "max_prompt_chars": 2000,
-                "max_thinking_chars": 1500,
-            },
-            # Skip the forget subprocess during tests (speed + isolation).
-            "journal": {"auto_forget_enabled": False},
+            "auto_journal": {"journal_every": journal_every, "auto_journal_enabled": journal_enabled},
+            "reflection": reflection,
+            # Forget subprocess off by default during tests (speed + isolation).
+            "journal": {"auto_forget_enabled": auto_forget},
         }
         (self.home / "settings.json").write_text(json.dumps(settings))
 
@@ -83,13 +87,17 @@ class ReviewBase(unittest.TestCase):
 
     @staticmethod
     def _classify(result: subprocess.CompletedProcess) -> tuple[bool, bool, dict]:
-        """Return (journal_fired, review_fired, parsed_output)."""
+        """Return (journal_fired, review_fired, parsed_output).
+
+        v4.7.1: matches the exact bracketed trigger tokens — a paused-review
+        NOTICE must not classify as a fired review (its prefix is
+        [gowth-mem:review-paused …], distinct by contract)."""
         out = result.stdout.strip()
         if not out:
             return False, False, {}
         d = json.loads(out)
         reason = d.get("reason", "") if d.get("decision") == "block" else ""
-        return ("auto-journal" in reason), ("self-review" in reason), d
+        return ("[gowth-mem:auto-journal ws=" in reason), ("[gowth-mem:self-review ws=" in reason), d
 
     def _session_file(self, session_id: str) -> Path:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -166,22 +174,207 @@ class TestCaptureThroughHook(ReviewBase):
 
 
 class TestReflectionDisabled(ReviewBase):
-    def test_disabled_no_capture_no_review(self):
+    def test_disabled_no_review_no_capture_journal_inline(self):
+        """v4.7.1 privacy contract: `reflection.enabled: false` was the
+        documented opt-out for raw-turn capture — it stays that way unless
+        `reflection.capture_enabled: true` opts back in. Without a session log
+        the journal reason must use the inline-fallback wording."""
         self._write_settings(reflection_enabled=False)
         sid = "disabled1234"
         review_fired = False
         journal_stops = []
+        journal_reason = ""
         for i in range(1, 16):
             r = self._run_stop(sid)
             self.assertEqual(r.returncode, 0)
-            j, rev, _ = self._classify(r)
+            j, rev, d = self._classify(r)
             review_fired = review_fired or rev
             if j:
                 journal_stops.append(i)
+                journal_reason = d["reason"]
         self.assertFalse(review_fired, "review must never fire when reflection disabled")
         self.assertEqual(journal_stops, [10], "journal still fires when reflection disabled")
         self.assertFalse(self._session_file(sid).exists(),
-                         "no capture when reflection disabled")
+                         "reflection off (no explicit capture_enabled) must NOT capture")
+        self.assertIn("for the full protocol", journal_reason,
+                      "no session log → journal reason must be the inline-fallback variant")
+
+    def test_capture_enabled_opts_journal_only_into_delegation(self):
+        """v4.7.1: journal-only users set reflection.capture_enabled: true to
+        give the delegation teammate a session-log turn source."""
+        self._write_settings(reflection_enabled=False, capture_enabled=True, journal_every=2)
+        sid = "optin1234567"
+        self._run_stop(sid)
+        r = self._run_stop(sid)
+        j, _, d = self._classify(r)
+        self.assertTrue(self._session_file(sid).exists(),
+                        "capture_enabled=true must capture even with reflection off")
+        self.assertTrue(j, "journal must fire at stop 2")
+        self.assertIn("subagent", d["reason"].lower(),
+                      "with a session log the journal reason must be the delegate variant")
+
+
+class TestDelegationReasons(ReviewBase):
+    """v4.7: cadence blocks delegate to a background teammate — the injected
+    reason must carry the dispatch directive + the session-log path so the main
+    session's only cost is one Agent/Task call."""
+
+    def test_journal_reason_dispatches_teammate_with_session_log(self):
+        self._write_settings(journal_every=2, turn_interval=99)
+        sid = "delegate1234"
+        self._run_stop(sid)
+        r = self._run_stop(sid)
+        j, _, d = self._classify(r)
+        self.assertTrue(j, "journal must fire at stop 2 with journal_every=2")
+        reason = d["reason"]
+        self.assertIn("subagent", reason.lower(),
+                      "journal reason must instruct dispatching a subagent teammate")
+        self.assertIn(str(self._session_file(sid)), reason,
+                      "journal reason must carry the session-log path (teammate's source)")
+
+    def test_journal_reason_falls_back_inline_without_session_log(self):
+        """No transcript → no session log → a fresh subagent would have no
+        turn source. The reason must be the pre-v4.7 inline variant."""
+        self._write_settings(journal_every=2, turn_interval=99)
+        sid = "nolog1234567"
+        self._run_stop(sid, with_transcript=False)
+        r = self._run_stop(sid, with_transcript=False)
+        j, _, d = self._classify(r)
+        self.assertTrue(j, "journal must still fire without a transcript")
+        self.assertNotIn(str(self._session_file(sid)), d["reason"],
+                         "reason must not reference a session log that was never captured")
+        self.assertIn("for the full protocol", d["reason"],
+                      "no session log → inline-fallback wording, not the delegate variant")
+
+    def test_review_reason_dispatches_teammate(self):
+        self._write_settings(journal_every=99, turn_interval=2)
+        sid = "revdeleg1234"
+        self._run_stop(sid)
+        r = self._run_stop(sid)
+        _, rev, d = self._classify(r)
+        self.assertTrue(rev, "review must fire at stop 2 with turn_interval=2")
+        self.assertIn("subagent", d["reason"].lower(),
+                      "review reason must instruct dispatching a fresh-context subagent")
+
+    def test_review_deferred_without_session_log(self):
+        """v4.7.1: a judge with no session log can only fabricate or hit the
+        signal floor — the review must be DEFERRED (counter kept) so it fires
+        as soon as a log exists, and never dispatches at a missing file. The
+        first deferral surfaces a one-line PAUSED notice (user-visible signal);
+        later deferrals are silent."""
+        self._write_settings(journal_every=99, turn_interval=2)
+        sid = "revnolog1234"
+        self._run_stop(sid, with_transcript=False)
+        # Stop 2 = the exact cadence crossing → one-time paused notice, no dispatch.
+        r = self._run_stop(sid, with_transcript=False)
+        _, rev, d = self._classify(r)
+        self.assertEqual(d.get("decision"), "block", "first deferral must surface a notice")
+        self.assertIn("paused", d["reason"], "notice must say the review is paused")
+        self.assertIn("capture_enabled", d["reason"], "notice must name the fix knob")
+        self.assertNotIn("DISPATCH", d["reason"], "notice must not dispatch a judge")
+        self.assertNotIn(str(self._session_file(sid)), d["reason"])
+        # The notice must NOT reuse the live trigger token — external consumers
+        # (e.g. a session-insights skill) key on [gowth-mem:self-review] and
+        # would launch a full review of a session with nothing to review.
+        self.assertFalse(rev, "paused notice must not classify as a fired review")
+        self.assertNotIn("[gowth-mem:self-review ws=", d["reason"])
+        self.assertIn("[gowth-mem:review-paused ws=", d["reason"])
+        self.assertGreaterEqual(self._state(sid).get("review_count", 0), 2,
+                                "deferred review must keep its counter (fires once a log exists)")
+        # Stop 3: still no log, past the crossing → silent (no block, no log spam).
+        r = self._run_stop(sid, with_transcript=False)
+        d = json.loads(r.stdout.strip())
+        self.assertNotEqual(d.get("decision"), "block",
+                            "deferral past the first crossing must be silent")
+        # Log appears (transcript now available) → real review fires on the next stop.
+        r = self._run_stop(sid)
+        _, rev, d = self._classify(r)
+        self.assertTrue(rev, "review must fire on the first stop after a log exists")
+        self.assertIn(str(self._session_file(sid)), d["reason"])
+        self.assertIn("DISPATCH", d["reason"])
+
+    def test_deferral_notice_plus_journal_inline_has_no_two_agent_header(self):
+        """v4.7.1: the TWO-SEPARATE-subagents header belongs to a real
+        journal-dispatch + review-dispatch collision. A paused-review notice
+        joining an inline journal reason is NOT that — the header must key off
+        what actually fired, not off len(reasons)."""
+        self._write_settings(journal_every=2, turn_interval=2)
+        sid = "noticecol123"
+        self._run_stop(sid, with_transcript=False)
+        r = self._run_stop(sid, with_transcript=False)
+        d = json.loads(r.stdout.strip())
+        self.assertEqual(d.get("decision"), "block")
+        self.assertIn("auto-journal", d["reason"])
+        self.assertIn("paused", d["reason"])
+        self.assertNotIn("TWO SEPARATE", d["reason"],
+                         "no dispatch collision → no two-agent header")
+
+    def test_collision_block_directs_two_separate_subagents(self):
+        """v4.7.1: when both cadences fire on one Stop, the joined block must
+        explicitly direct TWO separate subagents (teammate + fresh judge) so a
+        model cannot collapse them into one fork that grades itself."""
+        self._write_settings(journal_every=2, turn_interval=2)
+        sid = "collide12345"
+        self._run_stop(sid)
+        r = self._run_stop(sid)
+        j, rev, d = self._classify(r)
+        self.assertTrue(j and rev, "both cadences must fire at stop 2")
+        self.assertIn("TWO SEPARATE", d["reason"],
+                      "collision block must direct two separate subagents")
+
+
+class TestForgetOnReviewCadence(ReviewBase):
+    def test_journal_off_reflection_on_still_forgets(self):
+        """v4.7.1: journal-off + reflection-on captures every turn; TTL archival
+        must still run (was: _forget only ran on the journal cadence → unbounded
+        growth for that config)."""
+        self._write_settings(journal_enabled=False, turn_interval=1, auto_forget=True)
+        old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
+        old.write_text("# old raw journal\nnoise line\n")
+        stale = 30 * 86400
+        os.utime(old, (os.path.getmtime(old) - stale, os.path.getmtime(old) - stale))
+        sid = "forgetrev123"
+        r = self._run_stop(sid)  # turn_interval=1 → review fires; forget must run too
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        _, rev, _ = self._classify(r)
+        self.assertTrue(rev, "review must fire at stop 1 with turn_interval=1")
+        self.assertFalse(old.exists(),
+                         "past-TTL journal must be archived even with journal cadence disabled")
+
+    def test_deferred_forget_not_every_stop_at_interval_1(self):
+        """v4.7.1: with turn_interval=1 the deferred-modulo would be true on
+        EVERY Stop — the forget subprocess must still only run at the crossing,
+        never per turn. A stale file created AFTER the crossing must survive
+        subsequent silent-deferral stops."""
+        self._write_settings(journal_enabled=False, turn_interval=1, auto_forget=True,
+                             capture_enabled=False)
+        sid = "nospam123456"
+        self._run_stop(sid)  # stop 1 = the crossing (forget may run here)
+        old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
+        old.write_text("# old raw journal\nnoise line\n")
+        stale = 30 * 86400
+        os.utime(old, (os.path.getmtime(old) - stale, os.path.getmtime(old) - stale))
+        self._run_stop(sid)  # stop 2: silent deferral — must NOT spawn forget
+        self._run_stop(sid)  # stop 3: same
+        self.assertTrue(old.exists(),
+                        "forget must not run on every Stop during deferral at turn_interval=1")
+
+    def test_forget_runs_even_when_review_deferred(self):
+        """v4.7.1 residual (reviewer N3): journal-off + reflection-on +
+        capture-off must still archive — journal/<date>.md files keep arriving
+        from /mem-journal and precompact-flush.py regardless of capture."""
+        self._write_settings(journal_enabled=False, turn_interval=1, auto_forget=True,
+                             capture_enabled=False)
+        old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
+        old.write_text("# old raw journal\nnoise line\n")
+        stale = 30 * 86400
+        os.utime(old, (os.path.getmtime(old) - stale, os.path.getmtime(old) - stale))
+        sid = "forgetdef123"
+        r = self._run_stop(sid)  # capture off → review defers, but forget must run
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertFalse(self._session_file(sid).exists(), "capture off → no session log")
+        self.assertFalse(old.exists(),
+                         "past-TTL journal must be archived even while the review is deferred")
 
 
 class TestSubagentSkip(ReviewBase):

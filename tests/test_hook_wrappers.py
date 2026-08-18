@@ -116,6 +116,45 @@ class TestAutoJournalInstructionsTemplate(unittest.TestCase):
         for keyword in ["[decision]", "[exp]", "[ref]", "quality gates"]:
             self.assertIn(keyword, content, f"Expected keyword '{keyword}' in instructions template")
 
+    def test_template_contains_dispatch_protocol(self) -> None:
+        """v4.7: the journal work is delegated — the template must open with a
+        dispatch protocol (background subagent teammate + session-log source +
+        inline fallback), so the main session never does the routing itself."""
+        p = TEMPLATES_DIR / "auto-journal-instructions.md"
+        content = p.read_text(errors="ignore").lower()
+        for keyword in ["dispatch", "subagent", "background", "session log", "fallback"]:
+            self.assertIn(keyword, content,
+                          f"Expected dispatch-protocol keyword '{keyword}' in auto-journal template")
+
+    def test_template_guards_against_teammate_self_dispatch(self) -> None:
+        """v4.7.1: the dispatched teammate reads this same file — it must hit a
+        guard telling it to skip the dispatch section (recursion hazard)."""
+        p = TEMPLATES_DIR / "auto-journal-instructions.md"
+        content = p.read_text(errors="ignore").lower()
+        self.assertIn("skip this section", content,
+                      "auto-journal template needs a teammate self-dispatch guard")
+
+
+class TestSelfReviewInstructionsTemplate(unittest.TestCase):
+    """v4.7: self-review must be dispatch-only in the main session."""
+
+    def test_template_mandates_background_dispatch(self) -> None:
+        p = TEMPLATES_DIR / "self-review-instructions.md"
+        content = p.read_text(errors="ignore").lower()
+        # "this is your only step" + the fork-independence clause pin the
+        # v4.7 contract specifically (the old template already said
+        # "dispatch"/"subagent", which would not discriminate a revert).
+        for keyword in ["dispatch", "subagent", "background", "this is your only step",
+                        "context-inheriting fork; the judge must be independent"]:
+            self.assertIn(keyword, content,
+                          f"Expected dispatch keyword '{keyword}' in self-review template")
+
+    def test_template_guards_against_judge_self_dispatch(self) -> None:
+        p = TEMPLATES_DIR / "self-review-instructions.md"
+        content = p.read_text(errors="ignore").lower()
+        self.assertIn("skip this section", content,
+                      "self-review template needs a judge self-dispatch guard")
+
 
 class TestConflictDetectShNoConflict(unittest.TestCase):
     """conflict-detect.sh must exit 0 when SYNC-CONFLICT.md does not exist."""

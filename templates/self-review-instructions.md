@@ -5,18 +5,36 @@ point is to find what was weak so both the user's prompting and Claude's reasoni
 improve over time. A review with no concrete, quoted criticism is a FAILED review —
 delete it and start over.
 
-Do this WITHOUT writing the user a long preamble first — do the work silently, then
-reply with the short summary in step 6.
+No long preamble to the user — the judge does the work silently; the ONLY
+user-facing output is the 3-line summary from step 6.
 
-## 0. Guards (check before scoring)
+## 0. Dispatch protocol (MAIN session — this is your ONLY step)
+
+**If you ARE the dispatched judge, SKIP this section — start at 0b. Never
+dispatch further subagents.**
+
+The review must NOT run in the main context: it dilutes the conversation with
+review tool calls, and a judge grading its own work in its own context is the
+self-preference bias this rubric exists to kill. The main session's whole job:
+
+1. **Dispatch ONE fresh-context background subagent** (Task/Agent tool — NOT a
+   context-inheriting fork; the judge must be independent) with: the session-log
+   path you were given (hook reason, or resolved by `/mem-review`) + this rubric
+   file. It executes steps 0b-6 below.
+2. **Continue your work.** When the judge completes, relay its 3-line summary
+   (step 6) to the user verbatim — nothing longer.
+
+Fallback (ONLY when no subagent tool exists in this harness): run steps 0b-6
+yourself, inline, and state "Reviewer: in-context" in the review block.
+(There is no missing-log fallback: when no session log exists the hook never
+emits this directive at all — it pauses the review until capture produces one.)
+
+## 0b. Guards (the judge checks before scoring)
 
 - **Signal floor:** if the session log has **fewer than 10 `## turn` blocks**, STOP —
   skip the review and tell the user in one line ("session too short for a meaningful
   retro — N turns, need 10"). Short-session retros produce noise, not signal.
-- **Critic separation (anti-self-preference bias):** you are grading your own work, so
-  prefer a fresh judge. If the Task/Agent tool is available, **dispatch the review to a
-  fresh-context subagent**, passing it the session-log path and this rubric; only fall
-  back to reviewing in-context if no subagent tool is available. State which path you used.
+- **State which reviewer path was used** (`subagent` or `in-context`) in the review block.
 
 ## 1. Read the session log
 
@@ -107,11 +125,12 @@ gate is what keeps the reflection ledger high-signal instead of platitudes.
    Scores are on the 1-5 scale. The `delta-vs-last` cell states the direction vs the
    previous row (e.g. "prompting +1, reasoning flat — fewer vague asks this block").
 
-## 6. Reply to the user (3 lines, their language)
+## 6. Return the 3-line summary (the main session relays it verbatim)
 
-Reply with a **3-line** summary in the USER'S language (Vietnamese if the session is in
+End with a **3-line** summary in the USER'S language (Vietnamese if the session is in
 Vietnamese): line 1 = the three N/5 scores, line 2 = the single biggest weakness this
 block (quoted), line 3 = the one thing to change next block. Nothing longer — the detail
-lives in the review block, not the chat.
+lives in the review block, not the chat. If you are the dispatched judge, these 3 lines
+are your entire final report; the main session passes them to the user unchanged.
 
 This is automation, not a conversation step. Be honest — chân thật, thẳng thắn.
