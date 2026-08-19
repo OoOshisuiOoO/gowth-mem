@@ -26,6 +26,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_review_ledger.py" --next --json
    - anchored 1-5 on user prompting / Claude reasoning / collaboration,
    - harsh-reviewer-first, ≥2 verbatim-quoted weaknesses per dimension, quote-or-no-score,
    - prefer dispatching a fresh-context subagent as the judge (pass it the transcript path + rubric),
+   - the rubric's **Backlog mode** (§0b) applies: a raw JSONL transcript has no `## turn`
+     blocks — turns for the signal floor are user records with non-empty text, and quotes
+     come from the JSON `message.content`,
    - counterfactual gate before writing anything to the vault.
 
 4. **Record the outcome** in the vault (synced):

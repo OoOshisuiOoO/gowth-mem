@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -52,8 +52,9 @@ class ReviewBase(unittest.TestCase):
         self._tmp.cleanup()
 
     def _write_settings(self, reflection_enabled: bool = True, journal_every: int = 10,
-                         turn_interval: int = 15, capture_enabled: bool | None = None,
-                         journal_enabled: bool = True, auto_forget: bool = False) -> None:
+                         turn_interval: int = 15, capture_enabled=None,
+                         journal_enabled: bool = True, auto_forget: bool = False,
+                         min_review_turns: int | None = None) -> None:
         reflection: dict = {
             "enabled": reflection_enabled,
             "turn_interval": turn_interval,
@@ -63,6 +64,8 @@ class ReviewBase(unittest.TestCase):
         }
         if capture_enabled is not None:
             reflection["capture_enabled"] = capture_enabled
+        if min_review_turns is not None:
+            reflection["min_review_turns"] = min_review_turns
         settings = {
             "auto_journal": {"journal_every": journal_every, "auto_journal_enabled": journal_enabled},
             "reflection": reflection,
@@ -72,14 +75,16 @@ class ReviewBase(unittest.TestCase):
         (self.home / "settings.json").write_text(json.dumps(settings))
 
     def _run_stop(self, session_id: str, with_transcript: bool = True,
-                  agent_type: str | None = None, transcript_path: str | None = None
-                  ) -> subprocess.CompletedProcess:
+                  agent_type: str | None = None, transcript_path: str | None = None,
+                  extra_env: dict | None = None) -> subprocess.CompletedProcess:
         payload: dict = {"session_id": session_id}
         if agent_type:
             payload["agent_type"] = agent_type
         if with_transcript:
             payload["transcript_path"] = transcript_path or str(self.tx)
         env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             [sys.executable, str(HOOK)],
             input=json.dumps(payload), capture_output=True, text=True, env=env,
@@ -231,6 +236,8 @@ class TestDelegationReasons(ReviewBase):
                       "journal reason must instruct dispatching a subagent teammate")
         self.assertIn(str(self._session_file(sid)), reason,
                       "journal reason must carry the session-log path (teammate's source)")
+        self.assertIn("never dispatch further subagents", reason,
+                      "the anti-recursion sentinel must ship inside the teammate prompt")
 
     def test_journal_reason_falls_back_inline_without_session_log(self):
         """No transcript → no session log → a fresh subagent would have no
@@ -247,7 +254,7 @@ class TestDelegationReasons(ReviewBase):
                       "no session log → inline-fallback wording, not the delegate variant")
 
     def test_review_reason_dispatches_teammate(self):
-        self._write_settings(journal_every=99, turn_interval=2)
+        self._write_settings(journal_every=99, turn_interval=2, min_review_turns=2)
         sid = "revdeleg1234"
         self._run_stop(sid)
         r = self._run_stop(sid)
@@ -262,7 +269,7 @@ class TestDelegationReasons(ReviewBase):
         as soon as a log exists, and never dispatches at a missing file. The
         first deferral surfaces a one-line PAUSED notice (user-visible signal);
         later deferrals are silent."""
-        self._write_settings(journal_every=99, turn_interval=2)
+        self._write_settings(journal_every=99, turn_interval=2, min_review_turns=1)
         sid = "revnolog1234"
         self._run_stop(sid, with_transcript=False)
         # Stop 2 = the exact cadence crossing → one-time paused notice, no dispatch.
@@ -313,7 +320,7 @@ class TestDelegationReasons(ReviewBase):
         """v4.7.1: when both cadences fire on one Stop, the joined block must
         explicitly direct TWO separate subagents (teammate + fresh judge) so a
         model cannot collapse them into one fork that grades itself."""
-        self._write_settings(journal_every=2, turn_interval=2)
+        self._write_settings(journal_every=2, turn_interval=2, min_review_turns=2)
         sid = "collide12345"
         self._run_stop(sid)
         r = self._run_stop(sid)
@@ -328,7 +335,8 @@ class TestForgetOnReviewCadence(ReviewBase):
         """v4.7.1: journal-off + reflection-on captures every turn; TTL archival
         must still run (was: _forget only ran on the journal cadence → unbounded
         growth for that config)."""
-        self._write_settings(journal_enabled=False, turn_interval=1, auto_forget=True)
+        self._write_settings(journal_enabled=False, turn_interval=1, auto_forget=True,
+                             min_review_turns=1)
         old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
         old.write_text("# old raw journal\nnoise line\n")
         stale = 30 * 86400
@@ -375,6 +383,242 @@ class TestForgetOnReviewCadence(ReviewBase):
         self.assertFalse(self._session_file(sid).exists(), "capture off → no session log")
         self.assertFalse(old.exists(),
                          "past-TTL journal must be archived even while the review is deferred")
+
+
+class TestV471RobustStdin(ReviewBase):
+    """v4.7.1: the hook entrypoint must NEVER exit non-zero (repo rule) —
+    v4.7 moved the sid slice into the unguarded every-Stop path and a JSON
+    number killed capture, autosync, and both cadences on every turn."""
+
+    def _run_raw(self, payload) -> subprocess.CompletedProcess:
+        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
+        return subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                              capture_output=True, text=True, env=env)
+
+    def test_numeric_session_id_exits_0_and_still_captures(self):
+        r = self._run_raw({"session_id": 12345, "transcript_path": str(self.tx)})
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+        json.loads(r.stdout.strip())  # valid JSON out
+        st = json.loads((self.home / "state.json").read_text())["session"]
+        self.assertIn("12345", st, "counters must key on the coerced string sid")
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.assertTrue((self.home / "workspaces" / "default" / "journal" / "sessions"
+                         / f"{today}-12345.md").is_file(),
+                        "capture must still run with a numeric session_id")
+
+    def test_non_dict_stdin_exits_0(self):
+        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
+        r = subprocess.run([sys.executable, str(HOOK)], input="[1, 2, 3]",
+                           capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_non_string_transcript_path_ignored(self):
+        r = self._run_raw({"session_id": "tpnum1234567", "transcript_path": 42})
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+
+
+class TestV471CaptureOnly(ReviewBase):
+    def test_capture_only_config_still_captures(self):
+        """Both cadences OFF + capture_enabled true (a /mem-review-only user):
+        the early return silently killed the knob pre-v4.7.1 — journal/sessions/
+        stayed empty forever with no notice."""
+        self._write_settings(reflection_enabled=False, journal_enabled=False,
+                             capture_enabled=True)
+        sid = "captonly1234"
+        r = self._run_stop(sid)
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        d = json.loads(r.stdout.strip())
+        self.assertNotEqual(d.get("decision"), "block")
+        self.assertTrue(self._session_file(sid).is_file(),
+                        "capture must run even with both cadences disabled")
+
+    def test_all_off_still_early_returns(self):
+        self._write_settings(reflection_enabled=False, journal_enabled=False)
+        sid = "alloff123456"
+        r = self._run_stop(sid)
+        self.assertEqual(r.returncode, 0)
+        self.assertFalse(self._session_file(sid).exists())
+        self.assertEqual(self._state(sid), {}, "all-off must not touch counters")
+
+
+class TestV471BoolCoercion(ReviewBase):
+    def test_capture_enabled_string_false_disables(self):
+        """The JSON string "false" is truthy under bool() — on the
+        privacy-critical knob it must parse as an opt-out (raw prompts were
+        syncing to the git remote despite an explicit-looking false)."""
+        self._write_settings(capture_enabled="false")
+        sid = "strfalse1234"
+        r = self._run_stop(sid)
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertFalse(self._session_file(sid).exists(),
+                         '"capture_enabled": "false" must disable capture')
+
+    def test_capture_enabled_null_uses_default_chain(self):
+        """Explicit null = "use the default chain" (reflection.enabled), not
+        False — bool(None) silently killed capture with reflection on."""
+        settings = {
+            "auto_journal": {"journal_every": 10, "auto_journal_enabled": True},
+            "reflection": {"enabled": True, "turn_interval": 15, "capture_enabled": None},
+            "journal": {"auto_forget_enabled": False},
+        }
+        (self.home / "settings.json").write_text(json.dumps(settings))
+        sid = "nullcap12345"
+        self._run_stop(sid)
+        self.assertTrue(self._session_file(sid).is_file(),
+                        "null capture_enabled must fall back to reflection.enabled")
+
+
+class TestV471SignalFloor(ReviewBase):
+    def test_review_defers_at_young_log_no_noop_dispatch(self):
+        """The crossing must NOT be consumed dispatching a judge that will
+        immediately floor-skip a 2-turn log (rubric §0b, default floor 10)."""
+        self._write_settings(journal_every=99, turn_interval=2)  # floor: default 10
+        sid = "youngfloor12"
+        self._run_stop(sid)
+        r = self._run_stop(sid)  # crossing: log has 2 turns < 10
+        _, rev, d = self._classify(r)
+        self.assertFalse(rev, "review must defer below the signal floor")
+        self.assertNotIn("[gowth-mem:review-paused ws=", d.get("reason", ""),
+                         "capture IS working — a young log must not raise the paused notice")
+        self.assertGreaterEqual(self._state(sid).get("review_count", 0), 2,
+                                "deferred review must keep its counter")
+        # Pad the log past the floor → the next Stop fires.
+        sf = self._session_file(sid)
+        pad = "".join(f"\n## turn {90 + i} — 00:0{i}\n**User:** pad\n" for i in range(10))
+        sf.write_text(sf.read_text() + pad)
+        r = self._run_stop(sid)
+        _, rev, d = self._classify(r)
+        self.assertTrue(rev, "review must fire once the floor is met")
+        self.assertEqual(self._state(sid).get("review_count"), 0)
+
+
+class TestV471PausedNotice(ReviewBase):
+    def test_notice_fires_when_interval_lowered_past_crossing(self):
+        """Lowering turn_interval mid-session past the crossing used to defer
+        forever with no notice (the == crossing had already passed)."""
+        self._write_settings(journal_every=99, turn_interval=50)
+        sid = "lowerint1234"
+        for _ in range(4):
+            self._run_stop(sid, with_transcript=False)
+        self._write_settings(journal_every=99, turn_interval=3)  # crossing 3 < count 5
+        r = self._run_stop(sid, with_transcript=False)
+        d = json.loads(r.stdout.strip())
+        self.assertEqual(d.get("decision"), "block",
+                         "notice must fire even when the crossing was passed by a settings change")
+        self.assertIn("[gowth-mem:review-paused ws=", d["reason"])
+        r = self._run_stop(sid, with_transcript=False)
+        d = json.loads(r.stdout.strip())
+        self.assertNotEqual(d.get("decision"), "block", "and only once")
+
+    def test_notice_not_repeated_after_a_real_fire(self):
+        """The persisted flag survives a real fire: a capture outage later in
+        the session (e.g. the midnight path change) must not produce a second
+        'once-per-session' notice."""
+        self._write_settings(journal_every=99, turn_interval=2, min_review_turns=1)
+        sid = "onceflag1234"
+        self._run_stop(sid, with_transcript=False)
+        r = self._run_stop(sid, with_transcript=False)  # crossing → the one notice
+        self.assertIn("review-paused", json.loads(r.stdout.strip()).get("reason", ""))
+        r = self._run_stop(sid)  # log appears → real fire, counter resets
+        _, rev, _ = self._classify(r)
+        self.assertTrue(rev)
+        self._session_file(sid).unlink()  # capture output gone again
+        self._run_stop(sid, with_transcript=False)
+        r = self._run_stop(sid, with_transcript=False)  # crossing again
+        d = json.loads(r.stdout.strip())
+        self.assertNotEqual(d.get("decision"), "block",
+                            "paused notice must fire at most once per session")
+
+    def test_paused_notice_carries_backlog_nudge(self):
+        """v4.7.1: no-transcript / capture-off cohorts can only ever be
+        reviewed via /mem-review-backlog — the paused notice is the ONLY
+        signal they still get, so it must carry the nudge."""
+        claude_dir = self.home / "claude-config"
+        proj = claude_dir / "projects" / "-tmp-proj"
+        proj.mkdir(parents=True)
+        big = proj / ("s" * 12 + ".jsonl")
+        line = json.dumps({"type": "assistant", "message": {"content": "x" * 200}}) + "\n"
+        big.write_text(line * 200)  # > 20k min_bytes
+        old = big.stat().st_mtime - 7200
+        os.utime(big, (old, old))  # idle > 60 min
+        self._write_settings(journal_every=99, turn_interval=2)
+        sid = "backlognud12"
+        env = {"CLAUDE_CONFIG_DIR": str(claude_dir)}
+        self._run_stop(sid, with_transcript=False, extra_env=env)
+        r = self._run_stop(sid, with_transcript=False, extra_env=env)
+        d = json.loads(r.stdout.strip())
+        self.assertIn("review-paused", d.get("reason", ""))
+        self.assertIn("Backlog: 1 past conversation", d["reason"])
+        self.assertIn("/mem-review-backlog", d["reason"])
+
+
+class TestV471MidnightSplit(ReviewBase):
+    def _prev_log(self, sid: str) -> Path:
+        yday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        return (self.home / "workspaces" / "default" / "journal" / "sessions"
+                / f"{yday}-{sid[:8]}.md")
+
+    def test_journal_reason_names_both_logs(self):
+        """A session straddling midnight splits its window across two files —
+        the teammate used to be handed only today's 1-2-turn log."""
+        self._write_settings(journal_every=2, turn_interval=99)
+        sid = "midnight1234"
+        prev = self._prev_log(sid)
+        prev.parent.mkdir(parents=True, exist_ok=True)
+        prev.write_text("# Session log\n\n## turn 1 — 23:59\n**User:** before midnight\n")
+        self._run_stop(sid)
+        r = self._run_stop(sid)
+        j, _, d = self._classify(r)
+        self.assertTrue(j)
+        self.assertIn(str(prev), d["reason"], "previous-day log must be a named turn source")
+        self.assertIn(str(self._session_file(sid)), d["reason"])
+        self.assertIn("read BOTH", d["reason"])
+
+    def test_review_floor_counts_across_both_logs(self):
+        self._write_settings(journal_every=99, turn_interval=2)  # floor: default 10
+        sid = "midfloor1234"
+        prev = self._prev_log(sid)
+        prev.parent.mkdir(parents=True, exist_ok=True)
+        prev.write_text("# Session log\n" + "".join(
+            f"\n## turn {i} — 23:0{i % 10}\n**User:** pre-midnight\n" for i in range(1, 10)))
+        self._run_stop(sid)
+        r = self._run_stop(sid)  # 9 (yesterday) + 2 (today) = 11 >= floor 10
+        _, rev, d = self._classify(r)
+        self.assertTrue(rev, "the signal floor must count across the midnight split")
+        self.assertIn(str(prev), d["reason"])
+
+
+class TestV471ForgetDaily(ReviewBase):
+    def test_forget_runs_with_all_cadences_off(self):
+        """journal-off + reflection-off never archived pre-v4.7.1, while
+        /mem-journal and precompact-flush.py keep writing journal/<date>.md."""
+        self._write_settings(reflection_enabled=False, journal_enabled=False,
+                             auto_forget=True)
+        old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
+        old.write_text("# old raw journal\nnoise line\n")
+        stale = 30 * 86400
+        os.utime(old, (os.path.getmtime(old) - stale, os.path.getmtime(old) - stale))
+        r = self._run_stop("alloffforget")
+        self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
+        self.assertFalse(old.exists(),
+                         "TTL archival must be cadence-independent (daily throttle)")
+
+    def test_forget_throttled_to_once_per_day(self):
+        self._write_settings(journal_enabled=False, turn_interval=99, auto_forget=True)
+        sid = "throttle1234"
+        self._run_stop(sid)  # first Stop of the day → forget runs, date recorded
+        old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
+        old.write_text("# old raw journal\nnoise line\n")
+        stale = 30 * 86400
+        os.utime(old, (os.path.getmtime(old) - stale, os.path.getmtime(old) - stale))
+        for _ in range(3):
+            self._run_stop(sid)
+        self.assertTrue(old.exists(), "same-day Stops must not spawn forget again")
+        st = json.loads((self.home / "state.json").read_text())
+        self.assertEqual(st.get("forget_last_run"), datetime.now().strftime("%Y-%m-%d"))
 
 
 class TestSubagentSkip(ReviewBase):

@@ -273,5 +273,65 @@ class TestCaptureRobustness(CaptureBase):
         self.assertTrue(content.startswith("# Session log —"))
 
 
+class TestAppendReviewBlock(CaptureBase):
+    """v4.7.1: the dispatched judge appends its review block through
+    append_review_block — the SAME lock capture_turn holds — so the two
+    writers can never lose each other's updates."""
+
+    def test_append_preserves_existing_turns(self):
+        tx = self._tx([_user("q one"), _assistant([{"type": "text", "text": "a one"}])])
+        self.mod.capture_turn(tx, "default", "sess1234abcd", 1, self.settings)
+        target = self._session_file()
+        block = "## [self-review] 2026-08-19 turn 15\n**Reviewer:** subagent\n"
+        self.assertTrue(self.mod.append_review_block(target, block))
+        content = target.read_text()
+        self.assertIn("## turn 1", content, "existing turn must survive the append")
+        self.assertIn("## [self-review] 2026-08-19 turn 15", content)
+        # A capture AFTER the review append must not erase the review block.
+        tx2 = self._tx([_user("q two"), _assistant([{"type": "text", "text": "a two"}])])
+        self.mod.capture_turn(tx2, "default", "sess1234abcd", 2, self.settings)
+        content = target.read_text()
+        self.assertIn("## [self-review]", content, "review block must survive later captures")
+        self.assertIn("## turn 2", content)
+
+    def test_append_derives_ws_lock_from_path(self):
+        target = self.home / "workspaces" / "wsx" / "journal" / "sessions" / "2026-08-19-abcd1234.md"
+        self.assertEqual(self.mod._ws_from_log_path(target), "wsx")
+        self.assertTrue(self.mod.append_review_block(target, "## [self-review] x\nbody\n"))
+        self.assertIn("## [self-review] x", target.read_text())
+
+    def test_append_sanitizes_secrets(self):
+        target = self._session_file()
+        block = "## [self-review] leak\ntoken ghp_0123456789abcdef0123456789abcdef0123\n"
+        self.assertTrue(self.mod.append_review_block(target, block))
+        self.assertNotIn("ghp_0123456789abcdef0123456789abcdef0123", target.read_text(),
+                         "review append must pass the privacy sanitizer like capture does")
+
+    def test_cli_append_review_reads_stdin(self):
+        import subprocess
+        target = self._session_file()
+        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
+        r = subprocess.run(
+            [sys.executable, str(MODULE), "--append-review", str(target)],
+            input="## [self-review] via-cli\n**Reviewer:** subagent\n",
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ok", r.stdout)
+        self.assertIn("## [self-review] via-cli", target.read_text())
+
+    def test_cli_empty_stdin_fails_without_write(self):
+        import subprocess
+        target = self._session_file()
+        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
+        r = subprocess.run(
+            [sys.executable, str(MODULE), "--append-review", str(target)],
+            input="   \n", capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(r.returncode, 0, "capture CLI must always exit 0")
+        self.assertIn("failed", r.stdout)
+        self.assertFalse(target.exists(), "empty block must not create the log")
+
+
 if __name__ == "__main__":
     unittest.main()

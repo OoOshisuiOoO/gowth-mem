@@ -24,7 +24,7 @@
   "reflection": {
     "enabled": true,
     "turn_interval": 15,
-    "capture_enabled": true,
+    "min_review_turns": 10,
     "capture_thinking": true,
     "max_prompt_chars": 2000,
     "max_thinking_chars": 1500
@@ -176,7 +176,7 @@
     "migration.v3_backup_demote_after_hours": "Demote oldest backup beyond keep window if older than this many hours.",
     "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest.",
     "tags": "v4.0 deterministic auto-tagging. Write path appends inline #tags to each entry (stdlib keyword extraction, no LLM) + unions them into aspect frontmatter tags:. Indexed as a weighted FTS5 column; /mem-recall --keyword filters on it. Dedup hashes are computed on tag-stripped content so tags never break dedup.",
-    "reflection": "v4.0 session self-review loop, v4.7 delegation-first. Per-turn capture into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals) is gated by capture_enabled, which DEFAULTS to `enabled` — so enabled:false still opts out of raw-turn capture (session logs sync to the git remote); journal-only users set capture_enabled:true to give the delegated journal teammate a turn source. `enabled` gates the review cadence: every turn_interval turns the Stop hook directs the MAIN session to dispatch a fresh-context background subagent judge (templates/self-review-instructions.md) — honest 3-dimension scoring with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md. The review defers (counter kept) until a session log exists."
+    "reflection": "v4.0 session self-review loop, v4.7 delegation-first. Per-turn capture into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals) is gated by capture_enabled, which DEFAULTS to `enabled` — so enabled:false still opts out of raw-turn capture (session logs sync to the git remote); journal-only users set capture_enabled:true to give the delegated journal teammate a turn source. capture_enabled is deliberately ABSENT from this example: an explicit true here would defeat the enabled:false privacy opt-out on every vault scaffolded from it (v4.7.1). `enabled` gates the review cadence: every turn_interval turns the Stop hook directs the MAIN session to dispatch a fresh-context background subagent judge (templates/self-review-instructions.md) — honest 3-dimension scoring with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md. The review defers (counter kept) until the session log holds min_review_turns `## turn` blocks (default 10, matching the rubric floor — a judge is never dispatched at a log it would immediately floor-skip)."
   },
   "sync": {
     "auto_sync_on_stop": true,

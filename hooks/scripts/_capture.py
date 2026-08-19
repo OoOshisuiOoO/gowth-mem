@@ -301,3 +301,75 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
     except Exception as e:  # never break the Stop hook
         log_debug("capture", f"capture_turn failed ws={ws} turn={turn_no}: {e}")
         return False
+
+
+def _ws_from_log_path(log_path: Path) -> str:
+    """Derive the workspace from a session-log path
+    (…/workspaces/<ws>/journal/sessions/<file>) so the append lock name
+    matches capture_turn's `capture-{ws}`. Falls back to "default"."""
+    try:
+        parts = log_path.resolve().parts
+        if "workspaces" in parts:
+            i = parts.index("workspaces")
+            if i + 1 < len(parts):
+                return parts[i + 1]
+    except Exception:
+        pass
+    return "default"
+
+
+def append_review_block(log_path: str | Path, block_text: str) -> bool:
+    """v4.7.1: append a block to a session log UNDER THE SAME LOCK capture_turn
+    holds for its read-modify-write.
+
+    The dispatched judge appends its `## [self-review]` block to the log while
+    the main session keeps working — a raw Write/Edit races the next Stop's
+    capture rewrite and one side's write is silently lost (a turn erased, or
+    the review block deleted before _forget._salvage_reviews ever sees it).
+    This is the serialization point; the rubric routes judges here via
+    `python3 _capture.py --append-review <log>` with the block on stdin.
+
+    Goes through safe_write like capture: raw review text enters the synced
+    vault, so it must pass the privacy sanitizer. Never raises.
+    """
+    try:
+        p = Path(log_path)
+        ws = _ws_from_log_path(p)
+        text = block_text if block_text.endswith("\n") else block_text + "\n"
+        if not text.startswith("\n"):
+            text = "\n" + text
+        with file_lock(f"capture-{ws}", timeout=5.0):
+            existing = ""
+            if p.is_file():
+                try:
+                    existing = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    existing = ""
+            p.parent.mkdir(parents=True, exist_ok=True)
+            red = safe_write(p, existing + text)
+            if red:
+                log_debug("capture", f"redacted {red} secret(s) in {p.name} (review append)")
+        return True
+    except Exception as e:
+        log_debug("capture", f"append_review_block failed for {log_path}: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="gowth-mem capture utilities (v4.7.1: locked review append)")
+    ap.add_argument("--append-review", metavar="LOG_PATH",
+                    help="append a review block (read from stdin) to a session log "
+                         "under the capture lock — NEVER Write/Edit the log directly")
+    args = ap.parse_args()
+    if args.append_review:
+        _block = sys.stdin.read()
+        if _block.strip():
+            print("ok" if append_review_block(args.append_review, _block) else "failed")
+        else:
+            print("failed: empty block on stdin")
+    else:
+        ap.print_help()
+    sys.exit(0)

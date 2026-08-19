@@ -10,9 +10,13 @@ the conversation and break the user's flow. The main session's ONLY job here:
 
 1. **Dispatch ONE background subagent** (Task/Agent tool — a context-inheriting
    fork if your harness has one, else a fresh general-purpose subagent) as the
-   memory teammate. Its prompt: "Read <this file> and execute the teammate
-   protocol below for ws={ws}. Turn source = the session log path given in the
-   hook reason."
+   memory teammate. Its prompt mirrors the hook reason verbatim — same
+   anti-recursion sentinel, same ABSOLUTE paths (a fresh subagent cannot
+   resolve "given in the hook reason"): "You are the dispatched gowth-mem
+   memory teammate — never dispatch further subagents. Read <absolute path of
+   this file> and execute its teammate protocol for ws={ws}. Turn source =
+   session log <the absolute session-log path(s) copied from the hook
+   reason>."
 2. **Continue your work immediately.** When the teammate completes, relay its
    1-line confirmation and nothing more.
 
@@ -25,16 +29,25 @@ teammate protocol below yourself, inline, silently.
 Anchors (a fresh subagent has no SessionStart bootstrap — derive, don't guess):
 - **Vault root** = the directory above `workspaces/` in your session-log path
   (this respects `GOWTH_MEM_HOME`; never assume `~/.gowth-mem/`).
-- **Plugin scripts** (`_moc.py`, …) live at `<directory of this file>/../hooks/scripts/`.
+- **Plugin scripts** (`_topic.py`, `_moc.py`, …) live at
+  `<directory of this file>/../hooks/scripts/`.
 - **Active workspace** = {ws} (also in the hook reason). Other workspaces:
   enumerate with `ls <vault-root>/workspaces/`.
+- **Write interface** — every routed entry goes through:
+  `GOWTH_MEM_HOME=<vault-root> python3 <plugin-scripts>/_topic.py --append "<[type] entry text>" --ws <target_ws>`
+  This is what applies topic routing, the §1 quality gate, deterministic
+  `#tags`, SHA-1 dedup, and write-time reindexing. **NEVER hand-write topic
+  entries with a raw Write/Edit** — entries written that way are born
+  untagged, ungated, and unrecallable until a manual /mem-reindex.
 
 Do this WITHOUT user prompting before yielding control:
 
-1. Read the turn source: the session log passed in your prompt
+1. Read the turn source: the session log(s) passed in your prompt
    (`workspaces/<ws>/journal/sessions/<date>-<sid8>.md` — each `## turn` block
-   records User / Claude / Actions). If you inherited the main conversation's
-   context (fork), you may scan the last {journal_every} turns directly instead.
+   records User / Claude / Actions). When TWO paths are given (session split
+   across midnight), read BOTH, older first. If you inherited the main
+   conversation's context (fork), you may scan the last {journal_every} turns
+   directly instead.
 2. For each high-signal item, classify into ONE of these types and prepend the prefix:
    [goal]        user objective/intent        → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (Status: + Done when: REQUIRED)
    [decision]    choice + rationale          → workspaces/<target_ws>/<slug>/<YYYY-MM-DD>-<aspect>.md  (## [decision])
@@ -70,12 +83,20 @@ Do this WITHOUT user prompting before yielding control:
    automatically — you do NOT add `#tags` by hand. To make those tags useful, write
    **content-dense first lines** (put the key nouns/identifiers/paths up front) and
    never leave a MOC TL;DR as `TODO`.
-5. Apply mem0 ADD / UPDATE / DELETE / NOOP (canon §5) against existing target file content.
-   Numeric dedup: Jaccard ≥ 0.85 → UPDATE/merge; overlap ≥ 0.4 + polarity flip → contradiction lint.
-   Update frontmatter.last_touched on every write. Never blind append.
+5. Write each kept entry through the **Write interface** (see Anchors) — one
+   `--append` call per entry, `--ws <target_ws>` set per step 3's routing. The
+   interface performs the §1 gate, `#tags`, SHA-1 dedup, and reindexing for
+   you; on `duplicate` output apply mem0 UPDATE/NOOP judgment (canon §5)
+   instead of re-appending. Overlap ≥ 0.4 + polarity flip vs an existing entry
+   → flag it as a contradiction in your report, don't silently overwrite.
+   Never blind append; never raw-Write topic files.
 6. Update workspaces/{ws}/docs/handoff.md (prefix host:<machine>) with new task / next / blocker.
-7. After writes, run `_moc.py --ws <target_ws>` for each workspace that received writes
-   (refreshes the workspace MOC + every topic README in that workspace).
+7. After writes, run
+   `GOWTH_MEM_HOME=<vault-root> python3 <plugin-scripts>/_moc.py --ws <target_ws>`
+   for each workspace that received writes (refreshes the workspace MOC +
+   every topic README in that workspace). The env prefix matters: without it,
+   on a machine whose vault is not at `~/.gowth-mem/`, MOCs rebuild in the
+   wrong vault.
 8. Confirm in 1 line: "auto-journal: ws={ws}(+others), kept N, dropped M, promoted K, conflicts resolved J".
    That line is your ENTIRE final report back to the main session.
 

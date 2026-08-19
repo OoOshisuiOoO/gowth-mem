@@ -544,3 +544,60 @@ fresh-context reviewer (12 + 4 + 2 findings, all fixed, final verdict APPROVE). 
 path exercised live per the pre-tag rule: real 596KB transcript, scratch-vault smoke of
 delegate/inline/deferred/opt-out/collision/notice-once/forget paths, `bin/test-install.sh`
 ALL GREEN ×3. Test coverage: **517/517** (+54 vs v4.3).
+
+## v4.7.1 — Delegation hardening (2026-08-19)
+
+**Problem:** a max-effort adversarial review of the v4.7 range surfaced 15 verified defects
+in three clusters: the `capture_enabled` privacy contract leaked three ways, the delegation
+handoff lost guarantees the inline path had, and the hook could traceback or spawn wrongly.
+
+**Fixes (hooks/scripts/auto-journal.py, _capture.py, templates, docs):**
+
+- **Privacy contract sealed** — `settings.example.v3.json` no longer ships an explicit
+  `capture_enabled: true` (it defeated the `reflection.enabled: false` opt-out on every vault
+  `/mem-install` scaffolded — the default chain now governs, pinned by test); `_coerce_bool`
+  parses hand-edited values (the JSON string `"false"` no longer reads as true on a
+  privacy-critical knob; explicit `null` = default chain); capture runs even with BOTH
+  cadences off (`/mem-review`-only users: the early return used to silently kill the knob).
+- **Hook can no longer traceback** — `session_id` coerced to str (a JSON number from a
+  wrapper harness crashed the `[:8]` slice and killed capture/autosync/cadences on every
+  Stop, live-reproduced); `__main__` wraps `main()` so the entrypoint ALWAYS exits 0.
+- **TTL archival is cadence-independent** — `_run_forget_daily()` runs at most once per
+  calendar day per machine (state.json `forget_last_run`), replacing review-cadence modulo
+  arithmetic that both spawned `_forget.py` per-Stop at `turn_interval: 1` + capture-on and
+  never archived with both cadences off (while `/mem-journal` + `precompact-flush.py` keep
+  writing `journal/<date>.md`).
+- **Pre-dispatch signal floor** — `reflection.min_review_turns` (default 10, matching rubric
+  §0b): a judge is never dispatched at a log it would immediately floor-skip; the review
+  defers (counter kept) until the log holds enough `## turn` blocks.
+- **Paused notice is literally once per session** — persisted `review_paused_notified` flag
+  (the `== turn_interval` inference repeated after counter resets and went silent when the
+  interval was lowered mid-session); the notice now carries the `/mem-review-backlog` nudge
+  (permanently-deferred cohorts got no nudge at all post-v4.7); `_reset_counters` falls back
+  to an unlocked write on lock timeout (a swallowed TimeoutError dispatched a second judge
+  for the same window).
+- **Judge/log race closed** — `_capture.append_review_block` + `python3 _capture.py
+  --append-review <log>` (stdin block): the background judge appends its `## [self-review]`
+  block under the SAME `capture-{ws}` lock capture uses; the rubric forbids raw Write/Edit
+  of the session log (an unlocked write raced the next Stop's capture rewrite and silently
+  lost a turn or the whole review block, together with its `_scores.md` referent).
+- **Midnight date-split** — the previous-day session log (same sid) is a named secondary
+  turn source for teammate + judge, and the signal floor counts across both files (the
+  post-midnight cadence used to hand a fresh teammate a 1-2-turn log as its sole source).
+- **Dispatch contract pinned** — teammate template quote now mirrors the hook reason
+  verbatim (sentinel + absolute paths, no dangling "given in the hook reason"); judge SKIP
+  guard keys on the payload ("your prompt hands you a log + this rubric = you ARE the
+  judge"), not self-declared identity; judge rubric gains 0c Anchors (vault root/`<ws>`/
+  scores-ledger derivation — never resolved against cwd, the v4.3 `$PWD` bug class) and a
+  **Backlog mode** (§0b) so `/mem-review-backlog` JSONL judges stop floor-skipping
+  everything; teammate template names the write interface (`_topic.py --append` with
+  `GOWTH_MEM_HOME` prefix — gate/tags/dedup/reindex no longer bypassable by a fresh
+  teammate hand-writing topic files) and `_moc.py` gets the same env prefix;
+  `tests/test_dispatch_contract.py` pins all of it.
+- **Docs truthful again** — `/mem-review` names `capture_enabled` + `min_review_turns` and
+  drops the false "actions trace is always captured" claim; `/mem-review-backlog` documents
+  the rubric's Backlog mode.
+
+Test coverage: 33/33 in the hook suite + 34/34 capture + new `test_dispatch_contract.py`
+(full-suite count in the release commit). Every changed path exercised live on a scratch
+vault pre-tag per the repo rule.

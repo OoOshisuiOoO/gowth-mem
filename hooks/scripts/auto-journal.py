@@ -33,17 +33,45 @@ v4.7 changes (delegation-first — keep the main context clean):
     delegation with `reflection.capture_enabled: true`.
   - When both cadences fire on one Stop, the joined block explicitly directs
     TWO separate subagents (teammate may be a fork; judge must not be).
-  - `_forget.py` also runs on the review cadence when the journal cadence is
-    disabled (journal-off + reflection-on used to capture without ever
-    forgetting).
+
+v4.7.1 changes (hardening — closes the verified findings of the v4.7 audit):
+  - The hook can no longer traceback: `session_id` is coerced to str (a JSON
+    number crashed the `[:8]` slice on every Stop) and __main__ wraps main()
+    so the entrypoint ALWAYS exits 0.
+  - Boolean settings go through `_coerce_bool` — the JSON string "false" no
+    longer reads as True on the privacy-critical `reflection.capture_enabled`,
+    and an explicit null falls back to the documented default chain.
+  - Capture runs whenever `reflection.capture_enabled` is on, even with BOTH
+    cadences disabled (the early return used to silently kill the knob for
+    /mem-review-only users).
+  - TTL archival is cadence-independent: `_run_forget_daily()` runs at most
+    once per calendar day per machine (state.json `forget_last_run`),
+    replacing the review-cadence modulo arithmetic that both spawned the
+    subprocess on every Stop at turn_interval=1 and never archived with both
+    cadences off.
+  - Pre-dispatch signal floor: `reflection.min_review_turns` (default 10 —
+    matches the rubric §0b) — a judge is never dispatched at a log it will
+    immediately floor-skip.
+  - The review-paused notice is flagged per session in state.json
+    (`review_paused_notified`) — literally once per session, immune to
+    counter resets and mid-session turn_interval changes — and carries the
+    /mem-review-backlog nudge (permanently-deferred cohorts can only ever be
+    reviewed via the backlog).
+  - `_reset_counters` falls back to an unlocked best-effort write on lock
+    timeout — a swallowed TimeoutError left review_count >= interval and
+    dispatched a second judge for the same window on the very next Stop.
+  - Midnight date-split: the previous day's session log (same sid) is passed
+    to the teammate/judge as a secondary turn source when it exists, and the
+    signal floor counts across both files.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -54,6 +82,33 @@ from _home import active_workspace, gowth_home, journal_dir, list_workspaces, re
 from _lock import file_lock  # type: ignore
 
 AUTO_DISTILL_EVERY = 10  # fallback default; overridden by settings.json journal_every
+DEFAULT_MIN_REVIEW_TURNS = 10  # matches rubric §0b: <10 turns → judge skips
+
+_TURN_RE = re.compile(r"^##\s+turn\s+\d+\b", re.MULTILINE)
+
+
+def _coerce_bool(v, default: bool) -> bool:
+    """Strict-ish bool for hand-edited settings.json values (v4.7.1).
+
+    `bool(...)` mis-parsed privacy-critical knobs: the JSON string "false" is
+    truthy, and an explicit null bypassed the default chain to False. Here:
+    None → default (explicit null = "use the default chain"); strings match
+    case-insensitively; unrecognized values → default.
+    """
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off", ""):
+            return False
+        return default
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return default
 
 
 def _load_state() -> dict:
@@ -84,7 +139,8 @@ def _read_journal_settings() -> tuple[int, bool]:
         settings = read_settings()
         aj = settings.get("auto_journal", {}) if isinstance(settings, dict) else {}
         every = int(aj.get("journal_every", settings.get("journal_every", AUTO_DISTILL_EVERY)))
-        enabled = bool(aj.get("auto_journal_enabled", settings.get("auto_journal_enabled", True)))
+        enabled = _coerce_bool(aj.get("auto_journal_enabled",
+                                      settings.get("auto_journal_enabled")), True)
         return every, enabled
     except Exception:
         return AUTO_DISTILL_EVERY, True
@@ -100,7 +156,7 @@ def _auto_forget_enabled() -> bool:
     try:
         s = read_settings()
         j = s.get("journal", {}) if isinstance(s, dict) else {}
-        return bool(j.get("auto_forget_enabled", True))
+        return _coerce_bool(j.get("auto_forget_enabled"), True)
     except Exception:
         return True
 
@@ -127,14 +183,31 @@ def _is_subagent(data: dict) -> bool:
     return False
 
 
-def _session_log_path(ws: str, session_id: str) -> Path:
-    """Today's per-session capture log (written by _capture.capture_turn)."""
-    sid8 = (session_id or "default")[:8] or "default"
-    today = datetime.now().strftime("%Y-%m-%d")
-    return journal_dir(ws) / "sessions" / f"{today}-{sid8}.md"
+def _session_log_path(ws: str, session_id: str, day: str | None = None) -> Path:
+    """Per-session capture log for `day` (default today) — the path
+    _capture.capture_turn writes."""
+    sid8 = (str(session_id) if session_id else "default")[:8] or "default"
+    day = day or datetime.now().strftime("%Y-%m-%d")
+    return journal_dir(ws) / "sessions" / f"{day}-{sid8}.md"
 
 
-def _build_reason(ws: str, journal_every: int, session_log: Path) -> str:
+def _count_turn_blocks(p: Path | None) -> int:
+    """Number of captured `## turn N` blocks in a session log (0 if missing).
+
+    v4.7.1 pre-dispatch signal floor: never dispatch a judge at a log it will
+    immediately floor-skip under the rubric's §0b (<10 turns → skip)."""
+    if p is None:
+        return 0
+    try:
+        if not p.is_file():
+            return 0
+        return len(_TURN_RE.findall(p.read_text(encoding="utf-8", errors="replace")))
+    except Exception:
+        return 0
+
+
+def _build_reason(ws: str, journal_every: int, session_log: Path,
+                  prev_log: Path | None = None) -> str:
     """Build the journal reason string: short pointer (≤650 chars with real paths).
 
     v4.7 delegation-first: the cadence work (classify/route/gate/handoff/MOC)
@@ -144,16 +217,23 @@ def _build_reason(ws: str, journal_every: int, session_log: Path) -> str:
     session's only cost is the dispatch call. Inline fallback stays for
     sessions with no captured log (capture disabled, older Claude Code without
     transcript_path, or any capture miss: a fresh subagent would have no turn
-    source).
+    source). v4.7.1: a session straddling midnight has its window split across
+    two files — both are named as turn sources.
     """
     instructions_path = Path(__file__).parent.parent.parent / "templates" / "auto-journal-instructions.md"
-    if session_log.is_file():
+    sources = [p for p in (session_log, prev_log) if p is not None and p.is_file()]
+    if sources:
+        if len(sources) == 1:
+            src = str(sources[0])
+        else:
+            src = (f"{sources[0]} plus {sources[1]} "
+                   f"(same session split across midnight — read BOTH)")
         return (
             f"[gowth-mem:auto-journal ws={ws}] {journal_every} turns elapsed. "
             f"DELEGATE — do NOT do this in the main context: dispatch ONE background subagent "
             f"(memory teammate) whose prompt is: \"You are the dispatched gowth-mem memory "
             f"teammate — never dispatch further subagents. Read {instructions_path} and execute "
-            f"its teammate protocol for ws={ws}. Turn source = session log {session_log}.\" "
+            f"its teammate protocol for ws={ws}. Turn source = session log {src}.\" "
             f"Then continue your work immediately. Inline only if no subagent tool exists."
         )
     return (
@@ -171,57 +251,78 @@ def _capture_enabled(refl_enabled: bool) -> bool:
     documented pre-v4.7 privacy opt-out (`reflection.enabled: false` = no
     raw-turn capture; session logs sync to the git remote) keeps working.
     Journal-only users set `reflection.capture_enabled: true` to give the
-    delegation teammate a session-log turn source."""
+    delegation teammate a session-log turn source. Parsed via _coerce_bool:
+    the string "false" disables, an explicit null means "use the default"."""
     try:
         s = read_settings()
         r = s.get("reflection", {}) if isinstance(s, dict) else {}
         if not isinstance(r, dict):
             r = {}
-        return bool(r.get("capture_enabled", refl_enabled))
+        return _coerce_bool(r.get("capture_enabled"), refl_enabled)
     except Exception:
         return refl_enabled
 
 
-def _read_reflection_settings() -> tuple[bool, int]:
-    """Return (reflection_enabled, turn_interval) from settings.json.
+def _read_reflection_settings() -> tuple[bool, int, int]:
+    """Return (reflection_enabled, turn_interval, min_review_turns).
 
-    Defaults: enabled True, turn_interval 15. Independent of auto_journal.
+    Defaults: enabled True, turn_interval 15, min_review_turns 10 (the rubric
+    §0b floor — the hook must not dispatch a judge that will floor-skip).
+    Independent of auto_journal.
     """
     try:
         s = read_settings()
         r = s.get("reflection", {}) if isinstance(s, dict) else {}
         if not isinstance(r, dict):
             r = {}
-        enabled = bool(r.get("enabled", True))
+        enabled = _coerce_bool(r.get("enabled"), True)
         interval = int(r.get("turn_interval", 15))
-        return enabled, (interval if interval > 0 else 15)
+        min_turns = int(r.get("min_review_turns", DEFAULT_MIN_REVIEW_TURNS))
+        return (enabled,
+                interval if interval > 0 else 15,
+                min_turns if min_turns > 0 else DEFAULT_MIN_REVIEW_TURNS)
     except Exception:
-        return True, 15
+        return True, 15, DEFAULT_MIN_REVIEW_TURNS
 
 
-def _build_review_reason(ws: str, review_count: int, session_log: Path) -> str:
-    """Build the self-review reason: dispatch directive for a fresh-context
-    judge + the session log path + the score-ledger path. Callers must only
-    call this when session_log exists (main() defers the review otherwise)."""
-    instructions_path = Path(__file__).parent.parent.parent / "templates" / "self-review-instructions.md"
-    scores_path = journal_dir(ws) / "_scores.md"
-    reason = (
-        f"[gowth-mem:self-review ws={ws}] {review_count} turns logged. "
-        f"DISPATCH a fresh-context background subagent as the judge (do NOT review in the "
-        f"main context): pass it {instructions_path} + the session log {session_log}; "
-        f"scores go to {scores_path}. Relay its 3-line summary when it completes. "
-        f"Be honest — chân thật, thẳng thắn."
-    )
-    # v4.1: surface the past-conversation review backlog (stat()-only, cheap).
+def _backlog_stat() -> str:
+    """v4.1 backlog nudge (stat()-only, cheap). v4.7.1: appended to BOTH the
+    review reason and the paused notice — permanently-deferred cohorts (no
+    transcript_path, or capture opted out) can only ever be reviewed via
+    /mem-review-backlog and used to get the nudge at every crossing."""
     try:
         from _review_ledger import stats as _rl_stats  # type: ignore
         backlog = _rl_stats().get("unreviewed", 0)
         if backlog:
-            reason += (f" Backlog: {backlog} past conversation(s) unreviewed — "
-                       f"run /mem-review-backlog when idle.")
+            return (f" Backlog: {backlog} past conversation(s) unreviewed — "
+                    f"run /mem-review-backlog when idle.")
     except Exception:
         pass
-    return reason
+    return ""
+
+
+def _build_review_reason(ws: str, review_count: int, session_log: Path,
+                         prev_log: Path | None = None) -> str:
+    """Build the self-review reason: dispatch directive for a fresh-context
+    judge + the session log path(s) + the score-ledger path. Callers must only
+    call this when the signal floor is met (main() defers otherwise)."""
+    instructions_path = Path(__file__).parent.parent.parent / "templates" / "self-review-instructions.md"
+    scores_path = journal_dir(ws) / "_scores.md"
+    if prev_log is not None and prev_log.is_file() and session_log.is_file():
+        log_ref = (f"the session logs {prev_log} + {session_log} "
+                   f"(same session split across midnight — read BOTH, older first)")
+    elif prev_log is not None and prev_log.is_file():
+        log_ref = f"the session log {prev_log}"
+    else:
+        log_ref = f"the session log {session_log}"
+    reason = (
+        f"[gowth-mem:self-review ws={ws}] {review_count} turns logged. "
+        f"DISPATCH a fresh-context background subagent as the judge (do NOT review in the "
+        f"main context): pass it {instructions_path} + {log_ref}; "
+        f"scores go to {scores_path}. Relay its 3-line summary when it completes. "
+        f"Be honest — chân thật, thẳng thắn."
+    )
+    return reason + _backlog_stat()
 
 
 def _run_maintenance() -> None:
@@ -262,10 +363,7 @@ def _run_forget() -> None:
     """v3.6 active forgetting — archive journal raw older than journal.raw_ttl_days
     (canon §3). Near-noop when nothing is past TTL; gated by auto_forget_enabled.
     Archived files stay recoverable (gz under .archive/ + memory-repo git history).
-
-    v4.7.1: factored out of _run_maintenance so the review cadence can run it
-    when the journal cadence is disabled — journal-off + reflection-on captures
-    every turn and would otherwise never archive."""
+    """
     forget_script = Path(__file__).parent / "_forget.py"
     if forget_script.is_file() and _auto_forget_enabled():
         try:
@@ -277,6 +375,38 @@ def _run_forget() -> None:
             log_debug("auto-journal", f"forget subprocess timeout after 10s: {e}")
         except Exception as e:
             log_debug("auto-journal", f"forget subprocess failed: {e}")
+
+
+def _run_forget_daily() -> None:
+    """v4.7.1: cadence-INDEPENDENT TTL archival, at most once per calendar day
+    per machine (state.json `forget_last_run`).
+
+    Replaces the review-cadence modulo arithmetic, which was wrong in both
+    directions: it spawned the forget subprocess on EVERY Stop at
+    journal-off + turn_interval=1 + capture-on, and never archived at all with
+    both cadences off — while /mem-journal and precompact-flush.py keep
+    writing journal/<date>.md regardless of any cadence. The journal cadence's
+    _run_maintenance still calls _run_forget directly (unchanged behavior).
+    """
+    if not _auto_forget_enabled():
+        return
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        if _load_state().get("forget_last_run") == today:
+            return  # cheap unlocked pre-check (the common case)
+        with file_lock("state", timeout=5.0):
+            state = _load_state()  # re-check under the lock
+            if state.get("forget_last_run") == today:
+                return
+            state["forget_last_run"] = today
+            _save_state(state)
+    except TimeoutError as e:
+        log_debug("auto-journal", f"state lock timeout (forget_daily): {e}")
+        return
+    except Exception as e:
+        log_debug("auto-journal", f"forget_daily gate failed: {e}")
+        return
+    _run_forget()
 
 
 def _reset_counters(session_id: str, names: list[str]) -> None:
@@ -293,6 +423,32 @@ def _reset_counters(session_id: str, names: list[str]) -> None:
             _save_state(state)
     except TimeoutError as e:
         log_debug("auto-journal", f"state lock timeout (reset {names}): {e}")
+        # v4.7.1: best-effort unlocked fallback. Leaving the counter >= interval
+        # dispatches a SECOND judge/teammate for the same window on the very
+        # next Stop — worse than the small risk of clobbering one concurrent
+        # increment (atomic_write keeps the file itself consistent).
+        try:
+            state = _load_state()
+            sess = state["session"].setdefault(session_id, {})
+            for n in names:
+                sess[n] = 0
+            _save_state(state)
+        except Exception as e2:
+            log_debug("auto-journal", f"unlocked reset fallback failed: {e2}")
+
+
+def _mark_paused_notified(session_id: str) -> None:
+    """v4.7.1: persist the once-per-session review-paused flag. The old
+    `review_count == turn_interval` inference repeated the notice after a
+    counter reset and went silent when turn_interval was lowered mid-session
+    past the crossing."""
+    try:
+        with file_lock("state", timeout=5.0):
+            state = _load_state()
+            state["session"].setdefault(session_id, {})["review_paused_notified"] = True
+            _save_state(state)
+    except Exception as e:
+        log_debug("auto-journal", f"mark paused-notified failed: {e}")
 
 
 def main() -> int:
@@ -305,6 +461,8 @@ def main() -> int:
         data = json.loads(raw_stdin) if raw_stdin.strip() else {}
     except Exception:
         data = {}
+    if not isinstance(data, dict):
+        data = {}
 
     # v3.4: skip in subagent context (no double-journaling under ralph/ultrawork)
     if _is_subagent(data):
@@ -312,12 +470,26 @@ def main() -> int:
 
     # v3.4: respect auto_journal_enabled toggle. v4.0: reflection is independent.
     journal_every, journal_enabled = _read_journal_settings()
-    refl_enabled, turn_interval = _read_reflection_settings()
-    if not journal_enabled and not refl_enabled:
+    refl_enabled, turn_interval, min_review_turns = _read_reflection_settings()
+    capture_on = _capture_enabled(refl_enabled)
+
+    # v4.7.1: TTL archival is cadence-independent — /mem-journal and
+    # precompact-flush.py keep writing journal/<date>.md with both cadences
+    # off, and capture-only configs grow journal/sessions/ forever. At most
+    # once per calendar day; near-noop when nothing is past TTL.
+    _run_forget_daily()
+
+    # v4.7.1: `reflection.capture_enabled: true` must work even with BOTH
+    # cadences disabled (/mem-review-only users) — the early return checks it.
+    if not journal_enabled and not refl_enabled and not capture_on:
         return 0
 
-    session_id = data.get("session_id") or "default"
+    # v4.7.1: str() — a truthy non-string session_id (e.g. a JSON number from
+    # a wrapper harness) crashed the [:8] slice and killed the hook every Stop.
+    session_id = str(data.get("session_id") or "default")
     transcript_path = data.get("transcript_path") or ""
+    if not isinstance(transcript_path, str):
+        transcript_path = ""
 
     # Single lock acquisition: bump all cadence counters together so the two
     # cadences (journal turn_count vs review review_count) can never collide.
@@ -331,6 +503,7 @@ def main() -> int:
             turn = sess["turn_count"]
             total_turns = sess["total_turns"]
             review_count = sess["review_count"]
+            paused_notified = bool(sess.get("review_paused_notified"))
             _save_state(state)
     except TimeoutError as e:
         log_debug("auto-journal", f"state lock timeout (increment): {e}")
@@ -344,15 +517,19 @@ def main() -> int:
     except Exception:
         ws = active_workspace()
 
-    # The session-log path is computed ONCE and threaded through capture-check,
-    # reason builders, and the review gate — so a Stop straddling midnight
-    # cannot point a reason at a path capture did not write.
+    # One session-log path per Stop for the reason builders and the review
+    # gate. capture_turn derives its own date internally, so a Stop straddling
+    # midnight can split the window across two files — the previous-day log
+    # (same sid) is included as a secondary turn source whenever it exists.
     session_log = _session_log_path(ws, session_id)
+    prev_day = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    _prev = _session_log_path(ws, session_id, prev_day)
+    prev_log = _prev if _prev.is_file() else None
 
     # v4.0: best-effort per-turn capture (prompt + thinking). Missing
     # transcript_path (older Claude Code) → capture_turn returns False silently.
     # v4.7.1: gated by reflection.capture_enabled (defaults to reflection.enabled).
-    if _capture_enabled(refl_enabled):
+    if capture_on:
         try:
             _capture.capture_turn(transcript_path, ws, session_id, total_turns, read_settings())
         except Exception as e:
@@ -376,51 +553,46 @@ def main() -> int:
     if journal_enabled and turn >= journal_every:
         _reset_counters(session_id, ["turn_count"])
         _run_maintenance()
-        reasons.append(_build_reason(ws, journal_every, session_log))
+        reasons.append(_build_reason(ws, journal_every, session_log, prev_log))
         journal_fired = True
 
     # Review cadence (independent counter). v4.7.1: the review is DEFERRED
-    # while no session log exists — a fresh-context judge pointed at a missing
-    # file can only fabricate or hit the signal floor. The counter is kept, so
-    # the review fires on the first Stop after a log appears (or never, when
-    # capture is off — no evidence, no review).
+    # (counter kept) until the session log holds min_review_turns `## turn`
+    # blocks — a fresh-context judge pointed at a missing or 2-turn log can
+    # only fabricate or floor-skip (the crossing would be consumed by a
+    # guaranteed no-op subagent). It fires on the first Stop at/after the
+    # crossing where the floor is met.
     if refl_enabled and review_count >= turn_interval:
-        if session_log.is_file():
+        turns_logged = _count_turn_blocks(session_log) + _count_turn_blocks(prev_log)
+        if turns_logged >= min_review_turns:
             _reset_counters(session_id, ["review_count"])
-            reasons.append(_build_review_reason(ws, review_count, session_log))
+            reasons.append(_build_review_reason(ws, review_count, session_log, prev_log))
             review_fired = True
-        elif review_count == turn_interval:
-            # Exactly once per session (the counter never resets while
-            # deferred, so this == crossing cannot repeat): a user-visible
-            # signal + one debug line — NOT a line per Stop in hook-errors.log.
-            log_debug("auto-journal",
-                      f"self-review deferred (count={review_count}): no session log at {session_log}")
-            # Prefix is deliberately NOT [gowth-mem:self-review …]: external
-            # consumers (session-insights-style skills, _classify in tests)
-            # key on that token and would treat a nothing-to-review notice as
-            # a live review directive.
-            reasons.append(
-                f"[gowth-mem:review-paused ws={ws}] session review paused — no session log "
-                f"captured (transcript_path missing, or reflection.capture_enabled is false). "
-                f"Reviews resume automatically once capture produces a log; opt in via "
-                f"settings.reflection.capture_enabled: true. Tell the user this in ONE line, "
-                f"then continue."
-            )
-        # v4.7.1: journal-off + reflection-on never reaches _run_maintenance
-        # (sole _forget caller) — archive on this cadence instead. Runs on real
-        # fires and, while deferred, on interval multiples (NOT every Stop —
-        # the subprocess must not run per turn, hence the turn_interval > 1
-        # guard on the modulo: at interval 1 it would otherwise be true on
-        # every Stop, so deferred sessions there forget only at the first
-        # crossing). journal/<date>.md keeps arriving from /mem-journal and
-        # precompact-flush.py even with capture off, so this must not sit
-        # behind the session-log gate.
-        if not journal_enabled and (
-            review_fired
-            or review_count == turn_interval
-            or (turn_interval > 1 and review_count % turn_interval == 0)
-        ):
-            _run_forget()
+        else:
+            if review_count == turn_interval:
+                # One debug line at the crossing — NOT a line per Stop.
+                log_debug("auto-journal",
+                          f"self-review deferred (count={review_count}, "
+                          f"turns_logged={turns_logged}, floor={min_review_turns}, "
+                          f"log={session_log})")
+            if turns_logged == 0 and not session_log.is_file() and prev_log is None \
+                    and not paused_notified:
+                # v4.7.1: literally once per session (persisted flag). Only
+                # when capture produces NO log at all — a young-but-growing
+                # log means capture works and the review fires once the floor
+                # is met, so no notice is needed there.
+                # Prefix is deliberately NOT [gowth-mem:self-review …]: external
+                # consumers (session-insights-style skills, _classify in tests)
+                # key on that token and would treat a nothing-to-review notice
+                # as a live review directive.
+                _mark_paused_notified(session_id)
+                reasons.append(
+                    f"[gowth-mem:review-paused ws={ws}] session review paused — no session log "
+                    f"captured (transcript_path missing, or reflection.capture_enabled is false). "
+                    f"Reviews resume automatically once capture produces a log; opt in via "
+                    f"settings.reflection.capture_enabled: true. Tell the user this in ONE line, "
+                    f"then continue." + _backlog_stat()
+                )
 
     if reasons:
         reason = "\n\n".join(reasons)
@@ -445,4 +617,16 @@ def main() -> int:
 
 if __name__ == "__main__":
     # stdin is consumed inside main() via sys.stdin.read()
-    sys.exit(main())
+    try:
+        rc = main()
+    except Exception as e:
+        # v4.7.1: a hook entrypoint must NEVER exit non-zero — an uncaught
+        # traceback here killed capture, autosync, and both cadences on every
+        # Stop for the rest of the session.
+        try:
+            log_debug("auto-journal", f"unhandled crash: {e}")
+            print(json.dumps({"continue": True, "suppressOutput": True}))
+        except Exception:
+            pass
+        rc = 0
+    sys.exit(rc)

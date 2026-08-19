@@ -10,17 +10,23 @@ user-facing output is the 3-line summary from step 6.
 
 ## 0. Dispatch protocol (MAIN session — this is your ONLY step)
 
-**If you ARE the dispatched judge, SKIP this section — start at 0b. Never
-dispatch further subagents.**
+**You ARE the dispatched judge if your prompt hands you a session-log (or
+transcript) path together with this rubric file — no one has to tell you "you
+are the judge". In that case SKIP this section, start at 0b, and never
+dispatch further subagents.** (This payload test is the recursion guard: a
+judge that re-reads §0 as if it were the main session would dispatch another
+judge, forever.)
 
 The review must NOT run in the main context: it dilutes the conversation with
 review tool calls, and a judge grading its own work in its own context is the
 self-preference bias this rubric exists to kill. The main session's whole job:
 
 1. **Dispatch ONE fresh-context background subagent** (Task/Agent tool — NOT a
-   context-inheriting fork; the judge must be independent) with: the session-log
-   path you were given (hook reason, or resolved by `/mem-review`) + this rubric
-   file. It executes steps 0b-6 below.
+   context-inheriting fork; the judge must be independent) with: the ABSOLUTE
+   session-log path(s) you were given (hook reason, or resolved by
+   `/mem-review`) + this rubric file + the ABSOLUTE `_scores.md` path from the
+   hook reason. A fresh judge has no other context — never make it guess a
+   path (see 0c Anchors). It executes steps 0b-6 below.
 2. **Continue your work.** When the judge completes, relay its 3-line summary
    (step 6) to the user verbatim — nothing longer.
 
@@ -34,15 +40,34 @@ emits this directive at all — it pauses the review until capture produces one.
 - **Signal floor:** if the session log has **fewer than 10 `## turn` blocks**, STOP —
   skip the review and tell the user in one line ("session too short for a meaningful
   retro — N turns, need 10"). Short-session retros produce noise, not signal.
+- **Backlog mode:** when the turn source is a raw `.jsonl` transcript (dispatched by
+  `/mem-review-backlog`), there are no `## turn` blocks — a "turn" for the floor is a
+  user record with non-empty text; quote from the JSON `message.content` text and cite
+  turn indexes instead of `## turn` numbers. Everything else in this rubric applies
+  unchanged.
 - **State which reviewer path was used** (`subagent` or `in-context`) in the review block.
+
+## 0c. Anchors (fresh judge — derive, don't guess; NEVER resolve against your cwd)
+
+- **Vault root** = the directory above `workspaces/` in your session-log path
+  (this respects `GOWTH_MEM_HOME`; never assume `~/.gowth-mem/`).
+- **`<ws>`** = the path segment right after `workspaces/` in that same path.
+- **Score ledger** = `<vault-root>/workspaces/<ws>/journal/_scores.md` — must match
+  the absolute path in the hook reason when one was given. Writing it relative to
+  your cwd lands scores in the user's code repo: unsynced, unindexed, invisible to
+  `/mem-review --history`.
+- **Plugin scripts** (`_capture.py`, `_topic.py`) live at
+  `<directory of this rubric>/../hooks/scripts/`.
 
 ## 1. Read the session log
 
 Open the session log at the path given in the reason (`<ws>/journal/sessions/<date>-<sid8>.md`).
-Each turn records: **User** (the prompt), **Claude** (the visible reasoning summary),
-**Actions** (the tool-use trace — `Read(x) → Edit(y) → Bash(…)` — the honest proxy for
-what Claude decided to do). Read every turn before scoring anything. Also read the last
-row of `<ws>/journal/_scores.md` (if it exists) so you can state the delta vs last review.
+When TWO log paths were given (session split across midnight), read BOTH, older first —
+they are one window. Each turn records: **User** (the prompt), **Claude** (the visible
+reasoning summary), **Actions** (the tool-use trace — `Read(x) → Edit(y) → Bash(…)` — the
+honest proxy for what Claude decided to do). Read every turn before scoring anything.
+Also read the last row of the score ledger (0c Anchors) so you can state the delta vs
+last review.
 
 ## 2. Write the harsh-reviewer paragraph FIRST
 
@@ -92,7 +117,21 @@ gate is what keeps the reflection ledger high-signal instead of platitudes.
 
 ## 5. Write the outputs (all deterministic format)
 
-1. **Append a review block to the session log** (the same file from step 1):
+1. **Append a review block to the session log** (the newest file from step 1) —
+   **via the locked appender, NEVER with a raw Write/Edit**: the main session keeps
+   working while you review, and capture rewrites this log under a lock on every
+   Stop — an unlocked write races it and silently loses a turn or your entire
+   review block. Run (paths from 0c Anchors):
+
+   ```bash
+   GOWTH_MEM_HOME=<vault-root> python3 <plugin-scripts>/_capture.py \
+     --append-review <session-log-path> <<'EOF'
+   ## [self-review] {date} turn {review_count}
+   ...the block below...
+   EOF
+   ```
+
+   Block format:
 
    ```
    ## [self-review] {date} turn {review_count}
@@ -109,10 +148,11 @@ gate is what keeps the reflection ledger high-signal instead of platitudes.
    ```
 
 2. **Route the counterfactual-passed `[reflection]` entries** (0-3) through the normal
-   topic write path (they must pass the quality gate — content-dense, no hedging, ≥20
-   chars). One line each, e.g. `[reflection] <pattern that would have prevented turn N's
-   rework>`. Route to the topic folder whose keywords overlap (≥3 words), else `misc`.
-   NEVER append to `00-README.md`.
+   topic write path — one call per entry:
+   `GOWTH_MEM_HOME=<vault-root> python3 <plugin-scripts>/_topic.py --append "[reflection] <pattern that would have prevented turn N's rework>" --ws <ws>`
+   (the interface applies the quality gate, tags, dedup, and routing — entries must be
+   content-dense, no hedging, ≥20 chars). NEVER hand-write topic files and NEVER append
+   to `00-README.md`.
 
 3. **Append one row to `<ws>/journal/_scores.md`** (create with the header if missing):
 

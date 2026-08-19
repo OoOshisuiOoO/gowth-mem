@@ -80,9 +80,15 @@ the one dimension most in need of work.
 The full rubric lives in `templates/self-review-instructions.md`. A review with no
 concrete, quoted criticism is a FAILED review — the anti-sycophancy mechanisms (harsh
 paragraph first, quote-or-no-score, counterfactual reflection gate, fresh-judge dispatch)
-are mandatory, not optional. The trigger cadence and settings (`reflection.turn_interval`,
-`reflection.enabled`, `reflection.capture_thinking` — the last now gates only the
-opportunistic thinking line; the actions trace is always captured) are in `settings.json`.
+are mandatory, not optional. The trigger cadence and settings are in `settings.json`:
+`reflection.turn_interval` (auto-trigger cadence), `reflection.enabled` (review cadence),
+`reflection.min_review_turns` (signal floor before a judge is dispatched, default 10),
+**`reflection.capture_enabled`** — the knob that controls whether the session log this
+command depends on gets written at all (defaults to `reflection.enabled`, so privacy
+opt-out users with `enabled: false` must set `capture_enabled: true` to use `/mem-review`
+without re-enabling the auto-review cadence), and `reflection.capture_thinking`, which
+gates only the opportunistic thinking line (the actions trace is captured whenever
+capture itself is on).
 
 ## Related
 
