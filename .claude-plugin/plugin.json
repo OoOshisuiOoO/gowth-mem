@@ -1,6 +1,6 @@
 {
   "name": "gowth-mem",
-  "version": "4.7.0",
+  "version": "4.7.1",
   "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v4.3 = Zero-Mem retrieval repair (arXiv 2607.29377v1): natural-language recall actually works (deterministic phi(q) query profile + safe FTS5 expression - bare terms were implicit-AND, so every question returned 0 hits), the tag column resurrected 54 -> 2,528 chunks (heading probe + frontmatter strip + bullet form), headings indexed and weighted, per-workspace filter moved into SQL, write-time reindex so new entries are recallable immediately, per-path collapse, and the bootstrap no longer silently drops docs/handoff.md. v4.0: YAKE-lite auto-tagging + 15-turn honest self-review. v3.9: provenance types [goal]/[hypothesis]. Multi-session safe via fcntl locks, AI-mediated conflict resolution, mem0 ADD/UPDATE/DELETE/NOOP write semantics.",
   "author": {
     "name": "duynguyen",
