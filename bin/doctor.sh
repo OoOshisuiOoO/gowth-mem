@@ -48,7 +48,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-CC_ROOT="${HOME}/.claude/plugins"
+# CLAUDE_CONFIG_DIR mirrors what Claude Code itself honours (and lets the
+# sandbox tests run without touching the real registry).
+CC_ROOT="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins"
 MARKET_DIR="${CC_ROOT}/marketplaces/${MARKET}"
 CACHE_BASE="${CC_ROOT}/cache/${MARKET}/${PLUGIN}"
 INSTALLED="${CC_ROOT}/installed_plugins.json"
@@ -104,8 +106,8 @@ fi
 # own precompact-flush.py now handles compaction without blocking. The stale
 # hook chains in front and HARD-BLOCKs every /compact until a `mem-save`
 # happens. Detect + advise (we don't auto-delete user files).
-STALE_HOOK="${HOME}/.claude/hooks/precompact-force-memsave.sh"
-STALE_SETTINGS="${HOME}/.claude/settings.json"
+STALE_HOOK="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/hooks/precompact-force-memsave.sh"
+STALE_SETTINGS="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/settings.json"
 SETTINGS_HAS_STALE=0
 if [ -f "$STALE_SETTINGS" ] && grep -q "precompact-force-memsave" "$STALE_SETTINGS" 2>/dev/null; then
   SETTINGS_HAS_STALE=1
@@ -175,46 +177,54 @@ PY
 )"
 [ -n "$NEW_VER" ] || { warn "cannot read marketplace plugin.json version"; exit 0; }
 
-# ─── read current registry entry ────────────────────────────────────────
-REG_OUT="$(python3 - "$INSTALLED" "$KEY" <<'PY' 2>/dev/null
-import json, sys
+# ─── audit EVERY registry entry ─────────────────────────────────────────
+# The registry value is an ARRAY: the same plugin can be registered at more than
+# one scope (user + project), and Claude Code runs the one whose scope applies.
+# Before v4.7.2 this script read and patched entries[0] only — with two entries
+# it could "heal" the inactive one and leave the running one stale forever. Now
+# that SessionStart invokes the doctor automatically, that had to be correct.
+EXPECTED_CACHE="${CACHE_BASE}/${NEW_VER}"
+
+AUDIT="$(python3 - "$INSTALLED" "$KEY" "$NEW_VER" "$EXPECTED_CACHE" "$CACHE_BASE" <<'PYAUDIT' 2>/dev/null
+import json, os, sys
+path, key, new_ver, expected, cache_base = sys.argv[1:6]
 try:
-    d = json.load(open(sys.argv[1]))
-    e = d.get("plugins", {}).get(sys.argv[2], [])
-    if e:
-        print(f"{e[0].get('version','')}\t{e[0].get('installPath','')}")
-except Exception: pass
-PY
+    entries = json.load(open(path)).get("plugins", {}).get(key, [])
+except Exception:
+    entries = []
+if not entries:
+    sys.exit(0)
+reasons, first = [], None
+for e in entries:
+    ver = e.get("version", "") or ""
+    ip = e.get("installPath", "") or ""
+    scope = e.get("scope", "?")
+    if first is None:
+        first = (ver, ip)
+    if not ip.startswith(cache_base + os.sep):
+        reasons.append(f"[{scope}] installPath not under {cache_base}/")
+    if not os.path.isfile(os.path.join(ip, ".claude-plugin", "plugin.json")):
+        reasons.append(f"[{scope}] installPath missing or incomplete")
+    if ver != new_ver or ip != expected:
+        reasons.append(f"[{scope}] registry stale (v{ver or '?'} -> v{new_ver})")
+print("HEAL" if reasons else "OK")
+print(first[0] if first else "")
+print(first[1] if first else "")
+print("; ".join(dict.fromkeys(reasons)))
+PYAUDIT
 )"
-if [ -z "$REG_OUT" ]; then
+
+if [ -z "$AUDIT" ]; then
   log "not registered in $INSTALLED → skip"
   exit 0
 fi
-OLD_VER="$(printf '%s' "$REG_OUT" | cut -f1)"
-OLD_PATH="$(printf '%s' "$REG_OUT" | cut -f2)"
 
-EXPECTED_CACHE="${CACHE_BASE}/${NEW_VER}"
+VERDICT="$(printf '%s\n' "$AUDIT" | sed -n 1p)"
+OLD_VER="$(printf '%s\n' "$AUDIT" | sed -n 2p)"
+OLD_PATH="$(printf '%s\n' "$AUDIT" | sed -n 3p)"
+REASONS="$(printf '%s\n' "$AUDIT" | sed -n 4p)"
 
-# ─── decide whether to heal ─────────────────────────────────────────────
-NEEDS_HEAL=0
-REASONS=""
-
-case "$OLD_PATH" in
-  "${CACHE_BASE}/"*) ;;
-  *) NEEDS_HEAL=1; REASONS="installPath not under ${CACHE_BASE}/" ;;
-esac
-
-if [ ! -d "$OLD_PATH" ] || [ ! -f "$OLD_PATH/.claude-plugin/plugin.json" ]; then
-  NEEDS_HEAL=1
-  REASONS="${REASONS:+$REASONS; }installPath missing or incomplete"
-fi
-
-if [ "$OLD_VER" != "$NEW_VER" ] || [ "$OLD_PATH" != "$EXPECTED_CACHE" ]; then
-  NEEDS_HEAL=1
-  REASONS="${REASONS:+$REASONS; }registry stale (v${OLD_VER:-?} → v${NEW_VER})"
-fi
-
-if [ "$NEEDS_HEAL" -eq 0 ]; then
+if [ "$VERDICT" != "HEAL" ]; then
   exit 0   # healthy, silent
 fi
 
@@ -266,11 +276,16 @@ if not entries:
     sys.exit(1)
 
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
-entries[0]["version"]     = ver
-entries[0]["installPath"] = install_path
-entries[0]["lastUpdated"] = now
-if sha:
-    entries[0]["gitCommitSha"] = sha
+# EVERY entry (all scopes) — patching only entries[0] could heal an inactive
+# scope while the scope actually running the hooks stayed pinned to old code.
+for e in entries:
+    if e.get("version") == ver and e.get("installPath") == install_path:
+        continue
+    e["version"]     = ver
+    e["installPath"] = install_path
+    e["lastUpdated"] = now
+    if sha:
+        e["gitCommitSha"] = sha
 
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
                            prefix=".installed_plugins.", suffix=".tmp")

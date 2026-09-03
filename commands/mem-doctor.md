@@ -30,6 +30,27 @@ fi
 - `--pull` — git fetch + ff-only pull marketplace clone first (default when no args)
 - `--market <m> --plugin <p>` — heal a different plugin
 
+## Runs automatically since v4.7.2
+
+The SessionStart hook invokes `bin/doctor.sh --quiet` detached on `source=startup` (no
+`--pull`, so no network on the startup path). A manual-only doctor is why one machine sat on
+v3.9.0 for months. Opt out with `GOWTH_MEM_NO_AUTOHEAL=1` or `"doctor": {"auto_heal": false}`
+in `~/.gowth-mem/settings.json`.
+
+The official upgrade path is still first: `claude plugin update gowth-mem -y`, then restart
+Claude Code. The doctor is the fallback for a registry that stays pinned anyway. Check what a
+machine is actually running:
+
+```bash
+claude plugin list --json | python3 -c "import json,sys;[print(p['id'],p['version'],p['scope'],p['enabled']) for p in json.load(sys.stdin) if 'gowth-mem' in p['id']]"
+```
+
+Or read it straight out of the running plugin:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_version.py"
+```
+
 ## When to run
 
 - After `claude /plugin marketplace update gowth-mem` to confirm the cache dir was materialized.

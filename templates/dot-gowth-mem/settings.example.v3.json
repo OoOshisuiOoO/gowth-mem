@@ -16,6 +16,9 @@
     "enabled": true,
     "strict": true
   },
+  "doctor": {
+    "auto_heal": true
+  },
   "tags": {
     "enabled": true,
     "max_per_entry": 7,
@@ -165,7 +168,7 @@
   "_notes": {
     "version": "schema 3.0 = topic-FOLDER + dated-aspect layout (replaces v2.4 single-file-per-topic)",
     "layout_version": "Integer schema version. v3 is current. Read-path stays permissive across v3/v2.4/v2.3; write-path is strict v3.",
-    "journal": "v3.6 active-forgetting (canon \u00a73). Journals = ephemeral hippocampal buffer. raw_ttl_days: archive raw journals older than N days. max_bytes: also archive a >1-day-old journal over this size. salvage: lift curated `- [type]` entries into journal/_salvage.md before archiving. auto_forget_enabled: run _forget.py on the Stop hook. Archives go to .archive/ (gitignored) + stay in memory-repo git history.",
+    "journal": "v3.6 active-forgetting (canon §3). Journals = ephemeral hippocampal buffer. raw_ttl_days: archive raw journals older than N days. max_bytes: also archive a >1-day-old journal over this size. salvage: lift curated `- [type]` entries into journal/_salvage.md before archiving. auto_forget_enabled: run _forget.py on the Stop hook. Archives go to .archive/ (gitignored) + stay in memory-repo git history.",
     "topic_layout.mode": "folder (v3 only). Each topic = workspaces/<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}.",
     "topic_layout.reserved_aspect_names": "Blocked aspect slugs (would collide with structural files).",
     "topic_layout.reserved_subdirs": "Cannot be used as topic slugs at workspace root.",
@@ -176,7 +179,8 @@
     "migration.v3_backup_demote_after_hours": "Demote oldest backup beyond keep window if older than this many hours.",
     "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest.",
     "tags": "v4.0 deterministic auto-tagging. Write path appends inline #tags to each entry (stdlib keyword extraction, no LLM) + unions them into aspect frontmatter tags:. Indexed as a weighted FTS5 column; /mem-recall --keyword filters on it. Dedup hashes are computed on tag-stripped content so tags never break dedup.",
-    "reflection": "v4.0 session self-review loop, v4.7 delegation-first. Per-turn capture into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals) is gated by capture_enabled, which DEFAULTS to `enabled` — so enabled:false still opts out of raw-turn capture (session logs sync to the git remote); journal-only users set capture_enabled:true to give the delegated journal teammate a turn source. capture_enabled is deliberately ABSENT from this example: an explicit true here would defeat the enabled:false privacy opt-out on every vault scaffolded from it (v4.7.1). `enabled` gates the review cadence: every turn_interval turns the Stop hook directs the MAIN session to dispatch a fresh-context background subagent judge (templates/self-review-instructions.md) — honest 3-dimension scoring with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md. The review defers (counter kept) until the session log holds min_review_turns `## turn` blocks (default 10, matching the rubric floor — a judge is never dispatched at a log it would immediately floor-skip)."
+    "reflection": "v4.0 session self-review loop, v4.7 delegation-first. Per-turn capture into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals) is gated by capture_enabled, which DEFAULTS to `enabled` — so enabled:false still opts out of raw-turn capture (session logs sync to the git remote); journal-only users set capture_enabled:true to give the delegated journal teammate a turn source. capture_enabled is deliberately ABSENT from this example: an explicit true here would defeat the enabled:false privacy opt-out on every vault scaffolded from it (v4.7.1). `enabled` gates the review cadence: every turn_interval turns the Stop hook directs the MAIN session to dispatch a fresh-context background subagent judge (templates/self-review-instructions.md) — honest 3-dimension scoring with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md. The review defers (counter kept) until the session log holds min_review_turns `## turn` blocks (default 10, matching the rubric floor — a judge is never dispatched at a log it would immediately floor-skip).",
+    "doctor": "v4.7.2 plugin-version drift. Claude Code can leave installed_plugins.json pinned at an old cache dir after an upgrade (autoUpdate is off by default for non-Anthropic marketplaces), so the OLD plugin version keeps running against the shared vault — a live machine sat on v3.9.0 for months after v4.7.1 shipped, writing entries without v4.0 tags or v4.1 aspect frontmatter. auto_heal (default true) lets the SessionStart hook run bin/doctor.sh detached (no network) to repair the registry; the repair takes effect on the NEXT start, and the bootstrap header carries the running version plus a restart nudge so the drift is visible either way. Set false (or export GOWTH_MEM_NO_AUTOHEAL=1) to keep the registry read-only."
   },
   "sync": {
     "auto_sync_on_stop": true,

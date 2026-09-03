@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _debug import log_debug  # type: ignore
+from _version import drift_nudge, version_tag  # type: ignore
 from _home import (  # type: ignore
     active_workspace,
     agents_md,
@@ -227,7 +228,8 @@ def main() -> int:
             parts, total, loaded, attempted = _load_via_budget_planner(ws, gh, settings)
             if loaded > 0:
                 summary = f"\n[bootstrap: loaded {loaded}/{attempted} files via budget-planner, {total} chars / {MAX_TOTAL} cap — {DEFERRED_NOTICE}]"
-                context = f"[gowth-mem:bootstrap workspace={ws} mode=budget-planner]" + "".join(parts) + summary
+                context = (f"[gowth-mem:bootstrap workspace={ws}{version_tag()} mode=budget-planner]"
+                           + drift_nudge() + "".join(parts) + summary)
                 out = {
                     "hookSpecificOutput": {
                         "hookEventName": "SessionStart",
@@ -275,7 +277,8 @@ def main() -> int:
                 "Read-path stays permissive across v3/v2.4/v2.3 — but writes are strict v3.\n"
             )
 
-        context = f"[gowth-mem:bootstrap workspace={ws}]" + nudge + "".join(parts) + summary
+        context = (f"[gowth-mem:bootstrap workspace={ws}{version_tag()}]"
+                   + drift_nudge() + nudge + "".join(parts) + summary)
 
         out = {
             "hookSpecificOutput": {

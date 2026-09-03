@@ -601,3 +601,75 @@ handoff lost guarantees the inline path had, and the hook could traceback or spa
 Test coverage: 33/33 in the hook suite + 34/34 capture + new `test_dispatch_contract.py`
 (full-suite count in the release commit). Every changed path exercised live on a scratch
 vault pre-tag per the repo rule.
+
+## v4.7.2 — Plugin version drift is now visible (2026-09-03)
+
+**Problem:** a live machine ran **v3.9.0 for months** after v4.7.1 shipped. The only symptom
+was its every-10-turn Stop block, and it was identifiable only because the reason string
+embeds an absolute path:
+
+```
+Stop hook error: [gowth-mem:auto-journal ws=trade] 10 turns elapsed.
+Read /Users/<user>/.claude/plugins/cache/gowth-mem/gowth-mem/3.9.0/templates/
+auto-journal-instructions.md ...
+```
+
+`git show v3.9.0:hooks/scripts/auto-journal.py` emits that string character for character and
+contains zero occurrences of `DELEGATE`/`_capture`, so the machine really was executing v3.9.0
+— i.e. the pre-v4.7 inline cadence, the exact main-context pollution v4.7 removed. (The
+`Stop hook error:` label is just how the TUI renders a Stop-hook `decision: block`; both
+versions print that JSON and exit 0. Nothing crashed.)
+
+**Why it stayed invisible:**
+
+1. gowth-mem **never printed its own version**. The bootstrap header was
+   `[gowth-mem:bootstrap workspace=<ws>]` — drift was undetectable by inspection.
+2. `bin/doctor.sh` detected and healed exactly this failure, but only ran when a human typed
+   `/mem-doctor`.
+3. `bin/auto-upgrade.sh` was a complete, working upgrade script **referenced by nothing in the
+   repo** (grep: zero hits outside its own header). A fix nobody calls is not a fix.
+
+Upgrading is per-machine and not guaranteed: `claude plugin marketplace update` refreshes the
+catalog but does not move `installPath`/`version`, autoUpdate is off by default for
+non-Anthropic marketplaces, and old cache dirs are never pruned — so the stale plugin keeps
+running with nothing breaking loudly.
+
+**This is a data problem, not just UI noise.** The vault is shared across machines. A v3.9.0
+machine keeps writing entries with no v4.0 auto-tagging, no v4.1 `fix_aspect` on new aspects
+(→ aspects invisible to wikilinks/recall/MOC), no v4.3 index repair and no `english_only` gate.
+
+**Fixes:**
+
+- **`hooks/scripts/_version.py`** (new, stdlib, exception-proof) — running version from the
+  tree actually executing (`__file__`-derived, deliberately not `$CLAUDE_PLUGIN_ROOT`: the env
+  var comes from the registry entry being audited); available version from the local
+  marketplace clone (plain file read, no network); numeric comparison (the lexical trap:
+  `"3.10.0" < "3.9.0"` as strings); non-semver versions (a registry pinning a git sha) never
+  claim a drift.
+- **Bootstrap reports itself** — header is now
+  `[gowth-mem:bootstrap workspace=<ws> v4.7.2]`, and a stale machine gets a prepended
+  one-line nudge naming the exact fix (`claude plugin update gowth-mem -y` → restart;
+  `/mem-doctor` as fallback). Costs one prompt-cache miss per release — exactly when the
+  cached prefix is stale anyway.
+- **SessionStart runs the self-heal** — `bin/doctor.sh` detached, `startup` source only, no
+  `--pull` (zero network on the startup path). Opt out with `GOWTH_MEM_NO_AUTOHEAL=1` or
+  `settings.doctor.auto_heal: false`; the gate is a pure-bash `grep`, no python startup, per
+  the hook-efficiency canon. The heal lands on the NEXT start, which is why the nudge still
+  says "restart".
+- **`doctor.sh` audits and patches EVERY registry entry** — the value is an array and the same
+  plugin can be registered at user + project scope. Reading/patching `entries[0]` could heal
+  the inactive scope and leave the scope actually running the hooks stale forever. It now also
+  honours `CLAUDE_CONFIG_DIR`.
+- **`bin/auto-upgrade.sh` deleted**, and `tests/test_version_drift.py` fails the build on any
+  `bin/*.sh` that nothing outside `bin/` references (tests/ excluded — a script referenced only
+  by the guard that watches it is still a script nobody runs).
+
+**Not retroactive:** a machine already pinned at an old version runs that old version's
+SessionStart, so none of this executes there. Each stale machine needs one manual
+`claude plugin update gowth-mem -y` (then restart), or `/mem-doctor`. From v4.7.2 forward,
+drift announces itself.
+
+Verified against a faithful sandbox reproduction (registry pinned at 3.9.0, marketplace clone
+at 4.7.2, both user and project scopes): heal moves both scopes, second run is silent
+(idempotent), both opt-outs respected, `source=resume` skips, and the hook still exits 0 with
+no vault. +27 tests (**576 total**); `bin/test-install.sh` green.
