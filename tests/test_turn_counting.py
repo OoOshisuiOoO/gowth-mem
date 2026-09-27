@@ -234,9 +234,11 @@ class HookHarness(unittest.TestCase):
         }))
 
     def stop(self, stop_hook_active=False, transcript: bool = True,
-             prompt_id: str | None = "__chain__") -> dict:
+             prompt_id: str | None = "__chain__", last_message: str | None = None) -> dict:
         payload: dict = {"session_id": self.sid, "hook_event_name": "Stop",
                          "stop_hook_active": stop_hook_active}
+        if last_message is not None:
+            payload["last_assistant_message"] = last_message
         pid = self.tx.chain_prompt_id if prompt_id == "__chain__" else prompt_id
         if pid:
             payload["prompt_id"] = pid
@@ -453,7 +455,7 @@ class TestReviewerFindings(HookHarness):
         self.stop()
         self.assertEqual(self.state().get("total_turns"), 2)
         log = self.log()
-        self.assertIn("**User:** <bash-input>kubectl get secret db -o yaml</bash-input>", log)
+        self.assertIn("**User:** !kubectl get secret db -o yaml", log)
         self.assertNotIn("hunter2", log, "bash OUTPUT must never be recorded as the user's words")
 
     def test_bash_mode_without_a_reply_is_not_a_turn(self):
@@ -694,6 +696,158 @@ class TestReviewRound2(HookHarness):
             self.tx.origin_prompt(kind, f"{kind} message")
             self.stop()
         self.assertIsNone(self.state().get("total_turns"), "machine-origin sessions never count")
+
+
+class TestCaptureCompleteness(HookHarness):
+    """v4.7.4: 141 of 706 live captured turns (20%) had an EMPTY Claude: line —
+    the final answer is written after the Stop hook, so a tool-less turn had no
+    visible assistant text. The Stop input carries it as last_assistant_message."""
+
+    def line(self, label: str) -> str:
+        for ln in self.log().splitlines():
+            if ln.startswith(f"**{label}:**"):
+                return ln[len(label) + 5:].strip()
+        return ""
+
+    def test_final_answer_fills_the_claude_line(self):
+        self.tx.human("what is the capital of France?", flushed=False)
+        self.stop(last_message="Paris.")
+        self.assertEqual(self.line("Claude"), "Paris.")
+
+    def test_final_answer_follows_earlier_text(self):
+        self.tx.human("fix the parser", reply="Let me look at the parser first.", tool="Read")
+        self.stop(last_message="Fixed: the tokenizer skipped empty lines.")
+        self.assertEqual(self.line("Claude"),
+                         "Let me look at the parser first. Fixed: the tokenizer skipped empty lines.")
+
+    def test_final_answer_not_duplicated_once_flushed(self):
+        self.tx.human("summarize", reply="Summary: all green.", tool=None)
+        self.stop(last_message="Summary: all green.")
+        self.assertEqual(self.line("Claude"), "Summary: all green.")
+
+    def test_final_answer_is_sanitized_and_capped(self):
+        self.tx.human("show the token", flushed=False)
+        self.stop(last_message="token glpat-ABCDEFGHIJKLMNOPQRST ok " + "x" * 400)
+        claude = self.line("Claude")
+        self.assertLessEqual(len(claude), 300)
+        self.assertTrue(claude.startswith("token [REDACTED:gitlab-pat] ok"), claude)
+
+    def test_secret_straddling_the_cap_is_redacted_not_truncated(self):
+        """Review v4.7.4: capping BEFORE sanitizing cut a token at char 300 into
+        a fragment the sanitizer no longer recognises ('glpat-ABC')."""
+        self.tx.human("dump it", flushed=False)
+        self.stop(last_message="a" * 290 + " glpat-ABCDEFGHIJKLMNOPQRST tail")
+        self.assertNotIn("glpat", self.line("Claude"))
+
+
+
+    def test_prompt_secret_straddling_the_cap_is_redacted(self):
+        self.tx.human("x" * 1990 + " glpat-ABCDEFGHIJKLMNOPQRST and more")
+        self.stop()
+        self.assertNotIn("glpat", self.line("User"))
+
+    def test_tool_argument_secret_is_redacted_not_truncated(self):
+        """Review round 2 LOW: _tool_arg cut a Bash command at 60 chars
+        BEFORE sanitizing — a token straddling it reached the synced log."""
+        self.tx.human("deploy", flushed=False)
+        self.tx._append({"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "name": "Bash",
+            # 47 chars of prefix: the 60-char cut lands INSIDE the token
+            "input": {"command": "export TOKEN_VALUE_FOR_THE_DEPLOY_PIPELINE_NOW=glpat-ABCDEFGHIJKLMNOPQRST && run"}}]}})
+        self.stop()
+        self.assertNotIn("glpat", self.line("Actions"))
+
+    def test_megabyte_paste_does_not_stall_the_stop(self):
+        """Review round 2 MEDIUM: uncapped fields reached _privacy regexes that
+        are super-linear on adversarial input (200 KB of 'a.a.a' took 72 s)."""
+        import time
+        # 200 KB each: inside the 512 KB tail (a bigger line is dropped unparsed
+        # and would make this test vacuous) — ~72 s per field before the fix.
+        self.tx.human("a." * 100_000, flushed=False)
+        t = time.perf_counter()
+        self.stop(last_message="b." * 100_000)
+        self.assertLess(time.perf_counter() - t, 5.0)
+        self.assertEqual(self.state().get("total_turns"), 1)
+        self.assertTrue(self.line("User").startswith("a.a.a"), "the prompt WAS parsed and captured")
+
+    def test_final_answer_survives_long_narration(self):
+        """Review v4.7.4: with >300 chars of narration the appended final
+        answer was still cut away by the head cap."""
+        self.tx.human("fix the parser", reply="Let me investigate. " * 25, tool="Read")
+        self.stop(last_message="Fixed: the tokenizer skipped empty lines.")
+        claude = self.line("Claude")
+        self.assertLessEqual(len(claude), 300)
+        self.assertTrue(claude.startswith("Let me investigate."), claude)
+        self.assertIn("Fixed: the tokenizer skipped empty lines.", claude)
+
+    def test_slash_command_rendered_readably(self):
+        self.tx.headless_prompt("<command-name>/goal</command-name>\n            "
+                                "<command-message>goal</command-message>\n            "
+                                "<command-args>ship the release</command-args>")
+        self.stop()
+        self.assertEqual(self.line("User"), "/goal ship the release")
+
+    def test_legacy_big_transcript_does_not_join_the_whole_file(self):
+        """Round-3 LOW: > 512 KB, no uuids, no summaries (hand-built only) —
+        the beyond-tail ask scan joined every ask and repeated the prompt."""
+        big = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": "x" * (600 * 1024)}]}}
+        reply = {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+        self.tx.path.write_text("\n".join(json.dumps(r) for r in (
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "legacy first ask"}},
+            reply, big,
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "legacy second ask"}},
+            reply,
+        )) + "\n")
+        self.stop()
+        self.assertEqual(self.line("User"), "legacy second ask")
+
+
+class TestDisplayPrompt(unittest.TestCase):
+    """Unit level: _capture.display_prompt — readable, verbatim unless the WHOLE
+    text is Claude Code markup, and linear-time on hostile pastes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cap = _load("_capture")
+
+    def render(self, text):
+        return self.cap.display_prompt({"type": "user", "message": {"content": text}})
+
+    def test_commands_and_bash(self):
+        self.assertEqual(self.render("<command-message>goal</command-message>\n"
+                                     "<command-name>/goal</command-name>\n"
+                                     "<command-args>ship it</command-args>"), "/goal ship it")
+        self.assertEqual(self.render("<command-name>/compact</command-name>"), "/compact")
+        self.assertEqual(self.render("<bash-input>kubectl get pods</bash-input>"), "!kubectl get pods")
+        self.assertEqual(self.render("<bash-input>echo '</bash-input>'</bash-input>"),
+                         "!echo '</bash-input>'", "a quoted closing tag is part of the command")
+
+    def test_anything_else_stays_verbatim(self):
+        for text in ("why does <command-name>/goal</command-name> fail?",
+                     "<command-name>/a</command-name><command-args>x</command-args>"
+                     "<command-name>/b</command-name>",  # two blocks: never collapse to '/a x'
+                     "echo hi </bash-input>",  # the startswith guard
+                     "<command-name>/goal</command-name><command-args>x</command-args>\nwhy is this wrong?",
+                     "<command-name> </command-name>",
+                     "<bash-input>ls</bash-input> and then?",
+                     "plain ask"):
+            self.assertEqual(self.render(text), text, text)
+
+    def test_hostile_paste_is_linear_time(self):
+        """Review v4.7.4 MEDIUM: an unclosed <command-name> + 4k spaces took 31 s
+        (cubic backtracking) — hooks.json sets no timeout, so the Stop froze."""
+        import time
+        for text in ("<command-name>" + " " * 200_000,
+                     "<command-message>x</command-message><command-args>" + " " * 200_000,
+                     "<bash-input>" + " " * 200_000,
+                     "<command-name>/goal</command-name>" + " \n" * 100_000 + "tail",
+                     # round-2 review: MANY unclosed starts made .sub() quadratic (20k: 19.5 s)
+                     "<command-name>" * 20_000,
+                     "<command-name>/a</command-name>" + "<command-args>" * 20_000):
+            t = time.perf_counter()
+            self.render(text)
+            self.assertLess(time.perf_counter() - t, 0.5, text[:30])
 
 
 class TestHumanPromptFinder(unittest.TestCase):

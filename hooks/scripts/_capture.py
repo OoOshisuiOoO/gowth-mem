@@ -179,6 +179,73 @@ def prompt_text(rec) -> str:
         return ""
 
 
+_CMD_TAG_RE = re.compile(r"<(command-message|command-name|command-args)>(.*?)</\1>", re.S)
+
+
+def _render_command(s: str) -> str | None:
+    """`/name args` when `s` is NOTHING BUT Claude Code command tags, else None.
+
+    Linear time: tags are matched ANCHORED at the cursor and the first
+    non-tag stops the scan, so each failed attempt ends the parse. (Review:
+    `\\s*(.*?)\\s*` backtracked cubically — 31 s on an unclosed tag + 4k spaces —
+    and an unanchored .sub() was quadratic on many unclosed starts — 20k:
+    19.5 s. hooks.json sets no timeout.) A repeated tag (two command blocks)
+    is not a single command either → verbatim."""
+    parts: dict = {}
+    pos, n = 0, len(s)
+    while True:
+        while pos < n and s[pos].isspace():
+            pos += 1
+        if pos >= n:
+            break
+        m = _CMD_TAG_RE.match(s, pos)
+        if m is None or m.group(1) in parts:
+            return None
+        parts[m.group(1)] = m.group(2).strip()
+        pos = m.end()
+    name = parts.get("command-name", "")
+    return f"{name} {parts.get('command-args', '')}".strip() if name else None
+
+
+def display_prompt(rec) -> str:
+    """A prompt as the user typed it, for the session log's User: line:
+    `/goal ship it` instead of Claude Code's <command-name>/<command-args>
+    markup, `!kubectl …` instead of <bash-input>…</bash-input>. Only when the
+    WHOLE text is that markup — anything else (a prompt quoting a tag, extra
+    words after it, two command blocks) stays verbatim. Classification keeps
+    the raw prompt_text."""
+    txt = prompt_text(rec)
+    s = txt.strip()
+    if s.startswith("<bash-input>") and s.endswith("</bash-input>"):
+        inner = s[len("<bash-input>"):-len("</bash-input>")].strip()
+        return "!" + inner if inner else txt
+    if s.startswith(("<command-name>", "<command-message>")):
+        rendered = _render_command(s)
+        if rendered:
+            return rendered
+    return txt
+
+
+# Headroom past a field's cap that is still sanitized: every shape _privacy
+# knows is far shorter, so a secret straddling the cap is still recognised.
+_SANITIZE_SLACK = 4096
+
+
+def _sanitized(text: str, cap: int) -> tuple[str, int]:
+    """Privacy-sanitize the first `cap + _SANITIZE_SLACK` chars, THEN the
+    caller slices to `cap`. Sanitizing after the cap cut secrets into
+    fragments the sanitizer no longer recognised; sanitizing the WHOLE field
+    let a pasted prompt reach _privacy regexes that are super-linear on
+    adversarial input (200 KB of 'a.a.a': 144 s for one Stop). Never raises."""
+    head = text[:cap + _SANITIZE_SLACK]
+    try:
+        from _privacy import sanitize  # type: ignore
+        out, n = sanitize(head)
+        return out, max(int(n or 0), 0)  # -1 = sanitizer bypassed
+    except Exception:
+        return head, 0
+
+
 def _origin_kind(origin):
     if isinstance(origin, dict):
         k = origin.get("kind")
@@ -454,7 +521,8 @@ def _tool_arg(input_obj) -> str:
     for k in ("command", "pattern", "query", "url"):
         v = input_obj.get(k)
         if isinstance(v, str) and v.strip():
-            return _oneline(v)[:COMMAND_HEAD_CHARS]
+            # sanitize BEFORE the cut: a token straddling char 60 leaked
+            return _sanitized(_oneline(v), COMMAND_HEAD_CHARS)[0][:COMMAND_HEAD_CHARS]
     return ""
 
 
@@ -497,13 +565,17 @@ def _last_turn_no(text: str) -> int | None:
 def capture_turn(transcript_path: str, ws: str, session_id: str,
                  turn_no: int, settings: dict | None = None,
                  records: list[dict] | None = None,
-                 prompt_rec: dict | None = None) -> bool:
+                 prompt_rec: dict | None = None,
+                 final_text: str | None = None) -> bool:
     """Capture one turn (prompt + thinking digest + outcome) into the session log.
 
     `records`: the already-parsed transcript tail (the Stop hook parses it once
     for turn identity); read from `transcript_path` when omitted.
     `prompt_rec`: the turn's human prompt when it lies BEYOND the tail
     (scan_back_for_human) — the whole tail is then that turn's work.
+    `final_text`: the Stop input's `last_assistant_message` — the turn's final
+    answer, which Claude Code writes to the transcript only AFTER the Stop hook
+    (without it, 20% of live turns had an empty Claude: line).
 
     Returns True on write (or idempotent skip), False on any failure or when
     there is nothing to capture. Never raises.
@@ -560,7 +632,10 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
                 truncated = False
         asks = [i for i in range(start, len(records))
                 if records[i] is prompt_rec or _classify_record(records[i]) == "human"]
-        older = _asks_since_previous_stop(transcript_path) if truncated else []
+        # Only real transcripts (record identity) are guaranteed Stop summaries
+        # to stop the scan at; a hand-built one would join every ask in 32 MB.
+        older = (_asks_since_previous_stop(transcript_path)
+                 if truncated and has_record_identity(records) else [])
         if older:
             # The turn began before the tail: its asks come from the file, and
             # the whole tail is its work.
@@ -569,15 +644,15 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
             if prompt_rec.get("uuid") not in uuids and not any(r is prompt_rec for r in ask_recs):
                 ask_recs.append(prompt_rec)
             last_user_idx = -1
-            user_text = " ⟶ ".join(t for t in (prompt_text(r).strip() for r in ask_recs) if t)
+            user_text = " ⟶ ".join(t for t in (display_prompt(r).strip() for r in ask_recs) if t)
         elif asks:
             last_user_idx = asks[0] - 1  # actions/text from the first ask on
-            user_text = " ⟶ ".join(t for t in (prompt_text(records[i]).strip() for i in asks) if t)
+            user_text = " ⟶ ".join(t for t in (display_prompt(records[i]).strip() for i in asks) if t)
         else:
             idx = next((i for i in range(len(records) - 1, -1, -1)
                         if records[i] is prompt_rec), -1)
             last_user_idx = idx
-            user_text = prompt_text(prompt_rec)
+            user_text = display_prompt(prompt_rec)
         if not user_text.strip():
             return False
 
@@ -597,11 +672,39 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
                 text_heads.append(atext)
             actions.extend(_extract_actions(content))
 
-        prompt = _oneline(user_text)[:max_prompt]
-        claude_head = _oneline(" ".join(text_heads))[:CLAUDE_HEAD_CHARS]
-        actions_trace = _oneline(" → ".join(actions))[:ACTIONS_MAX_CHARS]
+        # Every field is sanitized BEFORE it is capped (safe_write re-checks
+        # the whole block; redaction markers never re-match a secret shape).
+        redacted = 0
+        prompt, n = _sanitized(_oneline(user_text), max_prompt); redacted += n
+        prompt = prompt[:max_prompt]
+        texts = [_oneline(t) for t in text_heads]
+        final = _oneline(final_text) if isinstance(final_text, str) else ""
+        if final and texts and texts[-1] == final:
+            texts = texts[:-1]  # the final record was already on disk
+        narration, n = _sanitized(" ".join(texts).strip(), CLAUDE_HEAD_CHARS); redacted += n
+        if final:
+            # The final answer is not on disk at Stop time (the Stop input
+            # carries it). Keep BOTH ends when they do not fit: the opening
+            # narration (the plan) and the answer (the outcome).
+            answer, n = _sanitized(final, CLAUDE_HEAD_CHARS); redacted += n
+            claude_head = f"{narration} {answer}".strip()
+            if len(claude_head) > CLAUDE_HEAD_CHARS and narration:
+                head = narration[:CLAUDE_HEAD_CHARS // 2 - 2]
+                claude_head = f"{head} … {answer[:CLAUDE_HEAD_CHARS - len(head) - 3]}"
+            claude_head = claude_head[:CLAUDE_HEAD_CHARS]
+        else:
+            claude_head = narration[:CLAUDE_HEAD_CHARS]
+        actions_trace, n = _sanitized(_oneline(" → ".join(actions)), ACTIONS_MAX_CHARS); redacted += n
+        actions_trace = actions_trace[:ACTIONS_MAX_CHARS]
         # Opportunistic only: real transcripts carry signature-only (empty) thinking.
-        digest = _thinking_digest(thinking_blocks, max_thinking) if capture_thinking else ""
+        if capture_thinking:
+            clean_blocks = []
+            for tb in thinking_blocks:
+                cb, n = _sanitized(tb, PER_BLOCK_THINKING_CHARS); redacted += n
+                clean_blocks.append(cb)
+            digest = _thinking_digest(clean_blocks, max_thinking)
+        else:
+            digest = ""
 
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
@@ -642,8 +745,8 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
             # into the synced vault, so it must pass the privacy sanitizer. A
             # live GitLab-PAT-shaped string reached the remote through this path.
             red = safe_write(target, (existing if existing else header) + block)
-            if red:
-                log_debug("capture", f"redacted {red} secret(s) in {target.name}")
+            if red or redacted:
+                log_debug("capture", f"redacted {max(red, 0) + redacted} secret(s) in {target.name}")
         return True
     except TimeoutError as e:
         log_debug("capture", f"lock timeout ws={ws} turn={turn_no}: {e}")

@@ -87,6 +87,12 @@ v4.7.3 changes (the "Stop hook error" users kept reporting — nothing failed):
     record with text — Stop-hook feedback, skill expansions, notification XML,
     bash OUTPUT), and a turn whose prompt left the 512 KB tail is found by a
     bounded backward scan instead of being counted twice or captured never.
+
+v4.7.4 changes:
+  - The session log's **Claude:** line includes the turn's final answer from the
+    Stop input's `last_assistant_message` — Claude Code writes the final
+    assistant record only after this hook, so 20% of live turns logged an
+    empty Claude line. `/goal` and `!cmd` prompts are logged as typed.
 """
 from __future__ import annotations
 
@@ -658,8 +664,12 @@ def main() -> int:
     # v4.7.1: gated by reflection.capture_enabled (defaults to reflection.enabled).
     if capture_on:
         try:
+            # v4.7.4: the final answer is written to the transcript only after
+            # this hook — the Stop input carries it (Claude Code >= 2.1.47).
+            last_msg = data.get("last_assistant_message")
             _capture.capture_turn(transcript_path, ws, session_id, total_turns, read_settings(),
-                                  records=records or None, prompt_rec=prompt_rec)
+                                  records=records or None, prompt_rec=prompt_rec,
+                                  final_text=last_msg if isinstance(last_msg, str) else None)
         except Exception as e:
             log_debug("auto-journal", f"capture_turn wrapper failed: {e}")
 

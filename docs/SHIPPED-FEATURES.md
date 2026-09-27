@@ -791,3 +791,48 @@ headless `claude -p` pipelines still count their origin-less prompts (as before)
 prompt is more than 32 MB back is not counted; a host that inherits a newer Claude Code's
 `AI_AGENT` without rewriting it (Claude Code < 2.1.120 nested inside ≥ 2.1.163, or a
 non-Claude-Code harness running these hooks) would get the new envelope and drop the directive.
+
+## v4.7.4 — Session logs carry the final answer and readable commands (2026-09-28)
+
+**Problem:** the judge and the memory teammate read only the session log, and one turn in five
+had an **empty `Claude:` line** — 141 of 706 live captured turns. Claude Code writes a turn's
+final assistant record to the transcript only AFTER the Stop hook runs (the v4.7.3 in-hook
+snapshot), so a tool-less answer was never visible to `capture_turn`. Separately, `/goal` and
+`!cmd` turns logged Claude Code's raw `<command-name>…<command-args>` / `<bash-input>` markup
+as the user's words (12 live lines).
+
+**Fixes:**
+
+- **Final answer from the Stop input.** `auto-journal` passes `last_assistant_message`
+  (Claude Code ≥ 2.1.47) to `capture_turn(final_text=…)`; it follows the turn's narration
+  unless it is already the last text seen (a host that flushes before hooks cannot duplicate
+  it). When narration + answer exceed the 300-char line, BOTH ends are kept
+  (`narration[:148] … answer[:149]`) — otherwise the head cap cut the answer off in 70% of
+  turns.
+- **Sanitize before capping — bounded.** Every captured field (prompt, narration, answer,
+  actions, thinking, each tool argument) is sanitized BEFORE it is sliced — a secret cut at a
+  field cap became a fragment the sanitizer no longer recognised (a Bash token straddling the
+  60-char argument cut leaked). Only `cap + 4 KB` of a field is sanitized: `_privacy`'s regexes
+  are super-linear on adversarial input, and a 200 KB pasted `a.a.a…` prompt + answer made one
+  Stop take **144 s** (no hook timeout is set) — now well under 5 s, pinned by a test.
+- **Readable prompts, safely.** `_capture.display_prompt()` renders `/goal ship it` and
+  `!kubectl …` on the `User:` line only when the WHOLE text is that markup (a prompt quoting a
+  tag, extra words after it, or two command blocks stay verbatim); linear-time parsing via an
+  anchored tag loop — the first draft's `\s*(.*?)\s*` backtracked cubically (an unclosed
+  `<command-name>` + 4k spaces: 31 s) and its unanchored replacement was quadratic on many
+  unclosed tag starts (20k: 19.5 s); both caught in review and pinned by regression tests.
+  Classification still reads the raw text.
+- **Round-3 LOW closed.** The beyond-the-tail ask scan runs only on transcripts with record
+  identity — a hand-built one (> 512 KB, no uuids, no Stop summaries) joined every ask in
+  32 MB and repeated the chosen prompt.
+
+**Verified:** Stop-time-faithful replay of every recorded Stop (957 across 173 transcripts;
+the hook sees the file without the current summary and final assistant record, with the
+`prompt_id`, `stop_hook_active` and `last_assistant_message` Claude Code sends): empty
+`Claude:` lines **141 → 0**, the answer now visible in every turn (496 of 707 keep plan … answer),
+0 lines over the cap, 0 secret fragments, raw-markup `User:` lines **12 → 0**, counting
+unchanged (707 real turns, 707 counted, 0 missed). Fresh-context review, three passes: APPROVE
+with 1 medium (backtracking) + 5 low → REQUEST CHANGES on the fixes (2 medium freeze paths: the
+quadratic tag scan, uncapped fields into `_privacy`) → fixed and re-verified. End-to-end on the real 2.1.283 binary: a headless turn whose
+answer is never on disk at Stop time logs `**Claude:** pong`. +14 tests (**661 total**), green in the Claude Code, CI-like and hostile runner envs;
+`bin/test-install.sh` green.
