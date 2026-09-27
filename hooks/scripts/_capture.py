@@ -43,6 +43,7 @@ CLAUDE_HEAD_CHARS = 300         # first-300-chars assistant text = reasoning sum
 ACTIONS_MAX_CHARS = 500         # cap the joined tool-use trace
 COMMAND_HEAD_CHARS = 60         # cap non-path key args (command/pattern/query)
 DEFAULT_MAX_PROMPT_CHARS = 2000
+MAX_PROMPT_CHARS_CEILING = 8192  # reflection.max_prompt_chars is clamped here
 DEFAULT_MAX_THINKING_CHARS = 1500
 
 _TURN_RE = re.compile(r"^##\s+turn\s+(\d+)\b", re.MULTILINE)
@@ -229,6 +230,8 @@ def display_prompt(rec) -> str:
 # Headroom past a field's cap that is still sanitized: every shape _privacy
 # knows is far shorter, so a secret straddling the cap is still recognised.
 _SANITIZE_SLACK = 4096
+_PRIVATE_OPEN_RE = re.compile(r"<private>", re.IGNORECASE)   # same flags as _privacy
+_PRIVATE_CLOSE_RE = re.compile(r"</private>", re.IGNORECASE)
 
 
 def _sanitized(text: str, cap: int) -> tuple[str, int]:
@@ -241,7 +244,16 @@ def _sanitized(text: str, cap: int) -> tuple[str, int]:
     try:
         from _privacy import sanitize  # type: ignore
         out, n = sanitize(head)
-        return out, max(int(n or 0), 0)  # -1 = sanitizer bypassed
+        n = max(int(n or 0), 0)  # -1 = sanitizer bypassed
+        # A <private> block whose closing tag lies BEYOND the window never
+        # matched, and its first ~cap chars leaked (v4.7.5). Cut at the tag
+        # (regex on the same text — `.lower()` changes lengths, e.g. 'İ'),
+        # only when a closing tag really follows: a bare mention stays.
+        m = _PRIVATE_OPEN_RE.search(out)
+        # (- 9: a </private> STRADDLING the window edge starts inside it)
+        if m and _PRIVATE_CLOSE_RE.search(text, max(0, len(head) - 9)):
+            out, n = out[:m.start()] + "[REDACTED:private-block]", n + 1
+        return out, n
     except Exception:
         return head, 0
 
@@ -521,8 +533,9 @@ def _tool_arg(input_obj) -> str:
     for k in ("command", "pattern", "query", "url"):
         v = input_obj.get(k)
         if isinstance(v, str) and v.strip():
-            # sanitize BEFORE the cut: a token straddling char 60 leaked
-            return _sanitized(_oneline(v), COMMAND_HEAD_CHARS)[0][:COMMAND_HEAD_CHARS]
+            # sanitize the RAW text before collapsing and cutting: a token
+            # straddling char 60 leaked; key rules need real line breaks
+            return _oneline(_sanitized(v, COMMAND_HEAD_CHARS)[0])[:COMMAND_HEAD_CHARS]
     return ""
 
 
@@ -595,6 +608,9 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
             max_prompt = int(refl.get("max_prompt_chars", DEFAULT_MAX_PROMPT_CHARS))
         except (TypeError, ValueError):
             max_prompt = DEFAULT_MAX_PROMPT_CHARS
+        # v4.7.5: user-settable, so bounded — a huge value re-opened the
+        # super-linear sanitize path (_SANITIZE_SLACK) on hostile pastes.
+        max_prompt = min(max(max_prompt, 0), MAX_PROMPT_CHARS_CEILING)
         try:
             max_thinking = int(refl.get("max_thinking_chars", DEFAULT_MAX_THINKING_CHARS))
         except (TypeError, ValueError):
@@ -672,21 +688,27 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
                 text_heads.append(atext)
             actions.extend(_extract_actions(content))
 
-        # Every field is sanitized BEFORE it is capped (safe_write re-checks
-        # the whole block; redaction markers never re-match a secret shape).
+        # Every field is sanitized RAW — before it is collapsed to one line
+        # (key rules need real line breaks: the review found PGP / legacy /
+        # partial keys leaking through the collapsed text) and before it is
+        # capped (a secret cut at a cap escaped). safe_write re-checks the
+        # whole block; redaction markers never re-match a secret shape.
         redacted = 0
-        prompt, n = _sanitized(_oneline(user_text), max_prompt); redacted += n
-        prompt = prompt[:max_prompt]
-        texts = [_oneline(t) for t in text_heads]
-        final = _oneline(final_text) if isinstance(final_text, str) else ""
-        if final and texts and texts[-1] == final:
-            texts = texts[:-1]  # the final record was already on disk
-        narration, n = _sanitized(" ".join(texts).strip(), CLAUDE_HEAD_CHARS); redacted += n
+        prompt, n = _sanitized(user_text, max_prompt); redacted += n
+        prompt = _oneline(prompt)[:max_prompt]
+        raw_texts = list(text_heads)
+        final_raw = final_text if isinstance(final_text, str) else ""
+        final = _oneline(final_raw)
+        if final and raw_texts and _oneline(raw_texts[-1]) == final:
+            raw_texts = raw_texts[:-1]  # the final record was already on disk
+        narration, n = _sanitized("\n".join(raw_texts).strip(), CLAUDE_HEAD_CHARS); redacted += n
+        narration = _oneline(narration)
         if final:
             # The final answer is not on disk at Stop time (the Stop input
             # carries it). Keep BOTH ends when they do not fit: the opening
             # narration (the plan) and the answer (the outcome).
-            answer, n = _sanitized(final, CLAUDE_HEAD_CHARS); redacted += n
+            answer, n = _sanitized(final_raw, CLAUDE_HEAD_CHARS); redacted += n
+            answer = _oneline(answer)
             claude_head = f"{narration} {answer}".strip()
             if len(claude_head) > CLAUDE_HEAD_CHARS and narration:
                 head = narration[:CLAUDE_HEAD_CHARS // 2 - 2]
@@ -694,8 +716,8 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
             claude_head = claude_head[:CLAUDE_HEAD_CHARS]
         else:
             claude_head = narration[:CLAUDE_HEAD_CHARS]
-        actions_trace, n = _sanitized(_oneline(" → ".join(actions)), ACTIONS_MAX_CHARS); redacted += n
-        actions_trace = actions_trace[:ACTIONS_MAX_CHARS]
+        actions_trace, n = _sanitized(" → ".join(actions), ACTIONS_MAX_CHARS); redacted += n
+        actions_trace = _oneline(actions_trace)[:ACTIONS_MAX_CHARS]
         # Opportunistic only: real transcripts carry signature-only (empty) thinking.
         if capture_thinking:
             clean_blocks = []

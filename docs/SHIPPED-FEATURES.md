@@ -836,3 +836,68 @@ with 1 medium (backtracking) + 5 low → REQUEST CHANGES on the fixes (2 medium 
 quadratic tag scan, uncapped fields into `_privacy`) → fixed and re-verified. End-to-end on the real 2.1.283 binary: a headless turn whose
 answer is never on disk at Stop time logs `**Claude:** pong`. +14 tests (**661 total**), green in the Claude Code, CI-like and hostile runner envs;
 `bin/test-install.sh` green.
+
+## v4.7.5 — Private keys and `<private>` blocks can no longer leak into the vault (2026-09-28)
+
+Four privacy gaps, surfaced by the v4.7.4 review and a follow-up security review. Every one
+predates v4.7.4. A read-only scan of
+the live vault (2,012 `.md` files + its git history) found none of them exploited: 0 key bodies,
+0 unredacted private-key headers.
+
+**Fixes:**
+
+- **Whole private keys, not just their header.** `_privacy`'s `ssh-private` rule replaced only
+  the `-----BEGIN … PRIVATE KEY-----` line, so the base64 body — the actual secret — and the END
+  line survived in every synced write (it runs on every `safe_write`); PGP `… PRIVATE KEY BLOCK`
+  never matched at all. Now a closed block (header, armor headers such as `Proc-Type`/`DEK-Info`/
+  `Version`, a body of only base64/whitespace, and an END of the SAME kind) is removed whole;
+  otherwise (no END — a key cut by a cap or pasted partially — or prose before the END) the
+  header + armor headers + every whole base64 body line go, after the blank line RFC 4880/1421
+  put between headers and body, and the prose after them survives. Line breaks may be real or
+  JSON-escaped (`"private_key": "-----BEGIN PRIVATE KEY-----\nMIIE…"` from a service-account
+  file; PHP-style `\/` too). A residue rule strips bodies that ≤ v4.7.4 machines left under
+  `[REDACTED:ssh-private]` in the SHARED vault — it REQUIRES their END line: the marker is also
+  what the new rule writes, and a first draft with an optional END deleted hash/fingerprint lines
+  after a redacted key on every write (caught by the security review; now pinned by an
+  idempotence test). Public keys and certificates are untouched.
+- **Capture sanitizes raw text.** `capture_turn` collapsed every field to one line BEFORE
+  sanitizing, so no line-based key rule could fire on the synced `User:` line (a 7 KB PGP key,
+  legacy PEM and partial pastes leaked ~2,000 body chars — found by the security review; the
+  first round of tests only exercised `sanitize()`). Fields are now sanitized raw, then collapsed,
+  then capped.
+- **`<private>` blocks larger than a capture window.** v4.7.4 sanitizes only `cap + 4 KB` of a
+  field; a `<private>` block whose closing tag lay beyond it never matched and its first ~2,000
+  chars leaked. Now a `<private>` still open in the window cuts the field when a closing tag
+  follows beyond the window — or straddles its edge (a bare mention of the tag stays;
+  Unicode-safe — `.lower()` changed lengths).
+- **No more quadratic sanitizer paths.** `<private>…</private>` stripping was quadratic on
+  unclosed tags (0.9 MB: **298 s**, on every whole-file `safe_write`) → a linear two-pointer
+  scanner with the regex's exact semantics (3,000-case differential fuzz; reviewer: 40,000
+  cases); `db-url-creds`' unbounded scheme run (100 KB of `a.a.a`: 18 s) → bounded `{2,31}`;
+  `jwt` restarted a scan at every `eyJ` inside `eyJ-eyJ-…` (200 KB: 11.4 s — missed by the first
+  probe, found by the review) → starts only at a token boundary. The key-body scan is unrolled
+  (an alternation kept per-character state: 5 MB peaked at 1.1 GB, and a MemoryError bypasses
+  sanitizing). Armor headers are matched ATOMICALLY (lookahead-capture + backreference — 3.9 has
+  no atomic groups): once the residue rule could fail after its headers, a header value ending
+  in a space split two ways and every combination was retried — exponential (20 lines: 4 s,
+  ~30: over an hour; security review round 3) — now 50,000 lines in 122 ms, identical output on
+  a 30,000-case differential fuzz. Every shape now ≤ ~150 ms on 200 KB.
+  `reflection.max_prompt_chars` clamped to 8192.
+
+**Verified:** 25 new tests — keys (closed / unclosed / legacy armor / blank-line armor / PGP /
+JSON- and PHP-escaped / mismatched END / residue + idempotence / public untouched / linear time /
+bounded memory / jwt / atomic armor headers) driven through BOTH
+`sanitize()` and the real `capture_turn`; the window leak, Unicode cut, bare mention; the clamp;
+the straddling tag; private-block linearity + differential fuzz. The old and new sanitizer over all 2,012 real vault
+`.md` files: **identical outputs and redaction counts**, same total time — `safe_write`
+re-sanitizes whole files, so the new rules cannot silently redact existing memory on the next
+write. Stop-time-faithful replay of 959 real Stops: counting and capture unchanged (707 real
+turns, 707 counted, 0 missed). Fresh-context security review: REQUEST CHANGES (1 high, 2 medium,
+3 low) → REQUEST CHANGES on the fixes (1 medium: the residue rule eating memory; 1 low-medium:
+the straddling tag; 1 low: memory) → REQUEST CHANGES (1 high: exponential backtracking in the
+armor headers) → fixed and re-reviewed. +25 tests (**686 total**), green in
+the Claude Code, CI-like and hostile runner envs; `bin/test-install.sh` green.
+
+**Known limits (not covered, all pre-existing):** PuTTY `.ppk` and TSS2 keys; Kubernetes
+base64-wrapped PEM (`LS0tLS1CRUdJTi…`); keys quoted with `> `; an unclosed PHP-escaped JSON key;
+a < 16-char key fragment left at a capture-window cut.
