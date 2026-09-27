@@ -115,6 +115,45 @@ def is_outdated(running: str | None, available: str | None) -> bool:
     return a + (0,) * (n - len(a)) < b + (0,) * (n - len(b))
 
 
+# ── The HOST's version (Claude Code itself), for hook-protocol feature gates ──
+#
+# Claude Code exports `AI_AGENT` to every subprocess it spawns — hooks
+# included — since 2.1.120 (CHANGELOG: "so `gh` can attribute traffic"):
+# `claude-code_2-1-283_harness` (`_agent` for tool subprocesses; older builds
+# used `claude-code/<ver>`). It only rewrites a value that is unset or already
+# claude-code-prefixed, so a user-chosen AI_AGENT survives and reads as
+# "unknown" here — callers must treat None as "assume an old host".
+_AI_AGENT_RE = re.compile(r"^claude-code[_/](\d+)[-.](\d+)[-.](\d+)(?:[_/]|$)")
+
+# CHANGELOG 2.1.163: "Stop and SubagentStop hooks can now return
+# `hookSpecificOutput.additionalContext` to give Claude feedback and keep the
+# turn going without being labeled a hook error".
+STOP_CONTEXT_MIN_CC = (2, 1, 163)
+
+
+def claude_code_version(env=None) -> tuple[int, int, int] | None:
+    """Running Claude Code version from `AI_AGENT`, or None. Never raises."""
+    try:
+        raw = (os.environ if env is None else env).get("AI_AGENT")
+        if not isinstance(raw, str):
+            return None
+        m = _AI_AGENT_RE.match(raw.strip())
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+    except Exception:
+        return None
+
+
+def supports_stop_context(env=None) -> bool:
+    """True when the host accepts Stop `hookSpecificOutput.additionalContext`.
+
+    Unknown host → False: `decision: block` is the one Stop shape every Claude
+    Code version acts on, and a silently dropped directive is worse than a
+    mislabeled one.
+    """
+    ver = claude_code_version(env)
+    return ver is not None and ver >= STOP_CONTEXT_MIN_CC
+
+
 def version_tag(running: str | None = "__auto__") -> str:
     """`" v4.7.1"` for the bootstrap header; `""` when unknown.
 

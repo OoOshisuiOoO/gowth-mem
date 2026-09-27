@@ -35,7 +35,18 @@ def _make_transcript(path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+NEW_CC = "claude-code_2-1-283_harness"  # ≥ 2.1.163: Stop additionalContext channel
+
+
 class ReviewBase(unittest.TestCase):
+    # v4.7.3: the Stop output envelope depends on the HOST version (AI_AGENT).
+    # Pinned per class — inheriting the runner's env made this suite pass in CI
+    # (no AI_AGENT → decision:block) and fail inside Claude Code. The
+    # *LegacyChannel subclasses below rerun the directive-content contracts on a
+    # pre-2.1.163 host.
+    AI_AGENT: str | None = NEW_CC
+    FEEDBACK_CHANNEL = True  # expected envelope for the pinned host (explicit, not derived)
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.home = Path(self._tmp.name)
@@ -82,16 +93,44 @@ class ReviewBase(unittest.TestCase):
             payload["agent_type"] = agent_type
         if with_transcript:
             payload["transcript_path"] = transcript_path or str(self.tx)
-        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
-        if extra_env:
-            env.update(extra_env)
         return subprocess.run(
             [sys.executable, str(HOOK)],
-            input=json.dumps(payload), capture_output=True, text=True, env=env,
+            input=json.dumps(payload), capture_output=True, text=True,
+            env=self._env(extra_env),
         )
 
-    @staticmethod
-    def _classify(result: subprocess.CompletedProcess) -> tuple[bool, bool, dict]:
+    def _env(self, extra_env: dict | None = None) -> dict:
+        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home),
+               # isolate the backlog scan from the real ~/.claude/projects
+               "CLAUDE_CONFIG_DIR": str(self.home / "claude-config-isolated")}
+        # no runner-env leaks: a GOWTH_WORKSPACE=trade shell broke 16 of these
+        for k in ("AI_AGENT", "GOWTH_WORKSPACE", "CLAUDE_SUBAGENT"):
+            env.pop(k, None)
+        if self.AI_AGENT:
+            env["AI_AGENT"] = self.AI_AGENT
+        if extra_env:
+            env.update(extra_env)
+        return env
+
+    def _directive(self, d: dict) -> str:
+        """The text Claude is told to act on ('' if none), from whichever Stop
+        channel the pinned host uses — and the envelope must BE that channel:
+        additionalContext on ≥ 2.1.163 (decision:block is what Claude Code
+        labels "Stop hook error"), decision:block on older/unknown hosts."""
+        hso = d.get("hookSpecificOutput")
+        if isinstance(hso, dict) and hso.get("hookEventName") == "Stop":
+            text = hso.get("additionalContext") or ""
+            if text:
+                self.assertTrue(self.FEEDBACK_CHANNEL, "feedback channel on a host that lacks it")
+                self.assertNotIn("decision", d, "a directive must use exactly one channel")
+            return text
+        if d.get("decision") == "block":
+            self.assertFalse(self.FEEDBACK_CHANNEL,
+                             "decision:block on a ≥2.1.163 host renders as 'Stop hook error'")
+            return d.get("reason") or ""
+        return ""
+
+    def _classify(self, result: subprocess.CompletedProcess) -> tuple[bool, bool, dict]:
         """Return (journal_fired, review_fired, parsed_output).
 
         v4.7.1: matches the exact bracketed trigger tokens — a paused-review
@@ -101,7 +140,7 @@ class ReviewBase(unittest.TestCase):
         if not out:
             return False, False, {}
         d = json.loads(out)
-        reason = d.get("reason", "") if d.get("decision") == "block" else ""
+        reason = self._directive(d)
         return ("[gowth-mem:auto-journal ws=" in reason), ("[gowth-mem:self-review ws=" in reason), d
 
     def _session_file(self, session_id: str) -> Path:
@@ -135,9 +174,9 @@ class TestCounterIndependence(ReviewBase):
 
         # At stop 30 both fire → exactly ONE block whose reason carries both.
         d30 = outputs[29]
-        self.assertEqual(d30.get("decision"), "block")
-        self.assertIn("auto-journal", d30["reason"])
-        self.assertIn("self-review", d30["reason"])
+        self.assertTrue(self._directive(d30))
+        self.assertIn("auto-journal", self._directive(d30))
+        self.assertIn("self-review", self._directive(d30))
 
         # Counters reset after firing; total_turns monotonic through it all.
         st = self._state(sid)
@@ -151,8 +190,8 @@ class TestCounterIndependence(ReviewBase):
         j15, rev15, d15 = outputs[14]
         self.assertTrue(rev15, "review must fire at stop 15")
         self.assertFalse(j15, "journal must NOT fire at stop 15")
-        self.assertIn("self-review", d15["reason"])
-        self.assertNotIn("auto-journal", d15["reason"])
+        self.assertIn("self-review", self._directive(d15))
+        self.assertNotIn("auto-journal", self._directive(d15))
 
 
 class TestCaptureThroughHook(ReviewBase):
@@ -196,7 +235,7 @@ class TestReflectionDisabled(ReviewBase):
             review_fired = review_fired or rev
             if j:
                 journal_stops.append(i)
-                journal_reason = d["reason"]
+                journal_reason = self._directive(d)
         self.assertFalse(review_fired, "review must never fire when reflection disabled")
         self.assertEqual(journal_stops, [10], "journal still fires when reflection disabled")
         self.assertFalse(self._session_file(sid).exists(),
@@ -215,7 +254,7 @@ class TestReflectionDisabled(ReviewBase):
         self.assertTrue(self._session_file(sid).exists(),
                         "capture_enabled=true must capture even with reflection off")
         self.assertTrue(j, "journal must fire at stop 2")
-        self.assertIn("subagent", d["reason"].lower(),
+        self.assertIn("subagent", self._directive(d).lower(),
                       "with a session log the journal reason must be the delegate variant")
 
 
@@ -231,7 +270,7 @@ class TestDelegationReasons(ReviewBase):
         r = self._run_stop(sid)
         j, _, d = self._classify(r)
         self.assertTrue(j, "journal must fire at stop 2 with journal_every=2")
-        reason = d["reason"]
+        reason = self._directive(d)
         self.assertIn("subagent", reason.lower(),
                       "journal reason must instruct dispatching a subagent teammate")
         self.assertIn(str(self._session_file(sid)), reason,
@@ -248,9 +287,9 @@ class TestDelegationReasons(ReviewBase):
         r = self._run_stop(sid, with_transcript=False)
         j, _, d = self._classify(r)
         self.assertTrue(j, "journal must still fire without a transcript")
-        self.assertNotIn(str(self._session_file(sid)), d["reason"],
+        self.assertNotIn(str(self._session_file(sid)), self._directive(d),
                          "reason must not reference a session log that was never captured")
-        self.assertIn("for the full protocol", d["reason"],
+        self.assertIn("for the full protocol", self._directive(d),
                       "no session log → inline-fallback wording, not the delegate variant")
 
     def test_review_reason_dispatches_teammate(self):
@@ -260,7 +299,7 @@ class TestDelegationReasons(ReviewBase):
         r = self._run_stop(sid)
         _, rev, d = self._classify(r)
         self.assertTrue(rev, "review must fire at stop 2 with turn_interval=2")
-        self.assertIn("subagent", d["reason"].lower(),
+        self.assertIn("subagent", self._directive(d).lower(),
                       "review reason must instruct dispatching a fresh-context subagent")
 
     def test_review_deferred_without_session_log(self):
@@ -275,30 +314,30 @@ class TestDelegationReasons(ReviewBase):
         # Stop 2 = the exact cadence crossing → one-time paused notice, no dispatch.
         r = self._run_stop(sid, with_transcript=False)
         _, rev, d = self._classify(r)
-        self.assertEqual(d.get("decision"), "block", "first deferral must surface a notice")
-        self.assertIn("paused", d["reason"], "notice must say the review is paused")
-        self.assertIn("capture_enabled", d["reason"], "notice must name the fix knob")
-        self.assertNotIn("DISPATCH", d["reason"], "notice must not dispatch a judge")
-        self.assertNotIn(str(self._session_file(sid)), d["reason"])
+        self.assertTrue(self._directive(d), "first deferral must surface a notice")
+        self.assertIn("paused", self._directive(d), "notice must say the review is paused")
+        self.assertIn("capture_enabled", self._directive(d), "notice must name the fix knob")
+        self.assertNotIn("DISPATCH", self._directive(d), "notice must not dispatch a judge")
+        self.assertNotIn(str(self._session_file(sid)), self._directive(d))
         # The notice must NOT reuse the live trigger token — external consumers
         # (e.g. a session-insights skill) key on [gowth-mem:self-review] and
         # would launch a full review of a session with nothing to review.
         self.assertFalse(rev, "paused notice must not classify as a fired review")
-        self.assertNotIn("[gowth-mem:self-review ws=", d["reason"])
-        self.assertIn("[gowth-mem:review-paused ws=", d["reason"])
+        self.assertNotIn("[gowth-mem:self-review ws=", self._directive(d))
+        self.assertIn("[gowth-mem:review-paused ws=", self._directive(d))
         self.assertGreaterEqual(self._state(sid).get("review_count", 0), 2,
                                 "deferred review must keep its counter (fires once a log exists)")
         # Stop 3: still no log, past the crossing → silent (no block, no log spam).
         r = self._run_stop(sid, with_transcript=False)
         d = json.loads(r.stdout.strip())
-        self.assertNotEqual(d.get("decision"), "block",
+        self.assertEqual(self._directive(d), "",
                             "deferral past the first crossing must be silent")
         # Log appears (transcript now available) → real review fires on the next stop.
         r = self._run_stop(sid)
         _, rev, d = self._classify(r)
         self.assertTrue(rev, "review must fire on the first stop after a log exists")
-        self.assertIn(str(self._session_file(sid)), d["reason"])
-        self.assertIn("DISPATCH", d["reason"])
+        self.assertIn(str(self._session_file(sid)), self._directive(d))
+        self.assertIn("DISPATCH", self._directive(d))
 
     def test_deferral_notice_plus_journal_inline_has_no_two_agent_header(self):
         """v4.7.1: the TWO-SEPARATE-subagents header belongs to a real
@@ -310,10 +349,10 @@ class TestDelegationReasons(ReviewBase):
         self._run_stop(sid, with_transcript=False)
         r = self._run_stop(sid, with_transcript=False)
         d = json.loads(r.stdout.strip())
-        self.assertEqual(d.get("decision"), "block")
-        self.assertIn("auto-journal", d["reason"])
-        self.assertIn("paused", d["reason"])
-        self.assertNotIn("TWO SEPARATE", d["reason"],
+        self.assertTrue(self._directive(d))
+        self.assertIn("auto-journal", self._directive(d))
+        self.assertIn("paused", self._directive(d))
+        self.assertNotIn("TWO SEPARATE", self._directive(d),
                          "no dispatch collision → no two-agent header")
 
     def test_collision_block_directs_two_separate_subagents(self):
@@ -326,7 +365,7 @@ class TestDelegationReasons(ReviewBase):
         r = self._run_stop(sid)
         j, rev, d = self._classify(r)
         self.assertTrue(j and rev, "both cadences must fire at stop 2")
-        self.assertIn("TWO SEPARATE", d["reason"],
+        self.assertIn("TWO SEPARATE", self._directive(d),
                       "collision block must direct two separate subagents")
 
 
@@ -391,9 +430,8 @@ class TestV471RobustStdin(ReviewBase):
     number killed capture, autosync, and both cadences on every turn."""
 
     def _run_raw(self, payload) -> subprocess.CompletedProcess:
-        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
         return subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=self._env())
 
     def test_numeric_session_id_exits_0_and_still_captures(self):
         r = self._run_raw({"session_id": 12345, "transcript_path": str(self.tx)})
@@ -408,9 +446,8 @@ class TestV471RobustStdin(ReviewBase):
                         "capture must still run with a numeric session_id")
 
     def test_non_dict_stdin_exits_0(self):
-        env = {**os.environ, "GOWTH_MEM_HOME": str(self.home)}
         r = subprocess.run([sys.executable, str(HOOK)], input="[1, 2, 3]",
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=self._env())
         self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
         self.assertNotIn("Traceback", r.stderr)
 
@@ -431,7 +468,7 @@ class TestV471CaptureOnly(ReviewBase):
         r = self._run_stop(sid)
         self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
         d = json.loads(r.stdout.strip())
-        self.assertNotEqual(d.get("decision"), "block")
+        self.assertEqual(self._directive(d), "")
         self.assertTrue(self._session_file(sid).is_file(),
                         "capture must run even with both cadences disabled")
 
@@ -481,7 +518,7 @@ class TestV471SignalFloor(ReviewBase):
         r = self._run_stop(sid)  # crossing: log has 2 turns < 10
         _, rev, d = self._classify(r)
         self.assertFalse(rev, "review must defer below the signal floor")
-        self.assertNotIn("[gowth-mem:review-paused ws=", d.get("reason", ""),
+        self.assertNotIn("[gowth-mem:review-paused ws=", self._directive(d),
                          "capture IS working — a young log must not raise the paused notice")
         self.assertGreaterEqual(self._state(sid).get("review_count", 0), 2,
                                 "deferred review must keep its counter")
@@ -506,12 +543,12 @@ class TestV471PausedNotice(ReviewBase):
         self._write_settings(journal_every=99, turn_interval=3)  # crossing 3 < count 5
         r = self._run_stop(sid, with_transcript=False)
         d = json.loads(r.stdout.strip())
-        self.assertEqual(d.get("decision"), "block",
+        self.assertTrue(self._directive(d),
                          "notice must fire even when the crossing was passed by a settings change")
-        self.assertIn("[gowth-mem:review-paused ws=", d["reason"])
+        self.assertIn("[gowth-mem:review-paused ws=", self._directive(d))
         r = self._run_stop(sid, with_transcript=False)
         d = json.loads(r.stdout.strip())
-        self.assertNotEqual(d.get("decision"), "block", "and only once")
+        self.assertEqual(self._directive(d), "", "and only once")
 
     def test_notice_not_repeated_after_a_real_fire(self):
         """The persisted flag survives a real fire: a capture outage later in
@@ -521,7 +558,7 @@ class TestV471PausedNotice(ReviewBase):
         sid = "onceflag1234"
         self._run_stop(sid, with_transcript=False)
         r = self._run_stop(sid, with_transcript=False)  # crossing → the one notice
-        self.assertIn("review-paused", json.loads(r.stdout.strip()).get("reason", ""))
+        self.assertIn("review-paused", self._directive(json.loads(r.stdout.strip())))
         r = self._run_stop(sid)  # log appears → real fire, counter resets
         _, rev, _ = self._classify(r)
         self.assertTrue(rev)
@@ -529,7 +566,7 @@ class TestV471PausedNotice(ReviewBase):
         self._run_stop(sid, with_transcript=False)
         r = self._run_stop(sid, with_transcript=False)  # crossing again
         d = json.loads(r.stdout.strip())
-        self.assertNotEqual(d.get("decision"), "block",
+        self.assertEqual(self._directive(d), "",
                             "paused notice must fire at most once per session")
 
     def test_paused_notice_carries_backlog_nudge(self):
@@ -550,9 +587,9 @@ class TestV471PausedNotice(ReviewBase):
         self._run_stop(sid, with_transcript=False, extra_env=env)
         r = self._run_stop(sid, with_transcript=False, extra_env=env)
         d = json.loads(r.stdout.strip())
-        self.assertIn("review-paused", d.get("reason", ""))
-        self.assertIn("Backlog: 1 past conversation", d["reason"])
-        self.assertIn("/mem-review-backlog", d["reason"])
+        self.assertIn("review-paused", self._directive(d))
+        self.assertIn("Backlog: 1 past conversation", self._directive(d))
+        self.assertIn("/mem-review-backlog", self._directive(d))
 
 
 class TestV471MidnightSplit(ReviewBase):
@@ -573,9 +610,9 @@ class TestV471MidnightSplit(ReviewBase):
         r = self._run_stop(sid)
         j, _, d = self._classify(r)
         self.assertTrue(j)
-        self.assertIn(str(prev), d["reason"], "previous-day log must be a named turn source")
-        self.assertIn(str(self._session_file(sid)), d["reason"])
-        self.assertIn("read BOTH", d["reason"])
+        self.assertIn(str(prev), self._directive(d), "previous-day log must be a named turn source")
+        self.assertIn(str(self._session_file(sid)), self._directive(d))
+        self.assertIn("read BOTH", self._directive(d))
 
     def test_review_floor_counts_across_both_logs(self):
         self._write_settings(journal_every=99, turn_interval=2)  # floor: default 10
@@ -588,7 +625,7 @@ class TestV471MidnightSplit(ReviewBase):
         r = self._run_stop(sid)  # 9 (yesterday) + 2 (today) = 11 >= floor 10
         _, rev, d = self._classify(r)
         self.assertTrue(rev, "the signal floor must count across the midnight split")
-        self.assertIn(str(prev), d["reason"])
+        self.assertIn(str(prev), self._directive(d))
 
 
 class TestV471ForgetDaily(ReviewBase):
@@ -653,6 +690,23 @@ class TestGracefulTranscript(ReviewBase):
         self.assertEqual(r.returncode, 0, f"stderr: {r.stderr}")
         self.assertFalse(self._session_file(sid).exists(),
                          "corrupt transcript → nothing captured, no crash")
+
+
+class TestCounterIndependenceLegacyChannel(TestCounterIndependence):
+    """Pre-2.1.163 host (or no AI_AGENT): identical cadences and directives,
+    delivered as decision:block — the only Stop shape those versions act on."""
+    AI_AGENT = None
+    FEEDBACK_CHANNEL = False
+
+
+class TestDelegationReasonsLegacyChannel(TestDelegationReasons):
+    AI_AGENT = None
+    FEEDBACK_CHANNEL = False
+
+
+class TestPausedNoticeLegacyChannel(TestV471PausedNotice):
+    AI_AGENT = "claude-code_2-1-150_harness"  # AI_AGENT present but pre-2.1.163
+    FEEDBACK_CHANNEL = False
 
 
 if __name__ == "__main__":

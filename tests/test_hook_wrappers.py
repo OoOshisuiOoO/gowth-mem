@@ -62,6 +62,9 @@ class TestAutoJournalSubagentSkip(unittest.TestCase):
             parsed = json.loads(stdout)
             self.assertNotEqual(parsed.get("decision"), "block",
                                 "subagent context must not produce a block decision")
+            # v4.7.3: nor a directive on the non-error Stop channel.
+            self.assertNotIn("hookSpecificOutput", parsed,
+                             "subagent context must not produce a Stop directive")
 
     def test_subagent_via_env_var_exits_0(self) -> None:
         """CLAUDE_SUBAGENT env var → exit 0."""
@@ -95,6 +98,9 @@ class TestAutoJournalDisabledSetting(unittest.TestCase):
                 parsed = json.loads(stdout)
                 self.assertNotEqual(parsed.get("decision"), "block",
                                     "disabled auto_journal must not block")
+                # v4.7.3: nor a directive on the non-error Stop channel.
+                self.assertNotIn("hookSpecificOutput", parsed,
+                                 "disabled auto_journal must not emit a Stop directive")
 
 
 class TestAutoJournalInstructionsTemplate(unittest.TestCase):

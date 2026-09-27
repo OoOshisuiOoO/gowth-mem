@@ -618,7 +618,9 @@ auto-journal-instructions.md ...
 contains zero occurrences of `DELEGATE`/`_capture`, so the machine really was executing v3.9.0
 — i.e. the pre-v4.7 inline cadence, the exact main-context pollution v4.7 removed. (The
 `Stop hook error:` label is just how the TUI renders a Stop-hook `decision: block`; both
-versions print that JSON and exit 0. Nothing crashed.)
+versions print that JSON and exit 0. Nothing crashed. **Corrected in v4.7.3:** the label is
+avoidable — since Claude Code 2.1.163 a Stop hook can use the non-error
+`hookSpecificOutput.additionalContext` channel; see below.)
 
 **Why it stayed invisible:**
 
@@ -673,3 +675,119 @@ Verified against a faithful sandbox reproduction (registry pinned at 3.9.0, mark
 at 4.7.2, both user and project scopes): heal moves both scopes, second run is silent
 (idempotent), both opt-outs respected, `source=resume` skips, and the hook still exits 0 with
 no vault. +27 tests (**576 total**); `bin/test-install.sh` green.
+
+## v4.7.3 — Cadence directives are no longer "Stop hook errors", and count real turns (2026-09-27)
+
+**Problem (user-reported: "tao hay bị lỗi này"):**
+
+```
+Ran 9 stop hooks
+  ⎿  Stop hook error: [gowth-mem:self-review ws=trade] 15 turns logged. DISPATCH a fresh-context …
+```
+
+Nothing failed — and it came more often than configured.
+
+**Root cause 1 — the error label was our choice of envelope.** `auto-journal.py` printed
+`{"decision": "block", "reason": …}`. Claude Code (verified in the shipped 2.1.283 binary) files
+a block reason under the stop-hook summary's `hookErrors`: red "Stop hook error: …" plus a
+"Stop hook error occurred · ctrl+o to see" notification. Since **2.1.163** there is a sanctioned
+channel (CHANGELOG: "Stop and SubagentStop hooks can now return
+`hookSpecificOutput.additionalContext` to give Claude feedback and keep the turn going without
+being labeled a hook error"): the same continuation — both land in the array that re-invokes the
+model with `stopHookActive: true` — rendered gold as "Stop hook feedback", no notification; the
+model reads "Stop hook additional context: …". The v4.7.2 note above called the label
+unavoidable; that was only true before 2.1.163.
+
+**Root cause 2 — Stop events are not turns.** The cadence counters were bumped on every Stop.
+Claude Code also fires Stop (a) after every Stop-hook continuation — any hook's block/feedback,
+ours included, re-invokes the model, which stops again with `stop_hook_active: true` — and
+(b) after every background-agent `<task-notification>` relay, including the teammate and judge
+gowth-mem itself dispatches. Each cadence therefore shortened the wait for the next one, and the
+session log recorded "Stop hook feedback: …", notification XML and skill expansions as the
+user's prompt — which the judge then scored as the user's prompting. Live audit of the 15 heavy
+sessions of the last 30 days: **474 Stops counted as turns for 327 real turns** (×1.45); all 55
+hook-feedback continuations were gowth-mem's own.
+
+**Fixes:**
+
+- **Non-error channel.** `_version.claude_code_version()` / `supports_stop_context()` read the
+  host version from `AI_AGENT` (`claude-code_2-1-283_harness` — exported to every subprocess,
+  hooks included, since 2.1.120; Claude Code only rewrites unset or claude-code-prefixed
+  values). `auto-journal._stop_output()`: ≥ 2.1.163 → `hookSpecificOutput.additionalContext`;
+  older or unknown → `decision: block`, the one shape every version acts on (a silently dropped
+  directive is worse than a mislabeled one). Trigger tokens (`[gowth-mem:self-review ws=…]`, …)
+  unchanged.
+- **Real turns only.** A Stop counts iff its newest human-prompt record has a new `uuid`
+  (`session.last_prompt_key`) — never its text ("tiếp" repeats). `_capture._classify_record`:
+  *human* = `origin.kind == "human"` on a user record **or on a `queued_command` attachment** (a
+  prompt typed while the model worked — not a user record at all), authoritative over any text;
+  *machine* = any other `origin.kind` (Claude Code's own contract: keyboard input is stamped
+  `human`; task-notification, peer, coordinator, plugin, observer, auto-continuation, …) except
+  `channel`/`slack-ping` (they relay what a person typed elsewhere, e.g. a Telegram channel →
+  *unconfirmed*), queued non-prompt commands, origin-less teammate / notification text; *transparent* = `isMeta`, compaction summaries, tool results, interrupt
+  markers, local-command output, `!cmd` bash **output** (never recorded as the user's words — it
+  can hold secrets); origin-less records with `promptSource` typed/queued/sdk or `turnOrigin`
+  human/sdk are *human* (`claude -p` prompts are `sdk`) and `promptSource: system` is *machine*;
+  any other origin-less record (`/goal`, `<bash-input>`, legacy prompts, but also `/model`) is
+  *unconfirmed* — an ask only if the model answered it, or if it is the prompt the Stop input's
+  `prompt_id` names: the FINAL assistant record is written after the Stop hook runs, so a
+  tool-less answer is never visible yet.
+  Machine records are skipped, not decisive: a teammate message delivered mid-turn must not
+  swallow the turn it interrupted. A prompt pushed out of the 512 KB tail by heavy tool output
+  is found by a bounded backward scan (`scan_back_for_human`, 32 MB). With record identity (every
+  real transcript) `stop_hook_active` is redundant — a continuation without new input compares
+  equal — and harmful as a skip: a prompt typed during our own dispatch continuation was dropped.
+  It still decides for identity-less (legacy / hand-built) transcripts, which keep per-Stop
+  counting. A transcript with identity but no human prompt (agent-team teammate sessions: only
+  `<teammate-message>` prompts, 26 live sessions ran this hook) is never a turn — counting there
+  fired cadences with no capturable log. A keyless prompt record under identity plus
+  `stop_hook_active` is never a turn (latent block loop; every real prompt has a uuid).
+- **Capture records the human — every ask of the turn.** `capture_turn`'s **User:** line holds
+  every human ask since the previous Stop's summary record, oldest first (`request ⟶ follow-up
+  typed while the model worked`), and Actions start at the first ask — keying the log on the
+  newest ask alone dropped the main request in 13% of live turns (review round 2). When heavy
+  tool output pushed the request out of the tail, a bounded backward scan stops at the previous
+  Stop's summary. The tail is parsed once per Stop and shared.
+- **Autosync on every Stop.** The debounced vault push also runs on Stops that are not turns —
+  the relay Stop right after the background teammate/judge finishes is exactly when the vault
+  holds fresh writes.
+- **Deterministic tests.** `tests/test_review_trigger.py` inherited the runner's `AI_AGENT`
+  (green in CI, red inside Claude Code) and `GOWTH_WORKSPACE` (16 failures in a `trade` shell).
+  Harnesses now pin the host and clear `GOWTH_WORKSPACE`/`CLAUDE_SUBAGENT`; the
+  directive-content contracts rerun on a pre-2.1.163 host; new `tests/test_stop_channel.py` +
+  `tests/test_turn_counting.py`.
+
+**Verified:**
+
+- **Every recorded Stop, real hook, Stop-time-faithful replay** — all 173 transcripts of the
+  last 30 days that ran this hook (950 Stops). At each Stop the hook sees the file exactly as
+  Claude Code leaves it at that moment: WITHOUT that Stop's summary record and WITHOUT the final
+  assistant record (both are written after the hooks), with the `prompt_id` and
+  `stop_hook_active` Claude Code sends. Ground truth computed separately (`parentUuid` links):
+  **706 real turns, 706 counted — 0 missed, 0 extra.** (A first harness that wrote the current
+  summary before running the hook hid the round-2 capture bug — harness fidelity matters.)
+- **Old vs new** on the 15 heavy sessions: turns **474 → 327** (= the 327 real), reviews 26 → 12
+  (seven of those sessions had 7–14 real prompts — the review fired there on inflation alone),
+  journal 38 → 27, every directive on the non-error envelope, fake "User:" lines **212 → 0**,
+  captured turns 429 → 327 (56 of them now keep a typed-ahead follow-up with its main request).
+- **End-to-end on the real 2.1.283 binary** (`claude -p --setting-sources project`, scratch
+  vault, review forced at turn 1): the stop-hook summary has `hookErrors: []` with the directive
+  in `hookAdditionalContext`, the model acted on it, and the continuation Stop was silent and
+  uncounted (`total_turns: 1`). It also caught what no offline replay can see — a transcript
+  snapshot taken *inside* a real Stop hook has no assistant record yet (the final reply is
+  flushed after the hook), so the first design never counted a headless prompt; fixed with
+  `promptSource`/`turnOrigin` and the Stop input's `prompt_id`, then re-verified end-to-end.
+- **Adversarial fresh-context review, 3 rounds** — round 1 REQUEST CHANGES (1 high, 1 medium,
+  5 low: typed-ahead prompts, answered bash mode, teammate-only sessions, origin authority,
+  autosync on relay Stops, `/model` relays, runner-env leaks); round 2 COMMENT (1 medium: the
+  typed-ahead capture regression above; 1 low: keyless-prompt loop; `channel`/`slack-ping`
+  framing); round 3 on the final delta. Every finding verified against live transcripts or the
+  binary before it was fixed.
+- +71 tests (**647 total**), green in the Claude Code env, a CI-like env (no `AI_AGENT`) and a
+  hostile runner env (`GOWTH_WORKSPACE=trade CLAUDE_SUBAGENT=1`); `bin/test-install.sh` green.
+
+**Known limits:** a directive still costs one continuation turn (the channel's semantics);
+headless `claude -p` pipelines still count their origin-less prompts (as before); a turn whose
+prompt is more than 32 MB back is not counted; a host that inherits a newer Claude Code's
+`AI_AGENT` without rewriting it (Claude Code < 2.1.120 nested inside ≥ 2.1.163, or a
+non-Claude-Code harness running these hooks) would get the new envelope and drop the directive.

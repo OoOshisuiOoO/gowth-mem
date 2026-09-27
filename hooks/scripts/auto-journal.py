@@ -63,6 +63,30 @@ v4.7.1 changes (hardening — closes the verified findings of the v4.7 audit):
   - Midnight date-split: the previous day's session log (same sid) is passed
     to the teammate/judge as a secondary turn source when it exists, and the
     signal floor counts across both files.
+
+v4.7.3 changes (the "Stop hook error" users kept reporting — nothing failed):
+  - Directives travel on Claude Code's NON-ERROR channel. `decision: "block"`
+    lands in the stop-hook summary's `hookErrors` → red "Stop hook error: …"
+    + a "Stop hook error occurred" notification. Claude Code ≥ 2.1.163 takes
+    `hookSpecificOutput.additionalContext` on Stop — same continuation,
+    rendered "Stop hook feedback". Host version from `AI_AGENT` (exported to
+    hooks since 2.1.120); unknown/older → decision:block (`_stop_output`).
+  - Cadences count REAL user turns, not Stop events. A Stop counts iff its
+    newest human-prompt record (a user record with origin.kind "human", a
+    prompt typed while the model worked — a queued_command attachment — or an
+    origin-less ask the model answered: `claude -p`, `/goal`, bash mode) has
+    a new uuid. Stop-hook continuations, task-notification relays, teammate
+    messages and loop ticks no longer advance the counters, so our own
+    directives no longer feed the next cadence. Agent-team teammate sessions
+    (no human prompt at all) never count. `stop_hook_active` decides only for
+    transcripts without record identity. Live check, every recorded Stop of 173
+    transcripts (948): 706 real turns, 706 counted, 0 missed, 0 extra; the 15
+    heavy sessions: 474 → 327 counted, reviews 26 → 12, fake "User:" lines
+    212 → 0.
+  - The session log's **User:** line is the human prompt (was: the last user
+    record with text — Stop-hook feedback, skill expansions, notification XML,
+    bash OUTPUT), and a turn whose prompt left the 512 KB tail is found by a
+    bounded backward scan instead of being counted twice or captured never.
 """
 from __future__ import annotations
 
@@ -80,6 +104,7 @@ from _atomic import atomic_write  # type: ignore
 from _debug import log_debug  # type: ignore
 from _home import active_workspace, gowth_home, journal_dir, list_workspaces, read_settings, state_path  # type: ignore
 from _lock import file_lock  # type: ignore
+from _version import supports_stop_context  # type: ignore
 
 AUTO_DISTILL_EVERY = 10  # fallback default; overridden by settings.json journal_every
 DEFAULT_MIN_REVIEW_TURNS = 10  # matches rubric §0b: <10 turns → judge skips
@@ -109,6 +134,38 @@ def _coerce_bool(v, default: bool) -> bool:
     if isinstance(v, (int, float)):
         return bool(v)
     return default
+
+
+def _stop_output(reason: str) -> dict:
+    """The JSON that makes Claude act on `reason` at a Stop (v4.7.3).
+
+    `decision: "block"` is filed by Claude Code under `hookErrors`: the stop-hook
+    summary row prints it red as "Stop hook error: …" and raises a "Stop hook
+    error occurred · ctrl+o to see" notification — reported by users as an
+    error every 10/15 turns although nothing failed. Since Claude Code 2.1.163
+    the sanctioned channel is `hookSpecificOutput.additionalContext`: the same
+    continuation (it joins the same `blockingErrors` array that re-invokes the
+    model), rendered as "Stop hook feedback: …", no error notification. The
+    model reads it as "Stop hook additional context: …" — the bracketed
+    `[gowth-mem:…]` trigger tokens are unchanged either way.
+
+    Host version unknown or older → `decision: block`, the one shape every
+    version acts on (a silently dropped directive is worse than a mislabeled one).
+    """
+    if supports_stop_context():
+        return {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": reason}}
+    return {"decision": "block", "reason": reason}
+
+
+def _autosync() -> None:
+    """v4.4 debounced, detached vault push. v4.7.3: also on Stops that are not
+    turns — the relay Stop right after the background teammate/judge finishes
+    is exactly when the vault holds fresh unpushed writes."""
+    try:
+        from _sync import maybe_autosync  # type: ignore
+        maybe_autosync()
+    except Exception as e:
+        log_debug("auto-journal", f"maybe_autosync failed: {e}")
 
 
 def _load_state() -> dict:
@@ -491,22 +548,92 @@ def main() -> int:
     if not isinstance(transcript_path, str):
         transcript_path = ""
 
+    # v4.7.3: a Stop is a TURN only when it ends the response to a human
+    # prompt. Claude Code also fires Stop after every continuation — any Stop
+    # hook's block/feedback (ours included) re-invokes the model, which Stops
+    # again with stop_hook_active=true — and after every background-agent
+    # task-notification relay (the teammate/judge WE dispatch). Counting those
+    # made each cadence directive advance the next cadence (live audit, 15
+    # heavy sessions: 474 Stops counted as turns for 327 real turns) and
+    # captured hook text / notification XML as the user's prompt.
+    #
+    # Turn identity = the newest HUMAN prompt record (a user record, or a
+    # prompt typed while the model worked — a queued_command attachment),
+    # keyed by its uuid, never its text ("tiếp" repeats). Machine records are
+    # skipped, not decisive (one delivered mid-turn must not swallow the turn);
+    # a prompt pushed out of the 512 KB tail is found by a bounded backward
+    # scan. The tail is parsed once here and shared with capture_turn.
+    records = _capture.read_transcript_tail(transcript_path)
+    identity = _capture.has_record_identity(records)
+    # The prompt this Stop ends, as Claude Code names it — the final assistant
+    # record is written AFTER the Stop hook, so an origin-less prompt answered
+    # without tools is only recognisable through this id.
+    cur_pid = data.get("prompt_id")
+    cur_pid = cur_pid if isinstance(cur_pid, str) and cur_pid else None
+    hp_idx = _capture.find_human_prompt(records, cur_pid)
+    prompt_rec = records[hp_idx] if hp_idx >= 0 else None
+    if identity:
+        # Real transcript: stop_hook_active is redundant (a continuation with
+        # no new human input compares equal below) and harmful as a skip — a
+        # prompt typed DURING our own dispatch continuation was dropped.
+        if prompt_rec is None:
+            prompt_rec = _capture.scan_back_for_human(transcript_path,
+                                                      current_prompt_id=cur_pid)
+        if prompt_rec is None:
+            # Nobody typed anything: an agent-team teammate session (only
+            # <teammate-message> prompts; 26 live sessions ran this hook), or
+            # a prompt > 32 MB back. Counting here fired cadences with no
+            # capturable log.
+            _autosync()
+            print(json.dumps({"continue": True, "suppressOutput": True}))
+            return 0
+    elif _coerce_bool(data.get("stop_hook_active"), False):
+        # No record identity (legacy / hand-built transcript, or none): the
+        # flag is the only signal. Claude Code's own guidance (its
+        # 8-consecutive-block cap message): return success while it is true.
+        _autosync()
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        return 0
+    prompt_key = _capture.prompt_key(prompt_rec) if identity else None
+    if identity and prompt_key is None and _coerce_bool(data.get("stop_hook_active"), False):
+        # A prompt record without uuid/promptId has no key to compare — a
+        # continuation would count and could re-fire a cadence on every Stop
+        # (only Claude Code's 8-block cap would end it). Latent: every real
+        # prompt record carries a uuid.
+        _autosync()
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        return 0
+
     # Single lock acquisition: bump all cadence counters together so the two
     # cadences (journal turn_count vs review review_count) can never collide.
     try:
         with file_lock("state", timeout=5.0):
             state = _load_state()
             sess = state["session"].setdefault(session_id, {"turn_count": 0})
-            sess["turn_count"] = sess.get("turn_count", 0) + 1
-            sess["total_turns"] = sess.get("total_turns", 0) + 1  # monotonic
-            sess["review_count"] = sess.get("review_count", 0) + 1
-            turn = sess["turn_count"]
-            total_turns = sess["total_turns"]
-            review_count = sess["review_count"]
-            paused_notified = bool(sess.get("review_paused_notified"))
-            _save_state(state)
+            if prompt_key is not None and sess.get("last_prompt_key") == prompt_key:
+                # Same human prompt as the last counted Stop: this Stop ended a
+                # continuation / notification relay / teammate message / loop
+                # tick. Not a turn. (No identity → per-Stop counting, as before.)
+                real_turn = False
+            else:
+                real_turn = True
+                if prompt_key is not None:
+                    sess["last_prompt_key"] = prompt_key
+                sess["turn_count"] = sess.get("turn_count", 0) + 1
+                sess["total_turns"] = sess.get("total_turns", 0) + 1  # monotonic
+                sess["review_count"] = sess.get("review_count", 0) + 1
+                turn = sess["turn_count"]
+                total_turns = sess["total_turns"]
+                review_count = sess["review_count"]
+                paused_notified = bool(sess.get("review_paused_notified"))
+                _save_state(state)
     except TimeoutError as e:
         log_debug("auto-journal", f"state lock timeout (increment): {e}")
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        return 0
+
+    if not real_turn:
+        _autosync()
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
@@ -531,7 +658,8 @@ def main() -> int:
     # v4.7.1: gated by reflection.capture_enabled (defaults to reflection.enabled).
     if capture_on:
         try:
-            _capture.capture_turn(transcript_path, ws, session_id, total_turns, read_settings())
+            _capture.capture_turn(transcript_path, ws, session_id, total_turns, read_settings(),
+                                  records=records or None, prompt_rec=prompt_rec)
         except Exception as e:
             log_debug("auto-journal", f"capture_turn wrapper failed: {e}")
 
@@ -539,11 +667,7 @@ def main() -> int:
     # a session that never compacts never pushed — a live vault was found holding 116
     # uncommitted changes at ahead=0/behind=0, invisible to the user's other machine.
     # Debounced (default 30 min) + spawned detached, so a turn never waits on network.
-    try:
-        from _sync import maybe_autosync  # type: ignore
-        maybe_autosync()
-    except Exception as e:
-        log_debug("auto-journal", f"maybe_autosync failed: {e}")
+    _autosync()
 
     reasons: list[str] = []
     journal_fired = False
@@ -608,7 +732,7 @@ def main() -> int:
                 "fine), (2) the fresh-context judge (must NOT be a fork). Never merge them into "
                 "one agent.\n\n" + reason
             )
-        print(json.dumps({"decision": "block", "reason": reason}))
+        print(json.dumps(_stop_output(reason)))
         return 0
 
     print(json.dumps({"continue": True, "suppressOutput": True}))

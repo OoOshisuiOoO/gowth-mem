@@ -125,7 +125,8 @@ class StopHookIntegrationTest(unittest.TestCase):
             [sys.executable, str(SCRIPTS / "auto-journal.py")],
             input=json.dumps({"session_id": "s1", "hook_event_name": "Stop"}),
             capture_output=True, text=True,
-            env={**os.environ, "GOWTH_MEM_HOME": self.tmp, "GOWTH_WORKSPACE": "demo"},
+            env={**{k: v for k, v in os.environ.items() if k != "CLAUDE_SUBAGENT"},
+                 "GOWTH_MEM_HOME": self.tmp, "GOWTH_WORKSPACE": "demo"},
         )
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.strip())
