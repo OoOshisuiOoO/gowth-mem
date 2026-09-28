@@ -192,10 +192,12 @@ def main() -> int:
                         print(f"init: remote {branch} doesn't exist yet — will create on push")
                     elif "CONFLICT" in err:
                         from _conflict import package_conflict  # type: ignore
-                        package_conflict()
-                        print("init: conflict — wrote SYNC-CONFLICT.md, run /mem-sync-resolve",
-                              file=sys.stderr)
-                        return 2
+                        if package_conflict() is None:
+                            print("init: memory/MEMORY.md conflict merged automatically")
+                        else:
+                            print("init: conflict — wrote SYNC-CONFLICT.md, run /mem-sync-resolve",
+                                  file=sys.stderr)
+                            return 2
                     else:
                         print(f"init: pull warning: {err.strip()[:200]}")
                 try:
@@ -236,15 +238,17 @@ def main() -> int:
                             remote=remote, token=token)
                 if r.returncode != 0:
                     err = (r.stderr or "") + (r.stdout or "")
-                    if "CONFLICT" in err:
-                        from _conflict import package_conflict  # type: ignore
-                        package_conflict()
+                    if "CONFLICT" not in err:
+                        print(f"sync: pull failed: {err.strip()[:300]}", file=sys.stderr)
+                        return 1
+                    from _conflict import package_conflict  # type: ignore
+                    if package_conflict() is not None:
                         print("sync: conflict — wrote SYNC-CONFLICT.md, run /mem-sync-resolve",
                               file=sys.stderr)
                         return 2
-                    print(f"sync: pull failed: {err.strip()[:300]}", file=sys.stderr)
-                    return 1
-                print(f"sync: pulled origin/{branch}")
+                    print(f"sync: pulled origin/{branch} (memory/MEMORY.md merged automatically)")
+                else:
+                    print(f"sync: pulled origin/{branch}")
 
             if not args.pull_only:
                 r = run_git(gh, "push", "origin", branch, check=False,

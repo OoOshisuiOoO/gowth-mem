@@ -258,8 +258,12 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
         elif "CONFLICT" in err:
             from _conflict import package_conflict  # type: ignore
             cm = package_conflict()
-            log(f"sync: conflict — wrote {cm}. Run /mem-sync-resolve.", quiet=quiet, err=True)
-            rc = 2
+            if cm is None:
+                log("sync: memory/MEMORY.md conflict merged automatically", quiet=quiet)
+                rc = 0
+            else:
+                log(f"sync: conflict — wrote {cm}. Run /mem-sync-resolve.", quiet=quiet, err=True)
+                rc = 2
         else:
             log(f"sync: pull failed: {err.strip()[:300]}", quiet=quiet, err=True)
             rc = 1
