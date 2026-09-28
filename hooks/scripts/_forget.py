@@ -431,7 +431,8 @@ def main() -> int:
     cfg = _settings_forget()
     ttl_days = args.ttl_days if args.ttl_days is not None else int(cfg.get("raw_ttl_days", DEFAULT_TTL_DAYS))
     max_bytes = args.max_bytes if args.max_bytes is not None else int(cfg.get("max_bytes", DEFAULT_MAX_BYTES))
-    salvage = (not args.no_salvage) and bool(cfg.get("salvage", True))
+    from _home import coerce_bool, setting  # type: ignore
+    salvage = (not args.no_salvage) and coerce_bool(cfg.get("salvage"), True)
 
     from _home import active_workspace  # local import; avoids cycle at module load
     workspaces = list_workspaces() if args.all_workspaces else [active_workspace()]
@@ -451,8 +452,7 @@ def main() -> int:
     # v4.1 aspect retention: explicit --aspects, or settings opt-in
     # topic_layout.auto_archive_enabled (so the Stop-hook run applies it).
     try:
-        auto_aspects = bool(read_settings().get("topic_layout", {})
-                            .get("auto_archive_enabled", False))
+        auto_aspects = setting("topic_layout.auto_archive_enabled", bool, False)
     except Exception:
         auto_aspects = False
     aspect_rows: list[dict] = []

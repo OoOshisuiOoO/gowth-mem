@@ -754,9 +754,8 @@ def main() -> int:
     archived_chunks = 0
     # settings.retrieval.index_archive (default true) — the CLI flag is an override.
     try:
-        from _home import read_settings  # type: ignore
-        _r = (read_settings() or {}).get("retrieval") or {}
-        _archive_enabled = bool(_r.get("index_archive", True))
+        from _home import setting  # type: ignore
+        _archive_enabled = setting("retrieval.index_archive", bool, True)
     except Exception:
         _archive_enabled = True
     if not args.no_archive and _archive_enabled:

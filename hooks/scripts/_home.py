@@ -68,6 +68,90 @@ def read_settings() -> dict:
     return _read_json(gowth_home() / "settings.json")
 
 
+# ─── typed settings access (v4.8) ────────────────────────────────────────
+
+_TRUE_WORDS = frozenset({"true", "1", "yes", "on"})
+_FALSE_WORDS = frozenset({"false", "0", "no", "off", ""})
+
+
+def coerce_bool(value, default: bool) -> bool:
+    """bool for a hand-edited JSON knob. A JSON string "false" is False, an
+    explicit null or anything unrecognisable is the default (v4.7.1 rule,
+    now applied to every boolean read)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in _TRUE_WORDS:
+            return True
+        if v in _FALSE_WORDS:
+            return False
+    return default
+
+
+def setting(path: str, kind: type = str, default=None, settings: "dict | None" = None):
+    """Read one dotted settings key with PER-KEY fallback.
+
+    `setting("reflection.enabled", bool, True)` — a missing key, an explicit
+    null, a non-dict section, or a value that cannot be coerced to `kind`
+    yields `default` for THAT key only. Before v4.8 a malformed sibling
+    (`turn_interval: "15m"`) reset its whole section to defaults, silently
+    re-enabling privacy opt-outs (holistic review M1). `settings` is an
+    optional snapshot so a hook parses settings.json once per event.
+    """
+    node = read_settings() if settings is None else settings
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return default
+        node = node.get(part)
+    if node is None:
+        return default
+    if kind is bool:
+        return coerce_bool(node, bool(default))
+    if kind is int:
+        if isinstance(node, bool):
+            return default
+        try:
+            return int(node)
+        except (TypeError, ValueError):
+            return default
+    if kind is float:
+        if isinstance(node, bool):
+            return default
+        try:
+            return float(node)
+        except (TypeError, ValueError):
+            return default
+    if kind is str:
+        return node if isinstance(node, str) else default
+    return node if isinstance(node, kind) else default
+
+
+# ─── host context limit (v4.8) ────────────────────────────────────────────
+
+# Claude Code (measured on 2.1.283) persists any hook additionalContext or
+# SessionStart stdout of >= 10,000 chars to a tool-results file and shows the
+# model a 2,000-char preview. 9,500 chars is delivered in full. Every emitter
+# clamps below this so nothing gowth-mem injects can fall into that path.
+HOOK_CONTEXT_MAX = 9000
+_CLAMP_MARKER = "[gowth-mem: truncated to fit the host limit]"
+
+
+def clamp_context(text: str, limit: int = HOOK_CONTEXT_MAX) -> str:
+    """Return `text` unchanged when shorter than `limit`, else cut at the last
+    line boundary that leaves room for the marker, and append the marker."""
+    if not isinstance(text, str) or len(text) < limit:
+        return text
+    room = max(0, limit - len(_CLAMP_MARKER) - 2)
+    head = text[:room]
+    nl = head.rfind("\n")
+    if nl > 0:
+        head = head[:nl]
+    return head + "\n" + _CLAMP_MARKER
+
+
 # ─── active-workspace resolution ────────────────────────────────────────
 
 def _read_session_workspace() -> str | None:
@@ -130,7 +214,7 @@ def active_workspace(cwd: Path | None = None) -> str:
         return sess
     cfg = read_config()
     settings = read_settings()
-    if settings.get("workspace", {}).get("auto_detect_from_cwd", True):
+    if setting("workspace.auto_detect_from_cwd", bool, True, settings=settings):
         cwd_str = str((cwd or Path.cwd()).resolve())
         ws_map = cfg.get("workspace_map", {}) or {}
         for pattern, name in ws_map.items():
@@ -192,7 +276,9 @@ def workspace_moc(ws: str | None = None) -> Path:
 
 
 # Reserved names under a workspace dir — NOT topics, NOT scannable as topic content
-RESERVED_SUBDIRS = frozenset({"docs", "journal", "skills", "research"})
+# v4.8: `memory/` holds MEMORY.md (Claude Code auto-memory, pointed here via
+# autoMemoryDirectory) plus whatever Claude writes beside it — never a topic.
+RESERVED_SUBDIRS = frozenset({"docs", "journal", "skills", "research", "memory"})
 RESERVED_FILES = frozenset({"_MAP.md", "AGENTS.md", "workspace.json"})
 
 # v3.0: reserved filenames INSIDE a topic folder
@@ -409,8 +495,12 @@ def locks_dir() -> Path:
 # ─── enumeration helpers ────────────────────────────────────────────────
 
 def list_workspaces() -> list[str]:
-    """Return workspace names (folders under workspaces/ that contain workspace.json),
-    excluding _archive."""
+    """Return workspace names: folders under workspaces/ (not `_*`) that hold
+    workspace.json, docs/, journal/, or at least one topic folder.
+
+    v4.8: workspace.json alone was the test, so a workspace that lost it
+    (idol-ai, 122 files) had 0 index rows and was never TTL-archived.
+    """
     root = workspaces_root()
     if not root.is_dir():
         return []
@@ -418,6 +508,12 @@ def list_workspaces() -> list[str]:
     for d in sorted(root.iterdir()):
         if not d.is_dir() or d.name.startswith("_"):
             continue
-        if (d / "workspace.json").is_file():
+        if (d / "workspace.json").is_file() or (d / "docs").is_dir() or (d / "journal").is_dir():
             out.append(d.name)
+            continue
+        try:
+            if any(is_topic_folder(c) for c in d.iterdir() if c.is_dir()):
+                out.append(d.name)
+        except OSError:
+            continue
     return out

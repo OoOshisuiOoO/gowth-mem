@@ -674,7 +674,8 @@ def append_entry_status(content: str, ws: str | None = None,
     # v3.6: hard write-rules gate — reject junk before it lands (canon §1).
     # Deterministic, no LLM. Gated by settings.gate.enabled (default true).
     try:
-        if (s.get("gate", {}) or {}).get("enabled", True):
+        from _home import setting as _setting  # type: ignore
+        if _setting("gate.enabled", bool, True, settings=s):
             from _gate import evaluate as _gate_eval  # type: ignore
             _v = _gate_eval(content)
             if not _v.ok:

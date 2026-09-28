@@ -148,16 +148,16 @@ def evaluate(content: str, *, strict: bool | None = None,
     path — append_entry / append_lesson). Tolerates ≤2 diacritic chars so
     an isolated proper noun ("Nguyễn") never blocks a valid entry.
     """
-    if strict is None:
+    if strict is None or english_only is None:
+        from _home import setting  # type: ignore
         try:
-            strict = bool(read_settings().get("gate", {}).get("strict", True))
+            _s = read_settings()
         except Exception:
-            strict = True
-    if english_only is None:
-        try:
-            english_only = bool(read_settings().get("gate", {}).get("english_only", False))
-        except Exception:
-            english_only = False
+            _s = {}
+        if strict is None:
+            strict = setting("gate.strict", bool, True, settings=_s)
+        if english_only is None:
+            english_only = setting("gate.english_only", bool, False, settings=_s)
 
     raw = content or ""
     if not raw.strip():

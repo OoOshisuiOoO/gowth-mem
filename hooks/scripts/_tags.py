@@ -561,7 +561,8 @@ def _tags_settings(settings: dict | None = None) -> dict:
 
 
 def tags_enabled(settings: dict | None = None) -> bool:
-    return bool(_tags_settings(settings).get("enabled", True))
+    from _home import coerce_bool  # type: ignore
+    return coerce_bool(_tags_settings(settings).get("enabled"), True)
 
 
 def max_per_entry(settings: dict | None = None) -> int:

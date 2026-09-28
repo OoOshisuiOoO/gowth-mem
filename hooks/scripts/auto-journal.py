@@ -126,20 +126,10 @@ def _coerce_bool(v, default: bool) -> bool:
     None → default (explicit null = "use the default chain"); strings match
     case-insensitively; unrecognized values → default.
     """
-    if v is None:
-        return default
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, str):
-        s = v.strip().lower()
-        if s in ("true", "1", "yes", "on"):
-            return True
-        if s in ("false", "0", "no", "off", ""):
-            return False
-        return default
-    if isinstance(v, (int, float)):
-        return bool(v)
-    return default
+    # v4.8: the one implementation lives in _home.coerce_bool (every module's
+    # boolean knobs go through it); this name stays for the existing callers.
+    from _home import coerce_bool  # type: ignore
+    return coerce_bool(v, default)
 
 
 def _stop_output(reason: str) -> dict:

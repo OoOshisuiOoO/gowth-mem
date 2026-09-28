@@ -109,8 +109,8 @@ def append_lesson_status(
 
     # v3.6: hard write-rules gate on the 5-field lesson (canon §1; deterministic).
     try:
-        from _home import read_settings as _rs  # type: ignore
-        if (_rs().get("gate", {}) or {}).get("enabled", True):
+        from _home import setting as _setting  # type: ignore
+        if _setting("gate.enabled", bool, True):
             from _gate import evaluate_lesson  # type: ignore
             _v = evaluate_lesson(symptom, tried, root_cause, fix, source)
             if not _v.ok:

@@ -615,7 +615,8 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
             max_thinking = int(refl.get("max_thinking_chars", DEFAULT_MAX_THINKING_CHARS))
         except (TypeError, ValueError):
             max_thinking = DEFAULT_MAX_THINKING_CHARS
-        capture_thinking = bool(refl.get("capture_thinking", True))
+        from _home import coerce_bool  # type: ignore
+        capture_thinking = coerce_bool(refl.get("capture_thinking"), True)
 
         if records is None:
             records = _read_tail_records(p)

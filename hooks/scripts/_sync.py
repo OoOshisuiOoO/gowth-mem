@@ -315,7 +315,8 @@ def maybe_autosync(dry_run: bool = False) -> dict:
     out = {"due": False, "interval_minutes": DEFAULT_AUTOSYNC_MINUTES, "spawned": False}
     try:
         cfg = _sync_settings()
-        if not cfg.get("auto_sync_on_stop", True):
+        from _home import coerce_bool  # type: ignore
+        if not coerce_bool(cfg.get("auto_sync_on_stop"), True):
             return out
         try:
             minutes = int(cfg.get("min_interval_minutes", DEFAULT_AUTOSYNC_MINUTES))
