@@ -176,16 +176,49 @@ def digest(ws: str, max_lines: int = 60, max_line_chars: int = 160) -> list[str]
     dated.sort(key=lambda t: t[0], reverse=True)   # stable: equal dates keep file order
     ordered = [s for _, s in dated] + undated
 
-    if ordered:
-        head, items, tail = _split_bullet_items(ordered[0])
-        if items:
-            live = [it for it in items if LIVE_STATUS_RE.search(it.splitlines()[0])]
-            rest = [it for it in items if it not in live]
-            ordered[0] = head + "".join(live + rest) + tail
-
     for s in ordered:
-        if _emit(s.splitlines()):
+        if _emit(_order_section_lines(s)):
             break
+    return out
+
+
+def _order_section_lines(section: str) -> list[str]:
+    """Header first; then every line carrying a date, newest date first (equal
+    dates keep file order, live `[blocker]/[doing]/[next]/[thread]` lines before
+    the others); then the undated lines in file order.
+
+    Line-level on purpose: `_split_bullet_items` files any non-bullet line that
+    follows a blank line under `head`, so a flat handoff whose old undated
+    `host:` lines sit below the dated `- host:` bullets (the live personal
+    workspace) came out oldest-first when reordered by items.
+    """
+    lines = section.splitlines()
+    if not lines:
+        return []
+    header, body = lines[0], lines[1:]
+    dated: list = []
+    undated: list = []
+    for idx, ln in enumerate(body):
+        if not ln.strip():
+            continue
+        m = DATE_RE.search(ln)
+        if m:
+            dated.append(((m.group(1), m.group(2), m.group(3), m.group(4) or ""), idx, ln))
+        else:
+            undated.append(ln)
+    dated.sort(key=lambda t: t[0], reverse=True)
+    out = [header]
+    i = 0
+    while i < len(dated):
+        j = i
+        while j < len(dated) and dated[j][0] == dated[i][0]:
+            j += 1
+        group = dated[i:j]
+        live = [t for t in group if LIVE_STATUS_RE.search(t[2])]
+        rest = [t for t in group if not LIVE_STATUS_RE.search(t[2])]
+        out.extend(t[2] for t in live + rest)
+        i = j
+    out.extend(undated)
     return out
 
 

@@ -47,7 +47,17 @@ from _home import (  # type: ignore
 DEFAULT_MAX_ENTRIES = 3
 DEFAULT_MAX_CHARS = 2_000
 DEFAULT_MIN_TERMS = 2
-DEFAULT_SCORE_THRESHOLD = -4.0
+# bm25 magnitudes scale with idf ≈ ln(N/df), so the cut-off that silences generic
+# prompts on a 15k-chunk vault would block everything on a small one. Measured
+# 2026-09-28 on the live copy (15,609 live chunks): generic prompts that pass the
+# 2-term gate score -5.0 … -9.7 (0 injections only at <= -12); the 30 sampled real
+# queries score -14 … -88 (median -50). A 6-chunk fixture: seeded queries score
+# -1.6 … -9, generic prompts never pass the term gate. Default "auto" =
+# min(AUTO_MIN, AUTO_B - AUTO_A * ln(live chunks)): 15,609 → -12.5; 1,000 → -8.2;
+# 100 → -4.6; <= 9 → -1.0. A number in settings pins it.
+AUTO_A = 1.55
+AUTO_B = 2.5
+AUTO_MIN = -1.0
 DEFAULT_PROMPT_CAP = 2_000
 SNIPPET_CHARS = 700
 IDS_KEEP = 300
@@ -57,14 +67,59 @@ _TAG_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:-\s*)?\[(?:[a-z-]+)\]\s*")
 _WS_RE = re.compile(r"\s+")
 
 
+def _threshold_setting(settings: dict) -> "float | None":
+    """None = auto (the default and the string "auto"); a number pins it."""
+    raw = setting("recall.on_prompt_score_threshold", object, None, settings=settings)
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        if raw.strip().lower() == "auto":
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    return None
+
+
 def cfg(settings: dict) -> dict:
     return {
         "max_entries": max(0, setting("recall.on_prompt_max_entries", int, DEFAULT_MAX_ENTRIES, settings=settings)),
         "max_chars": max(200, setting("recall.on_prompt_max_chars", int, DEFAULT_MAX_CHARS, settings=settings)),
         "min_terms": max(1, setting("recall.on_prompt_min_terms", int, DEFAULT_MIN_TERMS, settings=settings)),
-        "score_threshold": setting("recall.on_prompt_score_threshold", float, DEFAULT_SCORE_THRESHOLD, settings=settings),
+        "score_threshold": _threshold_setting(settings),
         "prompt_cap": max(100, setting("recall.on_prompt_prompt_cap", int, DEFAULT_PROMPT_CAP, settings=settings)),
     }
+
+
+def auto_threshold(live_chunks: int) -> float:
+    import math
+    return min(AUTO_MIN, AUTO_B - AUTO_A * math.log(max(2, int(live_chunks or 0))))
+
+
+def live_chunk_count() -> int:
+    """Rows in the live (non-archive) index; 0 when there is no index."""
+    try:
+        import sqlite3
+        from _home import index_db  # type: ignore
+        p = index_db()
+        if not p.is_file():
+            return 0
+        db = sqlite3.connect(str(p))
+        try:
+            db.execute("PRAGMA busy_timeout=1000")
+            return int(db.execute("SELECT count(*) FROM chunks WHERE path NOT LIKE '.archive/%'").fetchone()[0])
+        finally:
+            db.close()
+    except Exception:
+        return 0
+
+
+def effective_threshold(settings: dict) -> float:
+    thr = cfg(settings)["score_threshold"]
+    return thr if thr is not None else auto_threshold(live_chunk_count())
 
 
 def capped_prompt(prompt: str, settings: dict) -> str:
@@ -89,6 +144,7 @@ def select(prompt: str, ws: str, settings: dict, injected: set) -> list:
     res = query_ex(ws, "", p, limit=FETCH_LIMIT, exclude=EXCLUDES)
     if res.get("error"):
         return []
+    threshold = effective_threshold(settings)
     out: list = []
     for h in res.get("hits") or []:
         if h.get("id") in injected:
@@ -101,7 +157,7 @@ def select(prompt: str, ws: str, settings: dict, injected: set) -> list:
             score = float(h.get("bm25_score") or 0.0)
         except (TypeError, ValueError):
             continue
-        if score > c["score_threshold"]:
+        if score > threshold:
             continue
         out.append(h)
         if len(out) >= c["max_entries"]:

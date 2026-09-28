@@ -93,6 +93,17 @@ class HandoffDigestTest(unittest.TestCase):
         self.assertEqual(len(lines[1]), 160)
         self.assertTrue(lines[1].endswith("…"))
 
+    def test_flat_list_with_old_undated_lines_below(self):
+        # the live personal workspace: dated `- host:` bullets, a blank line, then
+        # old undated `host:` lines — the digest must not surface the old lines first
+        self._write("## Entries\n- host:mac 2026-07-11 [doing] july work\n- host:mac 2026-09-28 [done] newest work\n"
+                    "\nhost:mac [done] ancient undated line\nhost:mac [next] ancient next\n")
+        lines = _handoff.digest("demo")
+        self.assertEqual(lines[0], "## Entries")
+        self.assertIn("newest work", lines[1])
+        self.assertIn("july work", lines[2])
+        self.assertIn("ancient undated line", lines[3])
+
     def test_max_lines_respected(self):
         self._write("## 2026-09-13 s\n" + "".join(f"- host:mac 2026-09-13 [done] item {i}\n" for i in range(200)))
         self.assertEqual(len(_handoff.digest("demo", max_lines=60)), 60)

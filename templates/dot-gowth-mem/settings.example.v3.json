@@ -41,7 +41,8 @@
     "auto_detect_from_cwd": true
   },
   "retrieval": {
-    "index_archive": true
+    "index_archive": true,
+    "daily_full_reindex": true
   },
   "sync": {
     "auto_sync_on_stop": true,
@@ -58,7 +59,7 @@
     "on_prompt_max_entries": 3,
     "on_prompt_max_chars": 2000,
     "on_prompt_min_terms": 2,
-    "on_prompt_score_threshold": -4.0,
+    "on_prompt_score_threshold": "auto",
     "on_prompt_prompt_cap": 2000
   },
   "memfile": {
@@ -76,11 +77,11 @@
     "topic_routing": "min_keyword_overlap: keyword overlap a topic needs to receive a routed entry; default_topic: where an entry goes when nothing matches.",
     "topic_layout": "v4.1 aspect retention: when auto_archive_enabled is true the Stop hook archives aspects older than archive_threshold_days (newest 3 per topic always kept). Default off; run /mem-ops forget --aspects by hand.",
     "workspace": "default: workspace when nothing else resolves; auto_detect_from_cwd: match config.json workspace_map globs against the session cwd.",
-    "retrieval": "index_archive: also index .archive/**.gz so forgotten material stays searchable with /mem-recall --archive.",
+    "retrieval": "index_archive: also index .archive/**.gz so forgotten material stays searchable with /mem-recall --archive. daily_full_reindex (v4.8): once per day the Stop hook starts a detached full rebuild of an EXISTING index.db (the per-Stop incremental pass handles the rest; a Stop never creates the index).",
     "sync": "auto_sync_on_stop: debounced detached commit+pull+push from the Stop hook; min_interval_minutes: the debounce (floor 5).",
     "doctor": "auto_heal: let SessionStart run bin/doctor.sh detached to repair a stale plugin registration (no network). Also GOWTH_MEM_NO_AUTOHEAL=1.",
     "native": "v4.8: keep <ws>/memory/MEMORY.md (Claude Code auto memory, 200 lines / 25 KB, re-attached after compaction) as the bootstrap carrier. Wire a project with /mem-setup native. enabled:false → the SessionStart hook prints the ≤8,500-char fallback bootstrap instead.",
-    "recall": "v4.8 per-prompt recall (UserPromptSubmit, BM25, no LLM). on_prompt_enabled: master switch; on_prompt_max_entries / on_prompt_max_chars: injection caps; on_prompt_min_terms: distinct query terms a chunk must contain; on_prompt_score_threshold: bm25 (negative, lower is better) a chunk must reach — calibrated on the live vault, see docs/SHIPPED-FEATURES.md v4.8.0; on_prompt_prompt_cap: chars of the prompt that are profiled.",
+    "recall": "v4.8 per-prompt recall (UserPromptSubmit, BM25, no LLM). on_prompt_enabled: master switch; on_prompt_max_entries / on_prompt_max_chars: injection caps; on_prompt_min_terms: distinct query terms a chunk must contain; on_prompt_score_threshold: bm25 (negative, lower is better) a chunk must reach; \"auto\" (default) = min(-1, 2.5 - 1.55 × ln(live index chunks)) because bm25 scales with corpus idf (measured 2026-09-28 on a 15.6k-chunk vault: generic prompts score -5 … -9.7, real queries -14 … -88, so 15.6k → -12.5; a 6-chunk vault → -1) — a number pins it; on_prompt_prompt_cap: chars of the prompt that are profiled.",
     "memfile": "v4.8 budget of the managed block in MEMORY.md (the host reads 200 lines / 25 KB; Claude's own notes share the file)."
   }
 }

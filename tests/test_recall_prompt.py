@@ -161,6 +161,29 @@ class SelectTest(_RecallCase):
         hits = self.rp.select(GOOD, self.ws, self.settings({"on_prompt_score_threshold": -1000.0}), set())
         self.assertEqual(hits, [])
 
+    def test_auto_threshold_scales_with_corpus_size(self):
+        # bm25 magnitudes grow with idf ≈ ln(N/df): a fixed cut-off that silences generic
+        # prompts on a 15k-chunk vault would block everything on a 6-chunk one.
+        self.assertAlmostEqual(self.rp.auto_threshold(100), 2.5 - 1.55 * 4.605, places=2)
+        self.assertAlmostEqual(self.rp.auto_threshold(15_609), 2.5 - 1.55 * 9.656, places=2)
+        self.assertLess(self.rp.auto_threshold(15_609), -12.0, "must silence the measured generic scores (-5 … -9.7)")
+        self.assertGreater(self.rp.auto_threshold(15_609), -14.0, "must keep the weakest measured real query (-14)")
+        self.assertLess(self.rp.auto_threshold(15_000), self.rp.auto_threshold(100))
+        self.assertEqual(self.rp.auto_threshold(0), -1.0)
+        self.assertEqual(self.rp.auto_threshold(2), -1.0)
+
+    def test_auto_setting_uses_the_live_chunk_count(self):
+        s = self.settings({"on_prompt_score_threshold": "auto"})
+        self.assertIsNone(self.rp.cfg(s)["score_threshold"])
+        thr = self.rp.effective_threshold(s)
+        self.assertLess(thr, 0.0)
+        self.assertGreater(thr, -5.0, "a 6-chunk fixture must not get the 15k-chunk cut-off")
+        hits = self.rp.select("why did osprey-queue drop messages when the consumer lagged behind?", self.ws, s, set())
+        self.assertTrue(hits, "a specific seeded query must still pass the auto threshold on a small vault")
+        self.assertIn("2026-09-11-c.md", hits[0]["path"])
+        for p in GENERIC_PROMPTS:
+            self.assertEqual(self.rp.select(p, self.ws, s, set()), [], p)
+
     def test_caps_entries_and_chars(self):
         s = self.settings({"on_prompt_max_entries": 2})
         hits = self.rp.select("what do we know about the ingress gateway and the egret proxy and pelican-router",

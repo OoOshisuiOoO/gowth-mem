@@ -455,12 +455,24 @@ def _run_forget(settings: dict | None = None) -> None:
             log_debug("auto-journal", f"forget subprocess failed: {e}")
 
 
-def _daily_full_reindex() -> None:
+def _daily_full_reindex(settings: dict | None = None) -> None:
     """v4.8: one detached full index rebuild per calendar day (state.json
     `index_last_full`). The per-Stop incremental pass keeps the index fresh;
     the daily rebuild catches anything it cannot (schema migrations, archive
     rows, rows of files edited without an mtime change)."""
     today = datetime.now().strftime("%Y-%m-%d")
+    # Only an existing index is rebuilt (same contract as reindex_paths /
+    # incremental: a Stop hook never CREATES index.db — that is /mem-ops
+    # reindex's job, and a surprise full build on a vault that never asked
+    # for one would also outlive the tests that drive this hook).
+    try:
+        from _home import index_db  # type: ignore
+        if not index_db().is_file():
+            return
+    except Exception:
+        return
+    if not setting("retrieval.daily_full_reindex", bool, True, settings=settings):
+        return
     try:
         if _load_state().get("index_last_full") == today:
             return
@@ -581,7 +593,7 @@ def _run_forget_daily(settings: dict | None = None) -> None:
     _run_maintenance still calls _run_forget directly (unchanged behavior).
     v4.8: also the daily full reindex slot (independent of the forget knob).
     """
-    _daily_full_reindex()
+    _daily_full_reindex(settings)
     if not _auto_forget_enabled(settings):
         return
     today = datetime.now().strftime("%Y-%m-%d")

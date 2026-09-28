@@ -61,6 +61,9 @@ class _StopCase(unittest.TestCase):
             "layout_version": 3,
             "auto_journal": {"journal_every": 100, "auto_journal_enabled": True},
             "reflection": {"enabled": True, "turn_interval": 100, "min_review_turns": 100},
+            # a detached --full rebuild would outlive the temp vault (Python 3.9's
+            # TemporaryDirectory cleanup raced it); the in-process test enables it
+            "retrieval": {"daily_full_reindex": False},
         }))
         self.tx = self.tmp / "transcript.jsonl"
         self.tx.write_text("\n".join([
@@ -171,6 +174,7 @@ class InProcessTest(_StopCase):
                                                TimeoutExpired=real_sp.TimeoutExpired)
         try:
             settings = json.loads((self.tmp / "settings.json").read_text())
+            settings["retrieval"] = {"daily_full_reindex": True}
             mod._run_forget_daily(settings)
             mod._run_forget_daily(settings)
         finally:

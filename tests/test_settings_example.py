@@ -34,7 +34,7 @@ CODE_KEYS = [
     "topic_routing.min_keyword_overlap", "topic_routing.default_topic",
     "topic_layout.archive_threshold_days", "topic_layout.auto_archive_enabled",
     "workspace.auto_detect_from_cwd", "workspace.default",
-    "retrieval.index_archive",
+    "retrieval.index_archive", "retrieval.daily_full_reindex",
     "sync.auto_sync_on_stop", "sync.min_interval_minutes",
     "doctor.auto_heal",
     "native.enabled",
