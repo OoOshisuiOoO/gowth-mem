@@ -81,6 +81,33 @@ def merge_memfile(gh: Path, rel: str) -> bool:
         return False
 
 
+MAX_REPLAYS = 50   # bound on replayed commits handled in one package_conflict() call
+
+
+def _unmerged(gh: Path) -> list[str]:
+    _rc, out, _ = _git(gh, "diff", "--name-only", "--diff-filter=U")
+    return [f for f in out.splitlines() if f.strip()]
+
+
+def _resolve_stop(gh: Path, conflict_files: list[str], sections: list[str]) -> list[str]:
+    """Handle one stopped rebase step: reset OTHER conflicted files to the local
+    side (describing them first — git add drops stages 1-3), merge every
+    MEMORY.md. Returns the files that still need a human."""
+    memfiles = [f for f in conflict_files if _MEMFILE_RE.match(f)]
+    others = [f for f in conflict_files if f not in memfiles]
+    for f in others:
+        sections.append(_describe(gh, f))
+    for f in others:
+        _git(gh, "checkout", "--theirs", "--", f)   # local branch's version
+        _git(gh, "add", "--", f)
+    unmerged = [f for f in memfiles if not merge_memfile(gh, f)]
+    for f in unmerged:
+        sections.append(_describe(gh, f))
+        _git(gh, "checkout", "--theirs", "--", f)
+        _git(gh, "add", "--", f)
+    return others + unmerged
+
+
 def package_conflict() -> "Path | None":
     """Inspect current rebase state and write SYNC-CONFLICT.md.
 
@@ -91,39 +118,44 @@ def package_conflict() -> "Path | None":
     v4.8: conflicts on `<ws>/memory/MEMORY.md` are merged by `merge_memfile`.
     When nothing else conflicted, the rebase is continued and None is
     returned — the caller proceeds to push instead of stopping on a
-    SYNC-CONFLICT.md that no user needs to read."""
+    SYNC-CONFLICT.md that no user needs to read.
+
+    Review C1: a rebase replays EVERY unpushed local commit (several after an
+    offline stretch or a PreCompact --commit-only), and each one can stop on
+    MEMORY.md again. Every stop is merged in turn (bounded by MAX_REPLAYS); a
+    replayed commit that became empty is skipped; the loop ends when the
+    rebase finishes (None) or a non-MEMORY.md conflict needs the user."""
     gh = gowth_home()
-    rc, out, _ = _git(gh, "diff", "--name-only", "--diff-filter=U")
-    conflict_files = [f for f in out.splitlines() if f.strip()]
+    conflict_files = _unmerged(gh)
     if not conflict_files:
         return conflict_md()
 
-    memfiles = [f for f in conflict_files if _MEMFILE_RE.match(f)]
-    others = [f for f in conflict_files if f not in memfiles]
-
-    # Capture the three sides of the OTHER files before their index entries
-    # are resolved below (git add drops stages 1-3).
     sections: list[str] = []
-    for f in others:
-        sections.append(_describe(gh, f))
-    for f in others:
-        _git(gh, "checkout", "--theirs", "--", f)   # local branch's version
-        _git(gh, "add", "--", f)
-
-    unmerged = [f for f in memfiles if not merge_memfile(gh, f)]
-    for f in unmerged:
-        sections.append(_describe(gh, f))
-        _git(gh, "checkout", "--theirs", "--", f)
-        _git(gh, "add", "--", f)
-
-    remaining = others + unmerged
-    if not remaining:
-        rc, _, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
+    remaining: list[str] = []
+    for _ in range(MAX_REPLAYS):
+        remaining = _resolve_stop(gh, conflict_files, sections)
+        if remaining:
+            break
+        rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
         if rc == 0:
             return None
+        conflict_files = _unmerged(gh)
+        if conflict_files:
+            continue                      # the next replayed commit stopped too
+        msg = (err + out).lower()
+        if "empty" in msg or "no changes" in msg or "nothing to commit" in msg:
+            rc, out, err = _git(gh, "rebase", "--skip")
+            if rc == 0:
+                return None
+            conflict_files = _unmerged(gh)
+            if conflict_files:
+                continue
         log_debug("conflict", f"rebase --continue failed after memfile merge: {err.strip()[:200]}")
         sections.append("### (rebase --continue failed after merging MEMORY.md)\n")
-        sections.append(err.strip()[:500] + "\n")
+        sections.append((err + out).strip()[:500] + "\n")
+        break
+    else:
+        sections.append(f"### (gave up after {MAX_REPLAYS} replayed commits; run `git -C ~/.gowth-mem status`)\n")
 
     host = socket.gethostname()
     parts: list[str] = [

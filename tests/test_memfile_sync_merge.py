@@ -97,6 +97,42 @@ class MemfileSyncMergeTest(unittest.TestCase):
         self.assertEqual(st.strip(), "", f"rebase did not finish cleanly: {st}")
         self.assertFalse((self.b / ".git" / "rebase-merge").exists())
 
+    def test_two_local_commits_both_merge_and_rebase_finishes(self):
+        """Review C1: after an offline stretch (or a PreCompact --commit-only) B
+        holds SEVERAL unpushed commits touching MEMORY.md. Every replayed commit
+        that conflicts must be merged — not just the first — and the rebase must
+        end with no markers and no stale SYNC-CONFLICT.md."""
+        self.mem_a.write_text(self.mem_a.read_text() + "- note from A\n")
+        git(self.a, "commit", "-q", "-am", "A note")
+        git(self.a, "push", "-q", "origin", "main")
+        self.mem_b.write_text(self.mem_b.read_text() + "- note from B1\n")
+        git(self.b, "commit", "-q", "-am", "B note 1")
+        self.mem_b.write_text(self.mem_b.read_text() + "- note from B2\n")
+        git(self.b, "commit", "-q", "-am", "B note 2")
+        r = git(self.b, "pull", "--rebase", "origin", "main", check=False)
+        self.assertIn("CONFLICT", r.stdout + r.stderr)
+        os.environ["GOWTH_MEM_HOME"] = str(self.b)
+        import _conflict  # type: ignore
+        result = _conflict.package_conflict()
+        self.assertIsNone(result, "MEMORY.md-only conflicts across two commits must resolve")
+        self.assertFalse((self.b / "SYNC-CONFLICT.md").exists())
+        self.assertFalse((self.b / ".git" / "rebase-merge").exists(), "rebase left in progress")
+        self.assertFalse((self.b / ".git" / "rebase-apply").exists())
+        self.assertEqual(git(self.b, "diff", "--name-only", "--diff-filter=U").stdout.strip(), "")
+        text = self.mem_b.read_text()
+        self.assertNotIn("<<<<<<<", text)
+        self.assertNotIn(">>>>>>>", text)
+        import _memfile  # type: ignore
+        self.assertEqual(text.count(_memfile.END), 1)
+        free = text.split(_memfile.END, 1)[1]
+        for line in ("- base note", "- note from A", "- note from B1", "- note from B2"):
+            self.assertIn(line, free)
+        st = git(self.b, "status", "--porcelain").stdout
+        self.assertEqual(st.strip(), "", f"tree not clean after the rebase: {st}")
+        # both local commits were replayed on top of origin/main
+        ahead = git(self.b, "rev-list", "--count", "origin/main..HEAD").stdout.strip()
+        self.assertEqual(ahead, "2")
+
     def test_other_conflicts_still_packaged(self):
         # A also edits handoff.md so B's handoff.md conflicts too
         (self.a / "workspaces" / "demo" / "docs" / "handoff.md").write_text("## A version\n")
