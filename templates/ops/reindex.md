@@ -1,5 +1,5 @@
 ---
-description: Build or refresh the SQLite index over workspaces/**. Primarily powers `[[wikilink]]` slug resolution inside topic files. (The on-prompt recall hook was removed in v3.2.)
+description: Build or refresh the SQLite index over workspaces/**. Powers `/mem-recall`, the v4.8 per-prompt recall hook and `[[wikilink]]` slug resolution; the Stop hook refreshes it incrementally.
 ---
 
 Build / refresh the gowth-mem search index.
@@ -28,7 +28,7 @@ Both layers are **opt-in**. If `sqlite-vec` is not installed or no embedding key
 - Periodically (e.g. weekly) if you've added many entries.
 - On-demand whenever recall feels stale.
 
-The index is consumed by `_wikilink.resolve()` for `[[slug]]` resolution. The on-prompt recall hook was removed in v3.2; FTS5 / vector tables are still maintained for future opt-in retrieval skills but nothing reads them today.
+The index is consumed by `/mem-recall` (`_query.py`), the v4.8 per-prompt recall hook (`recall-on-prompt.sh` → `_recall_prompt.py`) and `_wikilink.resolve()` for `[[slug]]` resolution. `<ws>/memory/` is never indexed (Claude Code's own auto-memory). The Stop hook runs `_index.py --incremental` (≤200 files, ≤ every 10 min) and, once a day, a detached `--full` rebuild of an existing index.
 
 ## Cost
 

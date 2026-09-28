@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMANDS = sorted((ROOT / "commands").glob("*.md"))
 SKILLS = sorted((ROOT / "skills").glob("*/SKILL.md"))
 OPS = ROOT / "templates" / "ops"
-SCAN_DIRS = [ROOT / "commands", ROOT / "skills", ROOT / "templates", ROOT / "hooks"]
+SCAN_DIRS = [ROOT / "commands", ROOT / "skills", ROOT / "templates", ROOT / "hooks", ROOT / "bin",
+             ROOT / ".claude-plugin"]
 SCAN_FILES = [ROOT / "README.md"]
 TOKEN_RE = re.compile(r"/mem-[a-z0-9-]+")
 OPS_SUB_RE = re.compile(r"/mem-ops\s+([a-z0-9-]+)")

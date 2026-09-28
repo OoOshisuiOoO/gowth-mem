@@ -2,12 +2,12 @@
 description: "Search curated memory by BM25 with optional type/keyword/topic filters"
 ---
 
-Recall high-signal memory entries from the active workspace (or a named workspace) using FTS5 BM25 ranking. With `--type=<tag>` the search is pre-filtered to one of the nine schema tags, so `[decision]` queries never return `[exp]` noise.
+Recall high-signal memory entries across all workspaces (scope with `--ws <name>`) using FTS5 BM25 ranking. With `--type=<tag>` the search is pre-filtered to one of the nine schema tags, so `[decision]` queries never return `[exp]` noise.
 
 ## Usage
 
 ```bash
-# Default: BM25 across all tags in the active workspace
+# Default: BM25 across all tags in every workspace
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" "DTC client OOM"
 
 # Type-filtered (only [decision] chunks)

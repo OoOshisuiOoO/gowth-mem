@@ -2,7 +2,7 @@
 
 The audit found three real handoff shapes: newest-first (personal, devops),
 mixed order (trade: newest section at the top, later auto-journal sections
-appended at the tail), and a 52 KB headerless body (idol-ai). The digest must
+appended at the tail), and a 52 KB blockquoted preamble above older sections (idol-ai). The digest must
 put the newest dated section first for all three, keep live bullets
 ([blocker]/[doing]/[next]/[thread]) ahead of [done] inside it, drop blank
 lines, and cut long lines, so the block stays useful inside a 60-line budget.

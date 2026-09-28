@@ -57,7 +57,7 @@ v3.3's **deterministic-only retrieval** stays in force: no external embedding AP
 │       └── lessons.md                         per-topic 5-field bug/lesson ledger
 ├── settings.json                              synced behavior settings (layout_version: 3)
 ├── config.json                                remote/branch/token config; gitignored
-├── state.json                                 SRS data; gitignored
+├── state.json                                 counters, stamps, recall telemetry; gitignored
 ├── index.db                                   FTS5 + optional sqlite-vec index; gitignored
 ├── .locks/                                    fcntl lock files; gitignored
 ├── .backup/v2-pre-v3-<utc>/                   migration snapshots (rolling-2); gitignored
@@ -180,7 +180,7 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | PreCompact | `precompact-flush.py` | Hard-block with distill instructions before compact |
 | PreCompact | `auto-sync.py --commit-only --quiet` | Commit local memory changes without network |
 | PostCompact | `auto-sync.py --pull-rebase-push --quiet` | Pull, rebase, push; conflict writes `SYNC-CONFLICT.md` |
-| UserPromptSubmit | `conflict-detect.py` | Remind when sync conflict resolution is pending |
+| UserPromptSubmit | `conflict-detect.sh` → `recall-on-prompt.sh` | Conflict reminder when `SYNC-CONFLICT.md` exists; gated per-prompt BM25 recall (v4.8, ≤2,000 chars, silent by default) |
 | Stop | `auto-journal.py` | Periodic journal/distill reminder |
 
 ## Slash commands & shortcuts
@@ -234,11 +234,11 @@ PreCompact    → auto-sync.py --commit-only
 PostCompact   → auto-sync.py --pull-rebase-push
 ```
 
-If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files. The next prompt reminds you to run `/mem-sync resolve`.
+If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files; conflicts on `<ws>/memory/MEMORY.md` merge themselves (both free zones unioned, block regenerated) at every stopped rebase step. The next prompt reminds you to run `/mem-sync resolve`.
 
 ## Recall
 
-On-prompt recall hook was removed in v3.2 (token cost > retrieval benefit). Use direct queries via slash commands or grep/Read tools. The `index.db` (built by `/mem-ops reindex`) still powers `[[wikilink]]` slug resolution inside topic files.
+Per-prompt recall (v4.8, `recall-on-prompt.sh` → `_recall_prompt.py`) runs the same BM25 query as `/mem-recall` on every real prompt ≥ 40 bytes and injects at most 3 entries / 2,000 chars — only when the chunk contains ≥ 50% of the prompt's content terms AND its subject term, scores under the bm25 threshold, and was not injected earlier in the session. Measured on the live vault: 0–3 of 20 realistic generic prompts inject per workspace. `state.json.recall_daily` counts every profiled prompt; `/mem-cost` prints the rate. The `index.db` (built by `/mem-ops reindex`, refreshed incrementally at every Stop) also powers `[[wikilink]]` slug resolution.
 
 **v3.3 deterministic retrieval stack** (no LLM, pure stdlib):
 
@@ -270,7 +270,7 @@ strings `"true"`/`"false"`; a malformed value falls back to its default without 
   "native":   { "enabled": true },                 // MEMORY.md (auto memory) carries the working set
   "recall":   { "on_prompt_enabled": true,         // per-prompt BM25 recall on UserPromptSubmit
                 "on_prompt_max_entries": 3, "on_prompt_max_chars": 2000,
-                "on_prompt_min_terms": 2, "on_prompt_score_threshold": -4.0,
+                "on_prompt_min_terms": 2, "on_prompt_min_coverage": 0.5, "on_prompt_score_threshold": "auto",
                 "on_prompt_prompt_cap": 2000 },
   "memfile":  { "max_lines": 130, "max_chars": 12000 },   // budget of the managed block
   "auto_journal": { "journal_every": 10, "auto_journal_enabled": true },
@@ -339,7 +339,7 @@ memx                    # build local index
 | PreCompact | `precompact-flush.py` | **HARD-BLOCK** distill journal → topics trước khi compact |
 | PreCompact | `auto-sync.py --commit-only` | Commit local không network |
 | PostCompact | `auto-sync.py --pull-rebase-push` | Sync đầy đủ; conflict → `SYNC-CONFLICT.md` |
-| UserPromptSubmit | `conflict-detect.py` | Nhắc chạy `/mem-sync resolve` khi có conflict |
+| UserPromptSubmit | `conflict-detect.sh` → `recall-on-prompt.sh` | Nhắc `/mem-sync resolve` khi có conflict; recall BM25 theo prompt có cổng lọc (v4.8, ≤2,000 ký tự, mặc định im lặng) |
 | Stop | `auto-journal.py` | Mỗi 10 turn: BLOCK với hướng dẫn auto-distill + active prune |
 
 ### Slash command & shortcut

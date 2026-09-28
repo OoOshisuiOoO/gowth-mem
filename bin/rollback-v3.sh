@@ -179,8 +179,8 @@ rollback complete (target: $(basename "$BACKUP_DIR"))
 
 next steps:
   1. inspect ~/.gowth-mem/ to confirm v2 layout restored as expected
-  2. delete index.db (will be rebuilt by /mem-reindex): rm -f $GOWTH_HOME/index.db
-  3. if happy: commit via /mem-sync, otherwise re-run forward /mem-migrate-v3
+  2. delete index.db (will be rebuilt by /mem-ops reindex): rm -f $GOWTH_HOME/index.db
+  3. if happy: commit via /mem-sync, otherwise re-run forward /mem-ops migrate-v3
 
 to undo this rollback:
   bin/rollback-v3.sh \$(basename "$STAGE_DIR" | sed 's/^rolled-back-/v2-pre-v3-/')
