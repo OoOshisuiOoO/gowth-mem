@@ -246,9 +246,9 @@ def _is_repo(d: Path) -> bool:
         return False
 
 
-def _repos_under(base: Path, depth: int = REPO_SCAN_DEPTH) -> list:
-    """Git repositories (main worktrees or `.git` files) under `base`, at most
-    `depth` levels down, hidden and build dirs skipped. Bounded walk."""
+def _dirs_under(base: Path, depth: int = REPO_SCAN_DEPTH) -> list:
+    """Directories under `base`, at most `depth` levels down, hidden and build
+    dirs skipped. Bounded walk (≤ 5,000 scandir calls)."""
     found: list = []
     frontier = [(base, 0)]
     visited = 0
@@ -263,21 +263,46 @@ def _repos_under(base: Path, depth: int = REPO_SCAN_DEPTH) -> list:
             if c.name.startswith(".") or c.name in _SKIP_DIRS:
                 continue
             cp = Path(c.path)
-            if _is_repo(cp):
-                found.append(cp)
+            found.append(cp)
             if lvl + 1 < depth:
                 frontier.append((cp, lvl + 1))
     return sorted(found)
 
 
-def projects_for_workspaces(config: dict, cwd: "Path | None" = None) -> list:
+def _repos_under(base: Path, depth: int = REPO_SCAN_DEPTH) -> list:
+    """Git repositories (main worktrees or `.git` files) under `base`."""
+    return [d for d in _dirs_under(base, depth) if _is_repo(d)]
+
+
+def _known_slugs(claude_dir: "Path | None") -> "set | None":
+    """Slugs of the projects Claude Code has been used in on this machine
+    (`<claude_dir>/projects/<slug>/` exists), or None when there is no
+    projects dir to consult (fresh machine, tests)."""
+    if claude_dir is None:
+        return None
+    d = Path(claude_dir) / "projects"
+    if not d.is_dir():
+        return None
+    try:
+        return {c.name for c in os.scandir(d) if c.is_dir()}
+    except OSError:
+        return None
+
+
+def projects_for_workspaces(config: dict, cwd: "Path | None" = None,
+                            claude_dir: "Path | None" = None) -> list:
     """[(project_dir, ws)] to wire: for every workspace_map glob whose base
     exists on this machine — the base itself when it is a repository or the
-    pattern is not recursive, else every repository found beneath it (review
-    I5: a `**` glob on a parent directory used to wire the parent, which no
-    session ever runs in) — plus the cwd's own project root when given."""
+    pattern is not recursive, else the directories beneath it that Claude
+    Code has been used in (review I5: a `**` glob on a parent directory used
+    to wire the parent, which no session ever runs in; the live devops glob
+    covers ~140 repositories, third-party clones included, so only the ones
+    with a `projects/<slug>` dir in `claude_dir` are wired — every repo when
+    no projects dir exists, the base itself when nothing is beneath it) —
+    plus the cwd's own project root when given."""
     rows: list = []
     seen: set = set()
+    known = _known_slugs(claude_dir)
 
     def _add(d: Path, ws: str) -> None:
         key = str(d.resolve())
@@ -291,9 +316,16 @@ def projects_for_workspaces(config: dict, cwd: "Path | None" = None) -> list:
             continue
         targets = [base]
         if recursive and not _is_repo(base):
-            repos = _repos_under(base)
-            if repos:
-                targets = repos
+            dirs = _dirs_under(base)
+            if known is not None:
+                # the project dirs Claude Code has been used in (repo or not);
+                # a bare leaf directory with nothing known and no repo beneath
+                # is itself the project
+                targets = [d for d in [base] + dirs if project_slug(d) in known]
+                if not targets and not any(_is_repo(d) for d in dirs):
+                    targets = [base]
+            else:
+                targets = [d for d in dirs if _is_repo(d)] or [base]
         for t in targets:
             _add(t, ws)
     if cwd is not None:
@@ -446,7 +478,7 @@ def status(cwd: "Path | None" = None, env=None) -> dict:
         lines = text.count("\n")
         free_lines = split(text)[1].count("\n")
     projects = []
-    for p, w in projects_for_workspaces(read_config(), cwd=c):
+    for p, w in projects_for_workspaces(read_config(), cwd=c, claude_dir=_claude_dir(e)):
         projects.append({"path": str(p), "ws": w, "wired": is_wired(p, w, e),
                          "tracked": _is_tracked(p) if settings_local_path(p).is_file() else False})
     try:
@@ -491,7 +523,7 @@ def _cli() -> int:
                 root = project_root(Path(args.project))
                 targets = [(root, args.ws or active_workspace(root))]
             else:
-                targets = projects_for_workspaces(read_config(), cwd=Path.cwd())
+                targets = projects_for_workspaces(read_config(), cwd=Path.cwd(), claude_dir=_claude_dir())
             for p, ws in targets:
                 res = wire(p, ws, force=args.force, dry_run=args.dry_run)
                 print(f"{res:11} {p}  →  ws={ws}  ({memory_dir_value(ws)})")

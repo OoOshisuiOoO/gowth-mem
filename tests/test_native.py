@@ -187,21 +187,50 @@ class ProjectRootTest(_NativeCase):
         self.assertTrue(_native.is_wired(sub, "demo", self.env))
         self.assertTrue(_native.status(cwd=sub, env=self.env)["wired"])
 
-    def test_double_star_glob_enumerates_repos_under_a_non_repo_base(self):
+    def _known(self, *projects: Path) -> Path:
+        """A Claude config dir that knows these projects (a transcript dir per slug)."""
+        cd = self.tmp / "claude"
+        for pr in projects:
+            (cd / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(pr.resolve()))).mkdir(parents=True, exist_ok=True)
+        return cd
+
+    def test_double_star_glob_wires_only_the_repos_claude_code_knows(self):
+        """Review I5 + live check: the devops glob `/Volumes/Data/Git/fg/**` holds
+        ~140 repositories (third-party clones included). Wiring every one would
+        spray settings.local.json across the disk; only the repos Claude Code
+        has been used in (a `projects/<slug>` dir in its config dir) are wired."""
         base = self.tmp / "fg"
-        for name in ("r1", "r2"):
+        for name in ("r1", "r2", "r3"):
             (base / name).mkdir(parents=True)
             git(base / name, "init", "-q")
         (base / "plain").mkdir()
         (base / "r1" / "inner").mkdir()
-        git(base / "r1" / "inner", "init", "-q")          # nested repo: still one wire target
-        rows = _native.projects_for_workspaces({"workspace_map": {f"{base}/**": "devops"}})
+        git(base / "r1" / "inner", "init", "-q")          # nested repo, known too
+        cd = self._known(base / "r1", base / "r1" / "inner", base / "plain")
+        rows = _native.projects_for_workspaces({"workspace_map": {f"{base}/**": "devops"}}, claude_dir=cd)
         paths = sorted(p for p, ws in rows if ws == "devops")
-        self.assertIn((base / "r1").resolve(), paths)
-        self.assertIn((base / "r2").resolve(), paths)
-        self.assertIn((base / "r1" / "inner").resolve(), paths)
-        self.assertNotIn(base.resolve(), paths, "a non-repo glob base must not be wired")
-        self.assertNotIn((base / "plain").resolve(), paths)
+        # known dirs are wired whether or not they are repos (the host honours a
+        # non-repo cwd's .claude/settings.local.json); unknown repos are not
+        self.assertEqual(paths, sorted([(base / "r1").resolve(), (base / "r1" / "inner").resolve(),
+                                        (base / "plain").resolve()]))
+        self.assertNotIn((base / "r3").resolve(), paths, "a repo Claude Code never opened is not wired")
+        self.assertNotIn(base.resolve(), paths, "an unknown non-repo glob base must not be wired")
+
+    def test_double_star_glob_on_a_bare_leaf_dir_wires_the_dir(self):
+        leaf = self.tmp / "leaf"
+        (leaf / "src").mkdir(parents=True)
+        cd = self._known(self.tmp / "elsewhere")
+        rows = _native.projects_for_workspaces({"workspace_map": {f"{leaf}/**": "w"}}, claude_dir=cd)
+        self.assertEqual([p for p, _ in rows], [leaf.resolve()])
+
+    def test_double_star_glob_without_a_claude_dir_wires_every_repo(self):
+        base = self.tmp / "fg"
+        for name in ("r1", "r2"):
+            (base / name).mkdir(parents=True)
+            git(base / name, "init", "-q")
+        rows = _native.projects_for_workspaces({"workspace_map": {f"{base}/**": "devops"}},
+                                               claude_dir=self.tmp / "no-such-claude-dir")
+        self.assertEqual(sorted(p for p, _ in rows), sorted([(base / "r1").resolve(), (base / "r2").resolve()]))
 
     def test_double_star_glob_on_a_repo_base_wires_the_base(self):
         base = self.tmp / "repo"
