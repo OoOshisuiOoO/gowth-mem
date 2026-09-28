@@ -64,19 +64,16 @@ def recently_flushed(grace: int = FLUSH_GRACE) -> bool:
     return False
 
 
-def user_turn_count(transcript_path: str) -> int:
-    """Count substantive user prompts in the transcript.
+ASSISTANT_CHUNK_CHARS = 500   # v4.8: cap each assistant chunk in the dump
 
-    A 'user turn' is a `type: "user"` record whose `message.content` carries
-    real text (string OR a `text` part). Tool-result user records and entries
-    without text content are excluded — they do not represent user input.
-    """
+
+def _read_records(transcript_path: str) -> list:
     if not transcript_path:
-        return 0
+        return []
     p = Path(transcript_path)
     if not p.is_file():
-        return 0
-    n = 0
+        return []
+    out: list = []
     try:
         with p.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -87,21 +84,43 @@ def user_turn_count(transcript_path: str) -> int:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if rec.get("type") != "user":
-                    continue
-                content = (rec.get("message") or {}).get("content")
-                if isinstance(content, str):
-                    if content.strip():
-                        n += 1
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            if (part.get("text") or "").strip():
-                                n += 1
-                                break
+                if isinstance(rec, dict):
+                    out.append(rec)
     except OSError:
-        return 0
-    return n
+        return []
+    return out
+
+
+def _prompt_records(records: list) -> list:
+    """v4.8 (holistic review H2): indexes of the records that are the USER's
+    words, via `_capture._classify_record` — human prompts always, unconfirmed
+    ones only when an assistant record answered them before the next prompt,
+    machine records (notification relays, hook feedback) and non-prompts never.
+    The old count took every `type:"user"` record with text (77 on the lead
+    transcript vs 7 human)."""
+    try:
+        from _capture import _classify_record  # type: ignore
+    except Exception:
+        return []
+    kinds = [(_classify_record(r) if not (isinstance(r, dict) and r.get("type") == "assistant") else "assistant")
+             for r in records]
+    keep: list = []
+    for i, kind in enumerate(kinds):
+        if kind == "human":
+            keep.append(i)
+        elif kind == "unconfirmed":
+            for k in kinds[i + 1:]:
+                if k == "assistant":
+                    keep.append(i)
+                    break
+                if k in ("human", "unconfirmed", "machine"):
+                    break
+    return keep
+
+
+def user_turn_count(transcript_path: str) -> int:
+    """Count the user's substantive prompts in the transcript (see _prompt_records)."""
+    return len(_prompt_records(_read_records(transcript_path)))
 
 
 def _extract_text(content) -> str:
@@ -120,36 +139,33 @@ def _extract_text(content) -> str:
 
 
 def extract_recent_turns(transcript_path: str, max_chars: int = RAW_DUMP_MAX_CHARS) -> str:
-    """Read transcript JSONL and return the most recent substantive user+assistant
-    text turns, oldest-first, capped at `max_chars`."""
-    if not transcript_path:
+    """Read transcript JSONL and return the most recent user+assistant text turns,
+    oldest-first, capped at `max_chars`. User turns = the user's own words
+    (v4.8 classification); each assistant chunk is capped at ASSISTANT_CHUNK_CHARS."""
+    records = _read_records(transcript_path)
+    if not records:
         return ""
-    p = Path(transcript_path)
-    if not p.is_file():
-        return ""
-    turns: list[tuple[str, str]] = []
     try:
-        with p.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                role = rec.get("type")
-                if role not in ("user", "assistant"):
-                    continue
-                content = (rec.get("message") or {}).get("content")
-                text = _extract_text(content).strip()
-                if text:
-                    turns.append((role, text))
-    except OSError:
+        from _capture import prompt_text  # type: ignore
+    except Exception:
         return ""
+    keep = set(_prompt_records(records))
+    turns: list = []
+    for i, rec in enumerate(records):
+        if i in keep:
+            text = prompt_text(rec).strip()
+            if text:
+                turns.append(("user", text))
+        elif rec.get("type") == "assistant":
+            text = _extract_text((rec.get("message") or {}).get("content")).strip()
+            if not text:
+                continue
+            if len(text) > ASSISTANT_CHUNK_CHARS:
+                text = text[:ASSISTANT_CHUNK_CHARS].rstrip() + f" [+{len(text) - ASSISTANT_CHUNK_CHARS} chars]"
+            turns.append(("assistant", text))
 
     # Take from tail until budget exhausted, then re-reverse to chronological.
-    selected: list[str] = []
+    selected: list = []
     total = 0
     for role, text in reversed(turns):
         chunk = f"### [{role}]\n\n{text}\n"
