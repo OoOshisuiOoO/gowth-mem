@@ -127,16 +127,92 @@ def _rotate_stale_bullets(sections: list[str], cutoff: "_dt.date") -> tuple[list
     return out_sections, archived
 
 
+ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")   # any list bullet (digest ordering)
+
+
+def _newest_date_key(text: str):
+    """Newest (year, month, day, suffix) mentioned anywhere in `text`, or None."""
+    best = None
+    for m in DATE_RE.finditer(text):
+        k = (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) or "")
+        if best is None or k > best:
+            best = k
+    return best
+
+
+def _order_items(body: list[str]) -> list[str]:
+    """Item-level ordering of one section body (review I3).
+
+    Items: a list bullet plus the non-blank, non-bullet, non-heading lines that
+    follow it without a blank line (its indented continuation); any other
+    non-blank line is a loose undated item. A `#`-heading line starts a new
+    group; groups keep file order, each led by its heading. Inside a group the
+    items whose FIRST line carries a date come first, newest date first (equal
+    dates keep file order, live [blocker]/[doing]/[next]/[thread] items before
+    the others), then the undated items in file order. A date inside a
+    continuation line never moves the item (the devops shape); a blockquoted or
+    prose preamble has no bullets and therefore keeps its file order (idol-ai).
+    """
+    groups: list = [(None, [])]
+    cur: "list[str] | None" = None
+    for ln in body:
+        if not ln.strip():
+            cur = None
+            continue
+        if ln.lstrip().startswith("#"):
+            groups.append((ln, []))
+            cur = None
+            continue
+        if ITEM_RE.match(ln):
+            cur = [ln]
+            groups[-1][1].append(cur)
+            continue
+        if cur is not None:
+            cur.append(ln)
+            continue
+        groups[-1][1].append([ln])
+    out: list[str] = []
+    for heading, items in groups:
+        if heading:
+            out.append(heading)
+        dated: list = []
+        undated: list = []
+        for idx, it in enumerate(items):
+            m = DATE_RE.search(it[0]) if ITEM_RE.match(it[0]) else None
+            if m:
+                dated.append(((m.group(1), m.group(2), m.group(3), m.group(4) or ""), idx, it))
+            else:
+                undated.append(it)
+        dated.sort(key=lambda t: t[0], reverse=True)   # stable: equal dates keep file order
+        i = 0
+        while i < len(dated):
+            j = i
+            while j < len(dated) and dated[j][0] == dated[i][0]:
+                j += 1
+            group = dated[i:j]
+            live = [t for t in group if LIVE_STATUS_RE.search(t[2][0])]
+            rest = [t for t in group if not LIVE_STATUS_RE.search(t[2][0])]
+            for t in live + rest:
+                out.extend(t[2])
+            i = j
+        for it in undated:
+            out.extend(it)
+    return out
+
+
 def digest(ws: str, max_lines: int = 60, max_line_chars: int = 160) -> list[str]:
     """v4.8: the newest-first handoff slice for the MEMORY.md managed block.
 
-    Dated `##` sections come first, newest date first (equal dates keep file
-    order), then the undated structural sections in file order. Inside the
-    newest section, live `- host:` bullets ([blocker]/[doing]/[next]/[thread])
-    precede the others. Blank lines are dropped, lines longer than
-    `max_line_chars` are cut with an ellipsis, and at most `max_lines` lines
-    are returned. A file with no `##` heading (the idol-ai shape) yields its
-    first `max_lines` non-blank lines. Missing or unreadable file → [].
+    The file is split into a preamble (everything before the first `##`, its
+    `# ` H1 lines dropped) and `##` sections. The preamble, when it has any
+    body, is a section dated by the NEWEST date mentioned inside it — the live
+    idol-ai handoff keeps its delta updates there, prepended newest-first, and
+    they are the current state (review I3). Dated sections come first, newest
+    date first (equal dates keep file order), then the undated structural
+    sections in file order. Inside a section items are ordered by
+    `_order_items`. Blank lines are dropped, lines longer than `max_line_chars`
+    are cut with an ellipsis, and at most `max_lines` lines are returned.
+    Missing or unreadable file → [].
     """
     p = docs_dir(ws) / "handoff.md"
     if not p.is_file():
@@ -160,65 +236,26 @@ def digest(ws: str, max_lines: int = 60, max_line_chars: int = 160) -> list[str]
                 return True
         return False
 
-    _preamble, sections = _split_sections(text)
-    if not sections:
-        _emit(text.splitlines())
+    preamble, sections = _split_sections(text)
+    entries: list = []          # (date_key | None, header | None, body_lines)
+    pre_body = [ln for ln in preamble.splitlines() if not ln.startswith("# ")]
+    if any(ln.strip() for ln in pre_body):
+        entries.append((_newest_date_key("\n".join(pre_body)), None, pre_body))
+    for s in sections:
+        lines = s.splitlines()
+        if not lines:
+            continue
+        entries.append((_section_date_key(s), lines[0], lines[1:]))
+    if not entries:
         return out
 
-    dated: list[tuple] = []
-    undated: list[str] = []
-    for s in sections:
-        k = _section_date_key(s)
-        if k is None:
-            undated.append(s)
-        else:
-            dated.append((k, s))
-    dated.sort(key=lambda t: t[0], reverse=True)   # stable: equal dates keep file order
-    ordered = [s for _, s in dated] + undated
-
-    for s in ordered:
-        if _emit(_order_section_lines(s)):
+    dated = [e for e in entries if e[0] is not None]
+    dated.sort(key=lambda e: e[0], reverse=True)   # stable: equal dates keep file order
+    undated = [e for e in entries if e[0] is None]
+    for _key, header, body in dated + undated:
+        lines = ([header] if header else []) + _order_items(body)
+        if _emit(lines):
             break
-    return out
-
-
-def _order_section_lines(section: str) -> list[str]:
-    """Header first; then every line carrying a date, newest date first (equal
-    dates keep file order, live `[blocker]/[doing]/[next]/[thread]` lines before
-    the others); then the undated lines in file order.
-
-    Line-level on purpose: `_split_bullet_items` files any non-bullet line that
-    follows a blank line under `head`, so a flat handoff whose old undated
-    `host:` lines sit below the dated `- host:` bullets (the live personal
-    workspace) came out oldest-first when reordered by items.
-    """
-    lines = section.splitlines()
-    if not lines:
-        return []
-    header, body = lines[0], lines[1:]
-    dated: list = []
-    undated: list = []
-    for idx, ln in enumerate(body):
-        if not ln.strip():
-            continue
-        m = DATE_RE.search(ln)
-        if m:
-            dated.append(((m.group(1), m.group(2), m.group(3), m.group(4) or ""), idx, ln))
-        else:
-            undated.append(ln)
-    dated.sort(key=lambda t: t[0], reverse=True)
-    out = [header]
-    i = 0
-    while i < len(dated):
-        j = i
-        while j < len(dated) and dated[j][0] == dated[i][0]:
-            j += 1
-        group = dated[i:j]
-        live = [t for t in group if LIVE_STATUS_RE.search(t[2])]
-        rest = [t for t in group if not LIVE_STATUS_RE.search(t[2])]
-        out.extend(t[2] for t in live + rest)
-        i = j
-    out.extend(undated)
     return out
 
 

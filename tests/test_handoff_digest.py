@@ -48,6 +48,48 @@ MIXED = """# handoff — trade
 """
 
 
+# The live idol-ai shape (review I3): H1, then a long blockquoted preamble of
+# delta updates prepended newest-first (dates up to 08-20 inside), THEN the
+# dated `##` sections whose newest is older (08-18).
+IDOL_SHAPE = """# handoff — idol
+
+> ---
+> **Cập nhật 2026-08-19 ~16:45 (host:NDP) — delta lượt này**
+>
+> **✅ closed P5+P6** — credits flow `819dda3`, 456 tests pass.
+> **📌 NEXT:** cookie expires `2026-08-20T01:28:16Z`, still not refreshed.
+> (1) first next item
+> (2) second next item
+
+## 2026-08-18 — restructure video-gw (host:Mac)
+- host:Mac 2026-08-18 [done] tier-2 trait + routing stands
+
+## 2026-08-15 — FE live
+- host:Mac 2026-08-15 [done] pages deploy
+"""
+
+# The live devops shape (review I3): a dated section, `###` sub-headings, bullets
+# whose INDENTED continuation lines carry dates inside wikilinks.
+DEVOPS_SHAPE = """# handoff — devops
+
+## host:NDP 2026-09-28 — proveny dev S3 incident fixed
+
+### Doing
+- **Fixed**: api/worker CrashLoop from keys vanishing from Infisical dev.
+  Full detail + rollback: [[../proveny/2026-09-28-dev-s3-credentials]].
+- **Shipped**: scraper deployed + verified on dev; prod has no
+  room for the scraper's 2 CPU/3Gi ask. See [[../proveny/2026-09-28-capacity]].
+- New pointer recorded: admin credential at
+  `~/credentials/fg/coroot-admin.txt` (verified login 2026-09-28) — see secrets.md.
+
+### Next
+- Kiên to land durable prune-on-boot.
+
+## host:NDP 2026-09-21 — older
+- host:NDP 2026-09-21 [done] older work
+"""
+
+
 class HandoffDigestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="gowth_digest_")
@@ -80,12 +122,51 @@ class HandoffDigestTest(unittest.TestCase):
         self.assertEqual(headers, ["## 2026-09-13 auto-journal", "## 2026-09-11 status", "## Notes"])
 
     def test_headerless_body_yields_first_nonblank_lines(self):
+        # a file with no `##` at all (synthetic): body in file order, H1 dropped
         body = "# handoff — idol\n\n" + "".join(f"line {i} some state text\n\n" for i in range(300))
         self._write(body)
         lines = _handoff.digest("demo")
         self.assertEqual(len(lines), 60)
         self.assertNotIn("", lines)
-        self.assertEqual(lines[1], "line 0 some state text")
+        self.assertEqual(lines[0], "line 0 some state text")
+        self.assertNotIn("# handoff — idol", lines)
+
+    def test_preamble_deltas_come_first_in_file_order(self):
+        """Review I3 (idol-ai): the preamble beyond the H1 holds the NEWEST
+        content (08-20 inside) and must lead the digest, in file order — the
+        first cut dropped it and presented the 08-18 section as current."""
+        self._write(IDOL_SHAPE)
+        lines = _handoff.digest("demo")
+        self.assertNotIn("# handoff — idol", lines)
+        self.assertTrue(lines[0].startswith("> "), lines[:3])
+        i_delta = next(i for i, l in enumerate(lines) if "Cập nhật 2026-08-19" in l)
+        i_next1 = next(i for i, l in enumerate(lines) if "(1) first next item" in l)
+        i_next2 = next(i for i, l in enumerate(lines) if "(2) second next item" in l)
+        i_sec = lines.index("## 2026-08-18 — restructure video-gw (host:Mac)")
+        self.assertLess(i_delta, i_next1)
+        self.assertLess(i_next1, i_next2)
+        self.assertLess(i_next2, i_sec)
+        self.assertLess(i_sec, lines.index("## 2026-08-15 — FE live"))
+
+    def test_bullets_keep_their_continuation_lines_and_subheadings(self):
+        """Review I3 (devops): a bullet and its indented continuation lines are
+        ONE item; `###` sub-headings stay in place; dates inside continuation
+        lines never hoist them above their bullet."""
+        self._write(DEVOPS_SHAPE)
+        lines = _handoff.digest("demo")
+        self.assertEqual(lines[:9], [
+            "## host:NDP 2026-09-28 — proveny dev S3 incident fixed",
+            "### Doing",
+            "- **Fixed**: api/worker CrashLoop from keys vanishing from Infisical dev.",
+            "  Full detail + rollback: [[../proveny/2026-09-28-dev-s3-credentials]].",
+            "- **Shipped**: scraper deployed + verified on dev; prod has no",
+            "  room for the scraper's 2 CPU/3Gi ask. See [[../proveny/2026-09-28-capacity]].",
+            "- New pointer recorded: admin credential at",
+            "  `~/credentials/fg/coroot-admin.txt` (verified login 2026-09-28) — see secrets.md.",
+            "### Next",
+        ])
+        self.assertEqual(lines[9], "- Kiên to land durable prune-on-boot.")
+        self.assertEqual(lines[10], "## host:NDP 2026-09-21 — older")
 
     def test_long_line_is_cut_with_ellipsis(self):
         self._write("## 2026-09-13 s\n- host:mac 2026-09-13 [doing] " + "x" * 400 + "\n")
