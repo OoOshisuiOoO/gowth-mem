@@ -82,5 +82,24 @@ class CommandSurfaceTest(unittest.TestCase):
         self.assertEqual(dangling, [], "\n".join(dangling))
 
 
+class OpsDispatchTest(unittest.TestCase):
+    """Verified on the real binary (claude 2.1.283, --plugin-dir): Claude Code
+    substitutes ${CLAUDE_PLUGIN_ROOT} only inside COMMAND files. An ops body
+    read at runtime from templates/ops/ keeps the literal expansion, and the
+    Bash tool does not export the variable, so `python3 "${CLAUDE_PLUGIN_ROOT}/…"`
+    ran as `python3 "/…"` and the model had to guess the path. Every command
+    that dispatches to templates/ops/ must therefore hand the model the
+    substituted root as an env prefix it can copy."""
+
+    def test_dispatching_commands_carry_the_plugin_root_prefix(self):
+        for p in COMMANDS:
+            text = p.read_text()
+            if "templates/ops/" not in text:
+                continue
+            self.assertIn("CLAUDE_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'", text,
+                          f"{p.name}: dispatches to templates/ops/ without the env-prefix instruction")
+            self.assertIn("never inside the ops file", text, f"{p.name}: must explain the substitution gap")
+
+
 if __name__ == "__main__":
     unittest.main()
