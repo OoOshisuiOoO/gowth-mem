@@ -1,6 +1,6 @@
 ---
 name: mem-distill
-description: Use at end of day, end of session, or before /compact to chắt lọc raw journal entries into curated docs/exp.md / ref.md / tools.md / secrets.md. Strict schema with [type] prefixes, mempalace-inspired noise rejection, mem0 ADD/UPDATE/DELETE/NOOP semantics.
+description: "Distill raw journal into curated docs and topic entries (deterministic)"
 ---
 
 # mem-distill
@@ -88,6 +88,6 @@ Exception: when in doubt about which is correct, mark old as `(superseded)` so `
 ## Cadence
 
 - Daily: end of session, fast.
-- Weekly: larger pass, follow with `/mem-reflect` for cross-entry patterns.
+- Weekly: larger pass, follow with `/mem-ops reflect` for cross-entry patterns.
 - Pre-compact: mandatory.
-- Always: follow with `/mem-prune` to clear superseded markers.
+- Always: follow with `/mem-ops prune` to clear superseded markers.

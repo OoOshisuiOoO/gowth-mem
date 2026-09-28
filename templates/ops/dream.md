@@ -2,7 +2,7 @@
 description: Run the full 3-phase dreaming consolidation pipeline (Light → REM → Deep) on one or all workspaces. Deduplicates episodic entries, clusters by keyword theme, and ranks files by 6 weighted signals. Manual command — does not auto-trigger.
 ---
 
-# /mem-dream
+# /mem-ops dream
 
 Run the full dreaming consolidation pipeline on your gowth-mem workspace.
 
@@ -29,12 +29,12 @@ frequency (0.24), relevance (0.30), diversity (0.15), recency (0.15), consolidat
 (0.10), richness (0.06). Files scoring ≥ 0.6 are flagged for **promote** (key entries
 should be lifted to workspace docs); 0.3–0.6 are **maintain**; below 0.3 are
 **prune_candidates**. The deep phase does not delete anything — it surfaces candidates
-for `/mem-prune` to act on.
+for `/mem-ops prune` to act on.
 
 ## When to invoke
 
 - After a long working session (1+ hours) before running `/compact`
-- Weekly maintenance pass alongside `/mem-prune` and `/mem-lint`
+- Weekly maintenance pass alongside `/mem-ops prune` and `/mem-ops lint`
 - Before switching workspaces — dream the current one first to consolidate state
 - When `/mem-recall` is returning noisy or redundant results
 - Any time you notice topic files have drifted out of sync with `docs/ref.md`
@@ -76,7 +76,7 @@ Example output:
 }
 ```
 
-After reviewing the output, use `/mem-prune` to delete entries in `prune_candidates`
+After reviewing the output, use `/mem-ops prune` to delete entries in `prune_candidates`
 files, and manually promote key entries from `promote` files into `docs/ref.md` or
 `docs/handoff.md`.
 
@@ -91,13 +91,13 @@ stdout remains parseable JSON.
 
 The orchestrator does not modify any files when `dry_run=True`. Even in live mode,
 the deep phase only produces a ranking report — no files are written by the dream
-pipeline itself. Actual pruning requires a separate `/mem-prune` invocation.
+pipeline itself. Actual pruning requires a separate `/mem-ops prune` invocation.
 
 ## Related
 
-- `/mem-distill` — single-pass distillation of recent journal entries into curated docs (scoped to today/yesterday; lower-level than `/mem-dream`)
-- `/mem-lint` — detect schema violations and contradictions in topic files
-- `/mem-prune` — delete expired, superseded, and duplicate entries; acts on the `prune_candidates` list that `/mem-dream` surfaces
+- `/mem-distill` — single-pass distillation of recent journal entries into curated docs (scoped to today/yesterday; lower-level than `/mem-ops dream`)
+- `/mem-ops lint` — detect schema violations and contradictions in topic files
+- `/mem-ops prune` — delete expired, superseded, and duplicate entries; acts on the `prune_candidates` list that `/mem-ops dream` surfaces
 
 ## Data-quality canon
 

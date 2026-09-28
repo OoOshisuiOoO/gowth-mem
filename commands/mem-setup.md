@@ -1,5 +1,5 @@
 ---
-description: Backup/restore the machine's Claude Code setup (plugins, marketplaces, global MCP servers, personal skills, settings.json, global CLAUDE.md) into the synced vault at shared/setup/. New machine = clone vault → bash restore.sh → paste one /plugin block. All secret values redacted to <env:NAME> pointers — the vault never stores real secrets.
+description: "Backup/restore machine setup; /mem-setup native wires auto-memory to the vault"
 ---
 
 Backup this machine's Claude Code setup into `~/.gowth-mem/shared/setup/` (synced via the vault's git remote), or show the current backup status.

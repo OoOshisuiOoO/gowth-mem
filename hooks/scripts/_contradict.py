@@ -14,7 +14,7 @@ never auto-mutates files. A human (or AI agent) decides whether to:
   * add a ``[contradicts: <other>]`` link, or
   * mark one entry with ``valid_until: <date>``.
 
-Used by ``/mem-lint --contradictions``.
+Used by ``/mem-ops lint --contradictions``.
 """
 from __future__ import annotations
 

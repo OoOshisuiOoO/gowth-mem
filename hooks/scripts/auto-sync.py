@@ -152,7 +152,7 @@ def _clear_stale_rebase(gh: Path, quiet: bool) -> bool:
     is present from a previously interrupted sync.
 
     Refuses to abort when SYNC-CONFLICT.md is present — that signals an
-    *active* conflict awaiting `/mem-sync-resolve`, not stale state.
+    *active* conflict awaiting `/mem-sync resolve`, not stale state.
 
     Returns True if state is clean (or successfully cleaned), False if abort
     failed and the repo is still mid-rebase.
@@ -164,7 +164,7 @@ def _clear_stale_rebase(gh: Path, quiet: bool) -> bool:
     if conflict_md().is_file():
         log(
             "sync: rebase in progress with SYNC-CONFLICT.md present — "
-            "leaving intact, run /mem-sync-resolve.",
+            "leaving intact, run /mem-sync resolve.",
             quiet=quiet, err=True,
         )
         return False
@@ -262,7 +262,7 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
                 log("sync: memory/MEMORY.md conflict merged automatically", quiet=quiet)
                 rc = 0
             else:
-                log(f"sync: conflict — wrote {cm}. Run /mem-sync-resolve.", quiet=quiet, err=True)
+                log(f"sync: conflict — wrote {cm}. Run /mem-sync resolve.", quiet=quiet, err=True)
                 rc = 2
         else:
             log(f"sync: pull failed: {err.strip()[:300]}", quiet=quiet, err=True)
@@ -304,7 +304,7 @@ def main() -> int:
 
     # If conflict pending, refuse new sync until resolved.
     if conflict_md().is_file() and not args.commit_only:
-        log("sync: SYNC-CONFLICT.md present — run /mem-sync-resolve first", quiet=quiet, err=True)
+        log("sync: SYNC-CONFLICT.md present — run /mem-sync resolve first", quiet=quiet, err=True)
         return 2
 
     config = load_config()
@@ -327,7 +327,7 @@ def main() -> int:
         return 0
 
     if not remote:
-        log("sync: no remote configured — run /mem-config or /mem-install", quiet=quiet)
+        log("sync: no remote configured — run /mem-ops config or /mem-install", quiet=quiet)
         return 0
 
     # SessionStart pull-only path must never block > ~8s. Full sync is more

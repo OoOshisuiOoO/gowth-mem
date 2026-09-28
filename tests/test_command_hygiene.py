@@ -4,7 +4,7 @@ Two classes of defect these catch, both found in the Zero-Mem audit:
 
 1. Dead-layout drift (D9). Six commands and nine skills still targeted the
    pre-v2.7 per-project layout (`$CLAUDE_PROJECT_DIR`/`$PWD` + `docs/...`).
-   `/mem-journal` therefore WROTE memory to `$PWD/docs/journal/` — outside the
+   `/mem-ops journal` therefore WROTE memory to `$PWD/docs/journal/` — outside the
    vault, so never git-synced, never indexed, invisible to every hook — and
    `/mem-cost` measured 0 of 9 files, which is why the bootstrap regression that
    dropped `docs/handoff.md` from every session went unnoticed.

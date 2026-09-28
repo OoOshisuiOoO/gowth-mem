@@ -1,5 +1,5 @@
 ---
-description: "Search workspace memory with optional tag filter (v3.4). Pre-filters chunks by [decision]/[exp]/[ref]/[tool]/[reflection]/[skill-ref]/[secret-ref]/[goal]/[hypothesis] before BM25 ranking. Deterministic, no LLM."
+description: "Search curated memory by BM25 with optional type/keyword/topic filters"
 ---
 
 Recall high-signal memory entries from the active workspace (or a named workspace) using FTS5 BM25 ranking. With `--type=<tag>` the search is pre-filtered to one of the nine schema tags, so `[decision]` queries never return `[exp]` noise.
@@ -65,7 +65,7 @@ blend in this path. The same query and gate power the automatic per-prompt recal
 (`recall-on-prompt.sh`, v4.8).
 
 The richer 4-tier weighted context plan (layer score × recency decay × Jaccard)
-lives in `_budget.py` (see `/mem-budget`), not here.
+lives in `_budget.py` (see `/mem-ops budget`), not here.
 
 **Tags boost by default; `--keyword` is an opt-in filter.** Every auto-tag lands
 in the weighted `keywords` FTS column, so a normal query already ranks tag matches
@@ -80,8 +80,8 @@ the chunks carrying that tag), not the default boosted ranking.
 
 ## Related
 
-- `/mem-retag` — backfill the frontmatter `tags:` that feed the `--keyword` filter
-- `/mem-budget` — the 4-tier weighted context planner (the real multi-signal scorer)
+- `/mem-ops retag` — backfill the frontmatter `tags:` that feed the `--keyword` filter
+- `/mem-ops budget` — the 4-tier weighted context planner (the real multi-signal scorer)
 
 ## Searching forgotten memory (v4.3)
 
@@ -100,7 +100,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_query.py" --ws <ws> --archive --limi
 
 Archive rows live in the machine-local `index.db` (gitignored, rebuildable), so this
 costs zero synced bytes and zero tokens until something is actually retrieved. On a new
-machine `.archive/` is only present if it was synced; otherwise run `/mem-reindex` after
+machine `.archive/` is only present if it was synced; otherwise run `/mem-ops reindex` after
 the vault clone and archived material will be indexed from whatever `.archive/` holds.
 
 Results are collapsed to the best-ranked chunk per file, and each hit prints its `§`

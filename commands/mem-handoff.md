@@ -1,5 +1,5 @@
 ---
-description: Rotate docs/handoff.md — keep the most recent N dated snapshots live, move older ones to docs/handoff-archive.md. handoff.md is loaded at EVERY bootstrap, so this caps its per-session token cost. Structural sections are kept; nothing is deleted (archive + git history).
+description: "Rotate docs/handoff.md — keep recent snapshots live, archive the rest"
 ---
 
 Rotate `docs/handoff.md` so it stays small. handoff.md is read at **every** SessionStart, so accumulated dated snapshots (`## host:… 2026-06-14`, etc.) become a per-session token tax. The canon caps an always-loaded file at ~200 lines.

@@ -43,7 +43,7 @@ v4.7.1 changes (hardening — closes the verified findings of the v4.7 audit):
     and an explicit null falls back to the documented default chain.
   - Capture runs whenever `reflection.capture_enabled` is on, even with BOTH
     cadences disabled (the early return used to silently kill the knob for
-    /mem-review-only users).
+    review-only users).
   - TTL archival is cadence-independent: `_run_forget_daily()` runs at most
     once per calendar day per machine (state.json `forget_last_run`),
     replacing the review-cadence modulo arithmetic that both spawned the
@@ -55,7 +55,7 @@ v4.7.1 changes (hardening — closes the verified findings of the v4.7 audit):
   - The review-paused notice is flagged per session in state.json
     (`review_paused_notified`) — literally once per session, immune to
     counter resets and mid-session turn_interval changes — and carries the
-    /mem-review-backlog nudge (permanently-deferred cohorts can only ever be
+    /mem-ops review-backlog nudge (permanently-deferred cohorts can only ever be
     reviewed via the backlog).
   - `_reset_counters` falls back to an unlocked best-effort write on lock
     timeout — a swallowed TimeoutError left review_count >= interval and
@@ -357,13 +357,13 @@ def _backlog_stat() -> str:
     """v4.1 backlog nudge (stat()-only, cheap). v4.7.1: appended to BOTH the
     review reason and the paused notice — permanently-deferred cohorts (no
     transcript_path, or capture opted out) can only ever be reviewed via
-    /mem-review-backlog and used to get the nudge at every crossing."""
+    /mem-ops review-backlog and used to get the nudge at every crossing."""
     try:
         from _review_ledger import stats as _rl_stats  # type: ignore
         backlog = _rl_stats().get("unreviewed", 0)
         if backlog:
             return (f" Backlog: {backlog} past conversation(s) unreviewed — "
-                    f"run /mem-review-backlog when idle.")
+                    f"run /mem-ops review-backlog when idle.")
     except Exception:
         pass
     return ""
@@ -576,7 +576,7 @@ def _run_forget_daily(settings: dict | None = None) -> None:
     Replaces the review-cadence modulo arithmetic, which was wrong in both
     directions: it spawned the forget subprocess on EVERY Stop at
     journal-off + turn_interval=1 + capture-on, and never archived at all with
-    both cadences off — while /mem-journal and precompact-flush.py keep
+    both cadences off — while /mem-ops journal and precompact-flush.py keep
     writing journal/<date>.md regardless of any cadence. The journal cadence's
     _run_maintenance still calls _run_forget directly (unchanged behavior).
     v4.8: also the daily full reindex slot (independent of the forget knob).
@@ -669,14 +669,14 @@ def main() -> int:
     refl_enabled, turn_interval, min_review_turns = _read_reflection_settings(settings)
     capture_on = _capture_enabled(refl_enabled, settings)
 
-    # v4.7.1: TTL archival is cadence-independent — /mem-journal and
+    # v4.7.1: TTL archival is cadence-independent — /mem-ops journal and
     # precompact-flush.py keep writing journal/<date>.md with both cadences
     # off, and capture-only configs grow journal/sessions/ forever. At most
     # once per calendar day; near-noop when nothing is past TTL.
     _run_forget_daily(settings)
 
     # v4.7.1: `reflection.capture_enabled: true` must work even with BOTH
-    # cadences disabled (/mem-review-only users) — the early return checks it.
+    # cadences disabled (review-only users) — the early return checks it.
     if not journal_enabled and not refl_enabled and not capture_on:
         return 0
 

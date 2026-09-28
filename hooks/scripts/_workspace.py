@@ -325,7 +325,7 @@ def archive(name: str) -> Path:
 def set_active_session(name: str) -> None:
     """Persist active workspace for the current session via .session-workspace."""
     if name not in list_workspaces():
-        raise ValueError(f"workspace not found: {name}. Use /mem-workspace-create first.")
+        raise ValueError(f"workspace not found: {name}. Use /mem-workspace create first.")
     write_session_workspace(name)
 
 

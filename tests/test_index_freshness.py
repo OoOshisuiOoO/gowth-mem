@@ -2,7 +2,7 @@
 
 Defect: _topic.append_entry() / _lesson.append_lesson() wrote the file and never
 touched index.db, so a just-captured memory was NOT recallable until someone
-remembered to run /mem-reindex. The live vault's index.db was 5 days stale.
+remembered to run /mem-ops reindex. The live vault's index.db was 5 days stale.
 
 reindex_paths() refreshes only the files just written — incremental, lock-guarded,
 and best-effort (it runs on the Stop-hook path, which must never raise).

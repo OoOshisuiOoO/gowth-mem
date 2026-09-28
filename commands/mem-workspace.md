@@ -1,5 +1,5 @@
 ---
-description: Workspace management — list, create, archive, map
+description: "Workspace management — list, create, archive, map"
 argument-hint: "[<verb> [args]]"
 ---
 
@@ -34,4 +34,4 @@ When determining the active workspace at session start:
 
 - Switching is **session-scoped**, persisted via `~/.gowth-mem/.session-workspace`. Survives `/compact` until cleared via `--clear`.
 - To set a permanent default, edit `~/.gowth-mem/config.json` `active_workspace` field.
-- For detailed subcommand documentation, see `/mem-workspace-create`, `/mem-workspace-archive`, `/mem-workspace-list`, `/mem-workspace-map`.
+- For detailed subcommand documentation, see `/mem-workspace create`, `/mem-workspace archive`, `/mem-workspace list`, `/mem-workspace map`.

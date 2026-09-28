@@ -52,7 +52,7 @@ emits this directive at all — it pauses the review until capture produces one.
   skip the review and tell the user in one line ("session too short for a meaningful
   retro — N turns, need 10"). Short-session retros produce noise, not signal.
 - **Backlog mode:** when the turn source is a raw `.jsonl` transcript (dispatched by
-  `/mem-review-backlog`), there are no `## turn` blocks — a "turn" for the floor is a
+  `/mem-ops review-backlog`), there are no `## turn` blocks — a "turn" for the floor is a
   user record with non-empty text; quote from the JSON `message.content` text and cite
   turn indexes instead of `## turn` numbers. Everything else in this rubric applies
   unchanged.

@@ -36,14 +36,14 @@ Steps:
 
 ```bash
 # First time on machine A:
-/mem-install              → set up + initial push (calls /mem-config internally)
-/mem-config               → only if you want to change remote later
+/mem-install              → set up + initial push (calls /mem-ops config internally)
+/mem-ops config               → only if you want to change remote later
 
 # Subsequent on machine A: nothing — auto-sync runs on PostCompact.
 # Manual: /mem-sync (or memy)
 
 # First time on machine B (fresh clone alt path):
 git clone <REMOTE-URL> ~/.gowth-mem
-/mem-config               → set token (config.json is gitignored, so not in clone)
+/mem-ops config               → set token (config.json is gitignored, so not in clone)
 memx                      → rebuild local index
 ```

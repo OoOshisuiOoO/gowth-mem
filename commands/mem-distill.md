@@ -1,5 +1,5 @@
 ---
-description: "Chắt lọc raw journal entries in the vault into the curated working layer (docs/exp.md, docs/ref.md, docs/tools.md). Drops noise; keeps signal. Default range: today + yesterday."
+description: "Distill raw journal into curated docs and topic entries (deterministic)"
 ---
 
 Invoke the `mem-distill` skill to consolidate the most recent journal entries into the curated working layer.

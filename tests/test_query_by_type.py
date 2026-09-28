@@ -340,7 +340,7 @@ class QueryCLISmokeTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("index.db not found", result.stdout)
-        self.assertIn("/mem-reindex", result.stdout)
+        self.assertIn("/mem-ops reindex", result.stdout)
 
     def test_cli_compiles(self):
         subprocess.run(

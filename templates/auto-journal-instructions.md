@@ -38,7 +38,7 @@ Anchors (a fresh subagent has no SessionStart bootstrap — derive, don't guess)
   This is what applies topic routing, the §1 quality gate, deterministic
   `#tags`, SHA-1 dedup, and write-time reindexing. **NEVER hand-write topic
   entries with a raw Write/Edit** — entries written that way are born
-  untagged, ungated, and unrecallable until a manual /mem-reindex.
+  untagged, ungated, and unrecallable until a manual /mem-ops reindex.
 
 Do this WITHOUT user prompting before yielding control:
 

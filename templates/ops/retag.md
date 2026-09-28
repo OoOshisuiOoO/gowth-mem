@@ -2,7 +2,7 @@
 description: Backfill deterministic #tags into aspect-file frontmatter (v4.0). Extracts content keywords from every entry line and unions them into each aspect file's frontmatter tags, then reindexes. Never rewrites entry lines. Dry-run by default; --apply writes. No LLM.
 ---
 
-# /mem-retag
+# /mem-ops retag
 
 Backfill the v4.0 deterministic tag layer over existing memory. New entries get
 inline `#tags` automatically at write time; this command retro-fits the
@@ -64,10 +64,10 @@ then runs one incremental reindex so the new frontmatter tags populate the FTS5
 - Idempotent: re-running adds nothing once tags are present.
 - Files with no extractable keywords are skipped (never padded).
 - Aspect files without frontmatter gain a minimal `tags:` block; run
-  `/mem-validate --fix` afterwards to complete the remaining required fields.
+  `/mem-ops validate --fix` afterwards to complete the remaining required fields.
 
 ## Related
 
 - `/mem-recall --keyword <kw>` — search the tag/keyword layer this command populates
-- `/mem-validate --fix` — complete aspect frontmatter (required fields)
-- `/mem-reindex` — rebuild the FTS5 index (also refreshes the keywords column)
+- `/mem-ops validate --fix` — complete aspect frontmatter (required fields)
+- `/mem-ops reindex` — rebuild the FTS5 index (also refreshes the keywords column)

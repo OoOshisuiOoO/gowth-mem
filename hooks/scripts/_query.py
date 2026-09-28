@@ -124,7 +124,7 @@ def query_ex(
     """
     db_path = index_db()
     if not db_path.is_file():
-        return {"hits": [], "error": f"index.db not found at {db_path} — run /mem-reindex"}
+        return {"hits": [], "error": f"index.db not found at {db_path} — run /mem-ops reindex"}
 
     match_expr = ""
     if query.strip():
@@ -264,7 +264,7 @@ def _run_query(
         db.execute("PRAGMA busy_timeout=2000")
         cols = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
         if "tag" not in cols:
-            raise sqlite3.Error("index predates v3.4 (no tag column) — run /mem-reindex")
+            raise sqlite3.Error("index predates v3.4 (no tag column) — run /mem-ops reindex")
         has_keywords = "keywords" in cols
 
         import time as _time

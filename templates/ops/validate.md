@@ -2,7 +2,7 @@
 description: "File-level schema validator (learned from supremor/vault-keeper). Checks every topic file's frontmatter required-fields, naming (slug regex), and reserved-path placement — the structural layer that _gate.py (entry-level) doesn't cover — and finds README-only junk topic folders. --fix deterministically repairs aspect frontmatter from the path; --prune-junk deletes the junk folders the scan lists. Keeps wikilinks/recall/MOC working."
 ---
 
-Validate the structural conformance of memory files. Complements `/mem-gate` (which checks entry *content*) by checking file *structure* — the discipline adapted from the TrueProfit `supremor` vault's `claude-code-vault-keeper` validator.
+Validate the structural conformance of memory files. Complements `/mem-ops gate` (which checks entry *content*) by checking file *structure* — the discipline adapted from the TrueProfit `supremor` vault's `claude-code-vault-keeper` validator.
 
 Scan (read-only report):
 

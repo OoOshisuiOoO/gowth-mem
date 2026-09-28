@@ -3,14 +3,14 @@ description: Reorganize topics within the active workspace — move slugs to new
 argument-hint: "<slug> <new-parent-path>   |   --plan-from-stdin"
 ---
 
-# /mem-restructure
+# /mem-ops restructure
 
 Move one or more topics within the active workspace by updating their `frontmatter.parents` field. Slugs stay stable so wikilinks `[[slug]]` keep resolving.
 
 ## Single-slug usage
 
 ```
-/mem-restructure ema-cross strategies/trend
+/mem-ops restructure ema-cross strategies/trend
 ```
 
 → Moves the topic folder `workspaces/<active>/ema-cross/` (including `00-README.md`, all `YYYY-MM-DD-<aspect>.md` files, and `lessons.md`) to `workspaces/<active>/strategies/trend/ema-cross/`, sets `parents: [strategies, trend]` in the `00-README.md` frontmatter, and rebuilds the workspace MOC + topic README + search index.
@@ -18,7 +18,7 @@ Move one or more topics within the active workspace by updating their `frontmatt
 ## Bulk via stdin
 
 ```
-/mem-restructure --plan-from-stdin
+/mem-ops restructure --plan-from-stdin
 ```
 
 Then paste a YAML-style plan:
@@ -126,6 +126,6 @@ git commit -m "knowledge(restructure): $COUNT changes in workspace $WS"
 
 ## Hard rules
 
-- Slugs are NEVER renamed by this command (would break wikilinks). To rename a slug, do it manually then run `/mem-restructure` to update parents.
+- Slugs are NEVER renamed by this command (would break wikilinks). To rename a slug, do it manually then run `/mem-ops restructure` to update parents.
 - Only operates within the **active workspace**. Cross-workspace moves require explicit `/mem-workspace <other>` first.
 - Max depth enforced by `settings.topic_layout.max_depth` (default 3).

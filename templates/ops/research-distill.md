@@ -12,7 +12,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_research.py" --distill "$1"
 
 What it does:
 
-1. If `research/<topic>/raw/` is empty → error (run `/mem-research-start <topic>` first).
+1. If `research/<topic>/raw/` is empty → error (run `/mem-research start <topic>` first).
 2. If `distilled.md` is missing → write a template with sections:
    - TL;DR (3 lines)
    - Architecture (ASCII diagram)
@@ -27,4 +27,4 @@ Quality gate criteria:
 - Every raw note has ≥1 source ref (`source_file:` frontmatter, body `<repo:file:line>` pattern, or `Source:` line)
 - ≥1 raw note exists
 
-After scaffold, fill the template (replacing placeholders), then re-run `/mem-research-distill <topic>` (idempotent — won't overwrite existing distilled.md) or `/mem-research-status` to verify.
+After scaffold, fill the template (replacing placeholders), then re-run `/mem-research distill <topic>` (idempotent — won't overwrite existing distilled.md) or `/mem-research status` to verify.

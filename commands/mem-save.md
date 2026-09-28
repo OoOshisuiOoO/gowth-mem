@@ -1,5 +1,5 @@
 ---
-description: "Run the OpenClaw-inspired dreaming pipeline: prune → consolidate → lint → distill high-signal items from the current conversation into topic files. Use anytime — don't wait for auto-journal's 10-turn threshold."
+description: "Distill high-signal items from this session into topic files (dreaming)"
 ---
 
 Invoke the `mem-save` skill to run the full dreaming cycle on this conversation.

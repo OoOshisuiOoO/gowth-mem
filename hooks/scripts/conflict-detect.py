@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook: if ~/.gowth-mem/SYNC-CONFLICT.md exists, inject a
-reminder so Claude prompts the user to run /mem-sync-resolve before doing
+reminder so Claude prompts the user to run /mem-sync resolve before doing
 other work.
 
 Reads stdin (Claude Code's prompt JSON) and writes the standard hook output
@@ -26,7 +26,7 @@ def _v3_nudge() -> str:
         return ""
     return (
         "[gowth-mem v3.0 upgrade] settings.layout_version=" + str(layout) + " (< 3).\n"
-        "Run `/mem-migrate-v3` to convert this tree to v3 topic-folder + dated-aspect layout.\n\n"
+        "Run `/mem-ops migrate-v3` to convert this tree to v3 topic-folder + dated-aspect layout.\n\n"
     )
 
 
@@ -45,7 +45,7 @@ def main() -> int:
         _v3_nudge()
         + "[gowth-mem SYNC-CONFLICT pending]\n\n"
         f"~/.gowth-mem/SYNC-CONFLICT.md exists. Resolve before continuing other work.\n"
-        f"Run /mem-sync-resolve to walk each conflicted file and apply the user's choice.\n\n"
+        f"Run /mem-sync resolve to walk each conflicted file and apply the user's choice.\n\n"
         "Preview (first 30 lines):\n"
         "```\n"
         f"{summary}\n"

@@ -26,7 +26,7 @@ First match wins: env `GOWTH_WORKSPACE` → `config.json.workspace_map` glob →
    → `<ws>/skills/_index`.
 
 v3 nudge: if `settings.layout_version < 3`, SessionStart prepends an upgrade
-hint pointing at `/mem-migrate-v3`.
+hint pointing at `/mem-ops migrate-v3`.
 
 Output: **workspace=<ws> / đang làm gì / step kế / blocker**.
 
@@ -126,7 +126,7 @@ Body uses the 9-type schema:
 ## [tool]       ← tool quirks specific to this topic (version + working syntax)
 ## [hypothesis] ← UNVERIFIED claim — Verify: path REQUIRED (promote to [ref] when confirmed)
 ## [exp]        ← episodic, 1-2 lines, specific cause
-## [reflection] ← pattern (weekly via /mem-reflect)
+## [reflection] ← pattern (weekly via /mem-ops reflect)
 ## [skill-ref]  ← link to skills/<slug>.md
 ## [secret-ref] ← env-var pointer only (NEVER value)
 ```
@@ -199,9 +199,9 @@ Full canon: `shared/research/data-quality-2026.md`. Inline summary follows.
 - Within-file Jaccard duplicate ≥ 0.85 → `_prune.py` deletes shorter
 - Cross-file cosine similarity > 0.92 → `_consolidate.py` REM merge candidate
 - Contradiction keyword overlap ≥ 0.4 + polarity flip → `_lint.py` flags
-- Topic-folder soft max: 15-25 aspect files → `/mem-dream` Deep
-- Topic-folder hard split: aggregate > 800 lines → `/mem-promote`
-- Aspect file: > 400 lines → `/mem-promote` warning
+- Topic-folder soft max: 15-25 aspect files → `/mem-ops dream` Deep
+- Topic-folder hard split: aggregate > 800 lines → `/mem-ops promote`
+- Aspect file: > 400 lines → `/mem-ops promote` warning
 
 ### 7d. Write semantics (mem0-style, never blind append)
 
@@ -215,7 +215,7 @@ NOOP   duplicate, no new info → skip
 `[decision]` uses temporal invalidation: never delete, mark `(superseded by:
 <new-slug>, YYYY-MM-DD)` — preserves audit trail.
 
-### 7e. Retention TTL (auto-applied by `_prune.py` + `/mem-dream`)
+### 7e. Retention TTL (auto-applied by `_prune.py` + `/mem-ops dream`)
 
 | Prefix | TTL | Delete trigger |
 |---|---|---|
@@ -236,12 +236,12 @@ NOOP   duplicate, no new info → skip
 - `[[ws:slug]]` → cross-workspace explicit. `[[shared:secrets]]` → shared registry.
 - `[[slug/aspect]]` or `[[slug/YYYY-MM-DD-aspect]]` → specific aspect.
 - NEVER rename published topic slug (breaks wikilinks). Change `parents:` via
-  `/mem-restructure` only.
+  `/mem-ops restructure` only.
 
 ## 9. Lifecycle & retention (>3 months → archive)
 
 - `status`: `draft → active → distilled → archived`.
-- Topic folder > 800 lines aggregate → `/mem-promote` split.
+- Topic folder > 800 lines aggregate → `/mem-ops promote` split.
 - **Aspects older than 90 days are auto-archived** (`_forget.py --aspects`,
   Stop-hook via `topic_layout.auto_archive_enabled`): curated `- [type]`
   blocks are salvaged into the topic's `lessons.md` (in English) FIRST, then
@@ -250,7 +250,7 @@ NOOP   duplicate, no new info → skip
   age; `00-README.md` and `lessons.md` are never archived.
 - After any archive pass: regen MOCs (`/mem-topic --regen-index`) and clean
   junk — empty husk topics (00-README-only, TL;DR TODO) are DELETED outright.
-- Workspace 6 months untouched → `/mem-workspace-archive`.
+- Workspace 6 months untouched → `/mem-workspace archive`.
 
 ## 10. Recall scope
 
@@ -267,7 +267,7 @@ NOOP   duplicate, no new info → skip
 3. Bug/surprise → `memL <symptom> -- <tried> -- <root> -- <fix>`.
 4. PreCompact → distill journal → topic entries (auto-journal classifier).
 5. PostCompact → auto-sync pull-rebase-push.
-6. Weekly → `memr` (1-3 reflections) + `/mem-dream` + `/mem-prune` + `/mem-lint`.
+6. Weekly → `memr` (1-3 reflections) + `/mem-ops dream` + `/mem-ops prune` + `/mem-ops lint`.
 7. Research-first: no evidence → no implement. `[ref]` must have `Source:`.
 8. Tools-first: tra `shared/tools.md` + `<ws>/docs/tools.md` trước khi tự code.
 9. Verify before claim: no log/screenshot/test → no "done".
@@ -302,7 +302,7 @@ PreCompact    → auto-sync.py --commit-only
 PostCompact   → auto-sync.py --pull-rebase-push
 ```
 
-`SYNC-CONFLICT.md` exists → mỗi prompt nhắc `/mem-sync-resolve`. KHÔNG sửa
+`SYNC-CONFLICT.md` exists → mỗi prompt nhắc `/mem-sync resolve`. KHÔNG sửa
 markers tay (raw `<<<<<<<` markers break FTS5).
 
 ## 14. Guardrails

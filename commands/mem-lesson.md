@@ -1,5 +1,5 @@
 ---
-description: Capture an experience entry (lesson / troubleshooting / postmortem) into <topic>/lessons.md
+description: "Capture an experience entry (lesson/postmortem) into <topic>/lessons.md"
 argument-hint: "[topic-slug] | <symptom> -- <tried> -- <root cause> -- <fix> [-- source]"
 ---
 
@@ -131,7 +131,7 @@ missing (idempotent via `ensure_topic_folder`).
 
 ## Promotion lifecycle
 
-After ≥7 days a lesson entry stable in `lessons.md` SHOULD be distilled into the workspace's `<ws>/docs/ref.md` (the durable cross-topic facts registry). Manual via `/mem-distill` or `/mem-reflect`. No auto-cron yet.
+After ≥7 days a lesson entry stable in `lessons.md` SHOULD be distilled into the workspace's `<ws>/docs/ref.md` (the durable cross-topic facts registry). Manual via `/mem-distill` or `/mem-ops reflect`. No auto-cron yet.
 
 ## Hard rules
 

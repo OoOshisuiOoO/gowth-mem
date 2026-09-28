@@ -1,5 +1,5 @@
 ---
-description: List, inspect, or route a content snippet to a topic FOLDER (v3.0). Read-only by default; --regen-index rewrites every topic 00-README.md and the workspace MOC.
+description: "List, inspect, or route a snippet to a topic folder"
 ---
 
 Manage the topic registry under the active workspace (`~/.gowth-mem/workspaces/<ws>/`).

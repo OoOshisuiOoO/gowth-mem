@@ -3,7 +3,7 @@ description: Migrate ~/.gowth-mem/ from v2.4 single-file-per-topic to v3.0 topic
 argument-hint: "[--dry-run | --force | --report | --json]"
 ---
 
-# /mem-migrate-v3
+# /mem-ops migrate-v3
 
 Run the 7-step v2 → v3 migration pipeline (`hooks/scripts/_migrate_v3.py`). Default mode is **JSON output** for tool composition; pass `--report` for human-readable text.
 

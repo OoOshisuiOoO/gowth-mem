@@ -3,7 +3,7 @@
 
 Every transcript in ~/.claude/projects is a conversation. The ledger marks
 which ones have been self-reviewed; unreviewed substantive conversations are
-surfaced oldest-first so `/mem-review-backlog` can work through them.
+surfaced oldest-first so `/mem-ops review-backlog` can work through them.
 Metadata-first design: scan touches only stat() (1000+ transcripts observed
 live); transcript CONTENT is read only for the single --next candidate.
 """

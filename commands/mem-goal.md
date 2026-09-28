@@ -1,5 +1,5 @@
 ---
-description: "Record or update a [goal] entry — the user's objective with a Status and verifiable Done-when"
+description: "Record or update a [goal] entry with Status and a verifiable Done-when"
 ---
 
 Record the user's current objective as a `[goal]` entry in the active workspace topic. Goals are first-class memory: they give `[decision]`, `[hypothesis]`, and `[exp]` entries a reason to exist.
@@ -75,7 +75,7 @@ Goals are the top of the motivational hierarchy:
 ```
 [goal] → motivates → [decision] / [hypothesis] / [exp]
 [hypothesis] → when verified → promotes to [ref]
-[ref] → when outdated → pruned by /mem-prune
+[ref] → when outdated → pruned by /mem-ops prune
 ```
 
 This chain is the provenance layer introduced in v3.9.

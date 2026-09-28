@@ -1,6 +1,6 @@
 ---
 name: mem-sync
-description: Use to sync .gowth-mem/ across machines via a user-owned git remote. Auto-commits, pull-rebase, push. Conflict → SYNC-CONFLICT.md with manual resolution steps.
+description: "Sync the vault with its git remote (commit, pull --rebase, push)"
 ---
 
 # mem-sync
@@ -10,7 +10,7 @@ Multi-machine sync of `.gowth-mem/` (AGENTS.md + docs/* + settings.json + skills
 ## Prerequisites
 
 - `.gowth-mem/` exists (run `/mem-install` if not)
-- `.gowth-mem/config.json` configured with `remote` + `branch` (run `/mem-config`)
+- `.gowth-mem/config.json` configured with `remote` + `branch` (run `/mem-ops config`)
 - Token via env `GOWTH_MEM_GIT_TOKEN` OR in `config.json` (gitignored)
 
 ## Steps
@@ -51,4 +51,4 @@ To abort: `git -C .gowth-mem rebase --abort` — local changes preserved.
 
 - NEVER commit `config.json` (token leak risk). Already gitignored.
 - NEVER commit real secret values into `docs/secrets.md` — pointers only.
-- After clone on a new machine, run `memx` (`/mem-reindex`) to rebuild local index.
+- After clone on a new machine, run `memx` (`/mem-ops reindex`) to rebuild local index.

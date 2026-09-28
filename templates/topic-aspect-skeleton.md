@@ -38,7 +38,7 @@ Architectural / design choice + rationale. State "chose X over Y because Z".
 
 ## [reflection]
 
-Pattern / takeaway from `/mem-reflect` weekly. Cluster `[exp]` entries into insight.
+Pattern / takeaway from `/mem-ops reflect` weekly. Cluster `[exp]` entries into insight.
 
 - (empty)
 

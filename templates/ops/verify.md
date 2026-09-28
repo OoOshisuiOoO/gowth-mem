@@ -84,4 +84,4 @@ The verify→promote cycle is the core of the v3.9 provenance layer:
                                           →  [ref] (refuted, Source: <counter-evidence>)
 ```
 
-Hypotheses that go unverified for > 30 days should be flagged during `/mem-lint` as stale claims.
+Hypotheses that go unverified for > 30 days should be flagged during `/mem-ops lint` as stale claims.

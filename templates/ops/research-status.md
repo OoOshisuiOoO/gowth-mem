@@ -23,7 +23,7 @@ States:
 - **in-progress**: ≥1 raw note but no `distilled.md`
 - **distilled**: both raw/ and `distilled.md` exist
 
-For per-topic quality gate, run `/mem-research-distill <topic>` or pass `--lint` directly:
+For per-topic quality gate, run `/mem-research distill <topic>` or pass `--lint` directly:
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_research.py" --lint <topic>
 ```

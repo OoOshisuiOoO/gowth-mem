@@ -26,7 +26,7 @@ Do NOT soften these without a new research note.
 ## Scope
 
 - Operates on `docs/**/*.md`
-- **Skips `journal/**`** — the journal is the ephemeral raw buffer; its lifecycle is handled by `/mem-forget` (archive past the 7-day TTL), not by prune
+- **Skips `journal/**`** — the journal is the ephemeral raw buffer; its lifecycle is handled by `/mem-ops forget` (archive past the 7-day TTL), not by prune
 - Treats an "entry" as a line starting with `- [type]` or `* [type]` plus its indented continuation lines
 
 ## When to run

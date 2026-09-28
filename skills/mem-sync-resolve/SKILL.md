@@ -1,6 +1,6 @@
 ---
 name: mem-sync-resolve
-description: AI-mediated git conflict resolver. Walks ~/.gowth-mem/SYNC-CONFLICT.md, asks user keep-local / keep-remote / merge per file, applies via atomic write, then commits + pushes under lock.
+description: "Resolve a pending SYNC-CONFLICT.md — walk each file, apply the choice, push"
 ---
 
 # mem-sync-resolve
@@ -69,7 +69,7 @@ with file_lock("sync"):
         # (write a fresh SYNC-CONFLICT.md)
         from _conflict import package_conflict
         package_conflict()
-        print("New conflict surfaced; re-run /mem-sync-resolve.")
+        print("New conflict surfaced; re-run /mem-sync resolve.")
         return
     # Push
     subprocess.run(["git", "-C", str(gh), "push", "origin", "<branch>"], check=True)

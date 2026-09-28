@@ -21,7 +21,7 @@ Design constraints:
     ledger would reference paths other machines don't have. Review OUTPUT
     (scores, reflections) still goes to the synced vault via /mem-review.
 
-Driven by /mem-review-backlog; nudged from the Stop-hook self-review reason.
+Driven by /mem-ops review-backlog; nudged from the Stop-hook self-review reason.
 
 CLI:
   python3 _review_ledger.py --scan [--json] [--limit N]

@@ -1,5 +1,5 @@
 ---
-description: "First-time install wizard for ~/.gowth-mem/. Scaffolds shared + workspace v3 layout (topic-folder + dated aspect), asks for git remote+branch+token, writes settings.json + config.json, runs initial sync. Upgrade-aware: detects v2/v3 mismatch and prompts for /mem-migrate-v3."
+description: "First-time install wizard for ~/.gowth-mem (shared + workspace layout)"
 ---
 
 Run the v3.0 install wizard. Detects existing installs and offers upgrade path; never destroys data.
@@ -28,12 +28,12 @@ PYEOF
 Branch logic:
 - `status=no-settings`: corrupt install, refuse and suggest `/mem-doctor`.
 - `status=installed layout_version=3`: nothing to do. Print `[mem-install] already on v3.0` and stop.
-- `status=installed layout_version<3`: this is a **v2 → v3 upgrade**. Run a **dry-run** of `/mem-migrate-v3` first so the user sees what would change, then prompt:
+- `status=installed layout_version<3`: this is a **v2 → v3 upgrade**. Run a **dry-run** of `/mem-ops migrate-v3` first so the user sees what would change, then prompt:
   ```
   Detected layout_version=<N> (< 3). v3.0 uses topic-FOLDER + dated-aspect layout.
   Migration dry-run summary above. Proceed with migration? [y/N]:
   ```
-  On `y`: run `/mem-migrate-v3` (real run). On anything else: abort with `[mem-install] upgrade declined — re-run when ready`.
+  On `y`: run `/mem-ops migrate-v3` (real run). On anything else: abort with `[mem-install] upgrade declined — re-run when ready`.
 
 ## Step 1 — Fresh install (`~/.gowth-mem/` missing)
 
@@ -76,6 +76,6 @@ python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py --init
 ## Step 5 — Suggest next steps
 
 - `memx` to build the search index.
-- `/mem-migrate-global` if v1.0 per-workspace `.gowth-mem/` dirs exist on disk.
+- `/mem-ops migrate-global` if v1.0 per-workspace `.gowth-mem/` dirs exist on disk.
 
 The wizard is idempotent: re-running it after a successful install with `layout_version: 3` does nothing destructive (Step 0 short-circuits).

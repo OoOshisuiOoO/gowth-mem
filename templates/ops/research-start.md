@@ -1,5 +1,5 @@
 ---
-description: Start a deep-research campaign on an external repo/system. Scaffolds workspaces/<ws>/research/<topic>/raw/_locate.md template — fill it with the source-code map, then add raw/<file>.md notes (line-by-line, every claim cites <repo:file:line>). When raw/ has ≥1 note, run /mem-research-distill <topic> to write distilled.md.
+description: Start a deep-research campaign on an external repo/system. Scaffolds workspaces/<ws>/research/<topic>/raw/_locate.md template — fill it with the source-code map, then add raw/<file>.md notes (line-by-line, every claim cites <repo:file:line>). When raw/ has ≥1 note, run /mem-research distill <topic> to write distilled.md.
 ---
 
 Scaffold a new research topic under the active workspace.
@@ -17,9 +17,9 @@ Workflow once scaffolded:
    - Quote ≤20 lines per snippet
    - Every factual claim must have a `repo:file:line` ref
    - Mark unverified claims as `[INFERRED]`
-3. When ≥1 raw note exists, run `/mem-research-distill <topic>` to scaffold the 1-page distillation + run the quality gate.
+3. When ≥1 raw note exists, run `/mem-research distill <topic>` to scaffold the 1-page distillation + run the quality gate.
 
-Quality gate enforced by `/mem-research-distill`:
+Quality gate enforced by `/mem-research distill`:
 - distilled.md < 800 words
 - Every raw note has at least one source ref (`source_file:` frontmatter, body `<repo:file:line>`, or `Source:` line)
 

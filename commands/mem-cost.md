@@ -1,5 +1,5 @@
 ---
-description: Show exactly what the SessionStart bootstrap injects — per-file on-disk size, chars actually loaded, truncation, and any file dropped for lack of budget. Reads the real hook plan, so it cannot drift from what the model receives.
+description: "Show what the bootstrap and MEMORY.md block cost per session, plus recall stats"
 ---
 
 Report the real bootstrap token footprint for the active workspace.

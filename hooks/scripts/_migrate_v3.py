@@ -771,7 +771,7 @@ def render_report(rep: dict) -> str:
                 + f"\nBackup at {rep.get('backup')}")
     if rep["status"] == "stale_remote_abort":
         return ("stale_remote_abort: STEP 7 could not fast-forward.\n"
-                "Resolve conflicts in ~/.gowth-mem and re-run /mem-migrate-v3.")
+                "Resolve conflicts in ~/.gowth-mem and re-run /mem-ops migrate-v3.")
 
     counters = rep.get("counters", {})
     moves = rep.get("moves", [])

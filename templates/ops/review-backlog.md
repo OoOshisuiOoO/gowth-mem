@@ -2,7 +2,7 @@
 description: Auto-review past conversations from ~/.claude/projects that were never self-reviewed (ended before the 15-turn cadence, or predate v4.0). A machine-local ledger (review-ledger.json) marks reviewed vs unreviewed; this command works through the backlog oldest-first, scoring each with the v4.0 anti-sycophancy rubric and routing lessons to the vault.
 ---
 
-Work through the unreviewed-conversation backlog. Default batch: **3 conversations** per run (token-aware); `$ARGUMENTS` may override, e.g. `/mem-review-backlog 5` or `/mem-review-backlog --stats`.
+Work through the unreviewed-conversation backlog. Default batch: **3 conversations** per run (token-aware); `$ARGUMENTS` may override, e.g. `/mem-ops review-backlog 5` or `/mem-ops review-backlog --stats`.
 
 ## 0. Status
 

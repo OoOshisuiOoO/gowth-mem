@@ -1,6 +1,6 @@
 ---
 name: mem-save
-description: "Run the OpenClaw-inspired dreaming pipeline: prune → consolidate → lint → distill high-signal items from the current conversation into topic files. Use anytime — don't wait for auto-journal's 10-turn threshold."
+description: "Distill high-signal items from this session into topic files (dreaming)"
 ---
 
 # mem-save — Dreaming Pipeline (v2.9)

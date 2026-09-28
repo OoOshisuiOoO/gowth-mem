@@ -1,6 +1,6 @@
 ---
 name: mem-install
-description: First-time install wizard for ~/.gowth-mem/. Scaffolds shared + workspace v3 layout (topic-folder + dated aspect), gathers git remote+branch+token, writes settings.json + config.json, runs initial sync. Upgrade-aware — detects v2/v3 mismatch and prompts for /mem-migrate-v3.
+description: "First-time install wizard for ~/.gowth-mem (shared + workspace layout)"
 ---
 
 # mem-install
@@ -11,8 +11,8 @@ The wizard for a fresh v3.0 install. Run when the user has the plugin installed 
 
 If `~/.gowth-mem/shared/AGENTS.md` already exists, this is a re-run or an upgrade — do NOT scaffold or copy anything. Read `~/.gowth-mem/settings.json` `layout_version`:
 
-- `layout_version = 3`: already installed. Print `[mem-install] already on v3.0` and stop. Suggest `/mem-config` to change remote, `/mem-sync` to sync.
-- `layout_version < 3`: **v2 → v3 upgrade**. Dry-run `/mem-migrate-v3` so the user sees what would change, then ask to proceed. On yes run `/mem-migrate-v3`; otherwise abort with `[mem-install] upgrade declined — re-run when ready`.
+- `layout_version = 3`: already installed. Print `[mem-install] already on v3.0` and stop. Suggest `/mem-ops config` to change remote, `/mem-sync` to sync.
+- `layout_version < 3`: **v2 → v3 upgrade**. Dry-run `/mem-ops migrate-v3` so the user sees what would change, then ask to proceed. On yes run `/mem-ops migrate-v3`; otherwise abort with `[mem-install] upgrade declined — re-run when ready`.
 - `settings.json` missing but vault exists: corrupt install — refuse and suggest `/mem-doctor`.
 
 ## Step 1 — scaffold layout (fresh install only)
@@ -70,7 +70,7 @@ This creates `.git`, sets up `origin`, commits, attempts pull (allowing unrelate
 Tell the user:
 - `~/.gowth-mem/` is now active.
 - Suggest `memx` to build the search index.
-- If `~/Git/<some-workspace>/.gowth-mem/` exists (v1.0 layout), suggest `/mem-migrate-global`.
+- If `~/Git/<some-workspace>/.gowth-mem/` exists (v1.0 layout), suggest `/mem-ops migrate-global`.
 
 ## Idempotence
 

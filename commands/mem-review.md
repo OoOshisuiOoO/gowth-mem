@@ -1,5 +1,5 @@
 ---
-description: Honest session self-review (v4.0 metacognition). Scores this session on user prompting, Claude reasoning, and collaboration (anchored 1-5 each) with verbatim-quote evidence from the captured turn log, writes the scores to journal/_scores.md, and routes counterfactual-passed reflections to topics. Anti-sycophancy by contract; prefers a fresh-context subagent judge. Use --history to render the score trend.
+description: "Honest session self-review by a fresh-context judge (3-line relay)"
 ---
 
 # /mem-review
@@ -92,8 +92,8 @@ capture itself is on).
 
 ## Related
 
-- `/mem-forget` — archives old session logs past `journal.raw_ttl_days`; salvages the
+- `/mem-ops forget` — archives old session logs past `journal.raw_ttl_days`; salvages the
   `## [self-review]` blocks into `journal/_salvage.md` first.
 - `/mem-distill` — route salvaged reflections / scores into durable topic files.
-- `/mem-reflect` — Generative-Agents-style reflections over journal + exp (topic-level,
+- `/mem-ops reflect` — Generative-Agents-style reflections over journal + exp (topic-level,
   not session-scoring).

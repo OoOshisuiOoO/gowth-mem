@@ -87,8 +87,8 @@ otherwise verify_fail false-positives on AWS docs example keys etc. See
 | Contradiction keyword overlap | `≥ 0.4` AND polarity mismatch → FLAG | `_lint.py` / `_contradict.py` | Zep temporal-edge invalidation |
 | Char-trigram Jaccard fuzzy fallback | `≥ 0.6` → wikilink resolve | `_wikilink.py` | v3.2 deterministic-only path |
 | Topic-folder soft max | `15-25` aspect files per topic | `_dream.py` Deep | Letta defragmentation target |
-| Topic-folder hard split | aggregate `> 800 lines` → `/mem-promote` | `_promote.py` | shared/AGENTS.md §8 |
-| Aspect-file hard size | `> 400 lines` → `/mem-promote` warning | shared/AGENTS.md §8 |
+| Topic-folder hard split | aggregate `> 800 lines` → `/mem-ops promote` | `_promote.py` | shared/AGENTS.md §8 |
+| Aspect-file hard size | `> 400 lines` → `/mem-ops promote` warning | shared/AGENTS.md §8 |
 | Fact poignancy (manual, optional) | scale `1-5`; only `≥ 3` survives to `[decision]/[ref]` | docs-side | Zep `fact_rating` 1-5 |
 
 ## 3. Retention TTL by 9-type schema
@@ -154,7 +154,7 @@ Every entry passes through `_topic.classify_intent`:
 
 Auto-journal protocol step 5 must call this classifier — no blind append.
 
-## 6. Consolidation triggers (`/mem-dream` phases)
+## 6. Consolidation triggers (`/mem-ops dream` phases)
 
 | Trigger | Phase | Action |
 |---|---|---|
@@ -162,7 +162,7 @@ Auto-journal protocol step 5 must call this classifier — no blind append.
 | Candidate cluster Jaccard `≥ 0.3` | REM | group by keyword theme |
 | Deep score `≥ 0.6` | Deep → promote | surface key entries for manual lift to docs/ref.md |
 | Deep score `0.3-0.6` | Deep → maintain | keep, no action |
-| Deep score `< 0.3` | Deep → prune candidate | feed to `/mem-prune` |
+| Deep score `< 0.3` | Deep → prune candidate | feed to `/mem-ops prune` |
 
 Run cadence: weekly OR after long session OR when `/mem-recall` returns noisy.
 

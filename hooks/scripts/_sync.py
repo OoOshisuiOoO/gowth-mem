@@ -9,7 +9,7 @@ CLI:
   python3 _sync.py [--init|--pull-only|--push-only]
 
 Conflict path: writes ~/.gowth-mem/SYNC-CONFLICT.md via _conflict.py and exits 2.
-User then runs /mem-sync-resolve.
+User then runs /mem-sync resolve.
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def main() -> int:
         return 1
 
     if conflict_md().is_file():
-        print("ERROR: SYNC-CONFLICT.md present. Run /mem-sync-resolve first.", file=sys.stderr)
+        print("ERROR: SYNC-CONFLICT.md present. Run /mem-sync resolve first.", file=sys.stderr)
         return 2
 
     config = load_config()
@@ -135,7 +135,7 @@ def main() -> int:
     if not remote:
         print(
             "ERROR: ~/.gowth-mem/config.json missing 'remote'.\n"
-            "Run /mem-config to set it up. Token via env GOWTH_MEM_GIT_TOKEN preferred.",
+            "Run /mem-ops config to set it up. Token via env GOWTH_MEM_GIT_TOKEN preferred.",
             file=sys.stderr,
         )
         return 1
@@ -195,7 +195,7 @@ def main() -> int:
                         if package_conflict() is None:
                             print("init: memory/MEMORY.md conflict merged automatically")
                         else:
-                            print("init: conflict — wrote SYNC-CONFLICT.md, run /mem-sync-resolve",
+                            print("init: conflict — wrote SYNC-CONFLICT.md, run /mem-sync resolve",
                                   file=sys.stderr)
                             return 2
                     else:
@@ -243,7 +243,7 @@ def main() -> int:
                         return 1
                     from _conflict import package_conflict  # type: ignore
                     if package_conflict() is not None:
-                        print("sync: conflict — wrote SYNC-CONFLICT.md, run /mem-sync-resolve",
+                        print("sync: conflict — wrote SYNC-CONFLICT.md, run /mem-sync resolve",
                               file=sys.stderr)
                         return 2
                     print(f"sync: pulled origin/{branch} (memory/MEMORY.md merged automatically)")

@@ -2,7 +2,7 @@
 tree to the local side so files stay parseable (no <<<<<<< markers in topics).
 
 Called by auto-sync.py / _sync.py when `git pull --rebase` reports CONFLICT.
-The conflict is then resolved by the user via the /mem-sync-resolve skill,
+The conflict is then resolved by the user via the /mem-sync resolve skill,
 which reads SYNC-CONFLICT.md and applies the chosen version through atomic_write.
 """
 from __future__ import annotations
@@ -137,7 +137,7 @@ def package_conflict() -> "Path | None":
 
     parts.append(
         "\n## How to resolve\n\n"
-        "Run `/mem-sync-resolve` in Claude Code. The skill will walk each file,\n"
+        "Run `/mem-sync resolve` in Claude Code. The skill will walk each file,\n"
         "ask you which version to keep (or merge), apply via atomic_write,\n"
         "then `git rebase --continue` and push.\n\n"
         "To abort the rebase entirely: `git -C ~/.gowth-mem rebase --abort`.\n"

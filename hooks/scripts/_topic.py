@@ -441,7 +441,7 @@ def _pick_topic(content: str, ws: str,
 
     new_slug = _avoid_domain(
         _guard_new_slug(_slugify(_ranked(kws_in_order, 2)) or default_topic, default_topic), ws_dir)
-    # Already exists (e.g. nested via /mem-restructure) → write there, don't shadow.
+    # Already exists (e.g. nested via /mem-ops restructure) → write there, don't shadow.
     existing = slug_index.get(new_slug)
     if existing is not None and existing.parent != ws_dir:
         return new_slug, existing.parent
@@ -735,7 +735,7 @@ def append_entry_status(content: str, ws: str | None = None,
 
     # v4.3: refresh the index for just this file so the entry is recallable NOW.
     # Nothing on the write path used to touch index.db, so a captured memory stayed
-    # invisible to /mem-recall until a manual /mem-reindex (live index: 5 days stale).
+    # invisible to /mem-recall until a manual /mem-ops reindex (live index: 5 days stale).
     try:
         from _index import reindex_paths  # type: ignore
         reindex_paths([target])

@@ -1,5 +1,5 @@
 ---
-description: Self-heal gowth-mem plugin's installed_plugins.json registration. Pulls the marketplace clone to latest, materializes the cache dir, atomically rewrites installPath. Idempotent — silent when healthy. Use after `claude /plugin marketplace update`, when hooks stop firing, or to verify portability before sharing config across machines.
+description: "Diagnose and self-heal plugin registration, version drift, native wiring"
 ---
 
 Run the gowth-mem self-heal doctor.
@@ -56,7 +56,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_version.py"
 - After `claude /plugin marketplace update gowth-mem` to confirm the cache dir was materialized.
 - When `[gowth-mem:bootstrap]` stops appearing in SessionStart context.
 - Before pushing a fresh `~/.claude/settings.json` to a new machine.
-- After running `/mem-migrate-v3` to confirm the v3 layout is healthy across all workspaces.
+- After running `/mem-ops migrate-v3` to confirm the v3 layout is healthy across all workspaces.
 
 ## v3 layout sanity checks (advisory)
 

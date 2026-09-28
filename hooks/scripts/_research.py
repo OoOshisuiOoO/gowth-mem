@@ -250,7 +250,7 @@ def cmd_distill(topic: str, ws: str, today: str | None = None) -> dict:
         return {
             "topic": topic,
             "passed": False,
-            "issues": [f"no raw notes yet — run /mem-research-start {topic} first"],
+            "issues": [f"no raw notes yet — run /mem-research start {topic} first"],
             "raw_count": 0,
         }
     distilled = distilled_path(ws, topic)

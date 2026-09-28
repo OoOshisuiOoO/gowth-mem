@@ -953,11 +953,11 @@ def reindex_paths(paths) -> int:
     Called right after a routed write (`_topic.append_entry`, `_lesson.append_lesson`)
     so a just-captured memory is recallable IMMEDIATELY. Before v4.3 nothing on the
     write path touched index.db, so new entries stayed invisible to /mem-recall until
-    someone remembered to run /mem-reindex — the live vault's index was 5 days stale.
+    someone remembered to run /mem-ops reindex — the live vault's index was 5 days stale.
 
     Contract, because this runs on the Stop-hook path:
       * never raises — returns 0 on any failure;
-      * never CREATES index.db (a missing index must be built by /mem-reindex as a
+      * never CREATES index.db (a missing index must be built by /mem-ops reindex as a
         whole, not silently half-populated from whichever file was written last);
       * a path whose file no longer exists has its rows dropped;
       * serialised under file_lock("index-write") so concurrent sessions can't

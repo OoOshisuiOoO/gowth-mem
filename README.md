@@ -15,8 +15,8 @@ v3.4 cuts hook token waste, makes the 9-type schema actually queryable, and ship
 - **Tag-aware FTS5 schema** — `chunks` and `chunks_fts` gain a `tag TEXT` column. Existing DBs auto-migrate (`ALTER TABLE` + backfill from leading `[tag]` marker). `KNOWN_TAGS = {decision, exp, ref, tool, reflection, skill-ref, secret-ref, goal, hypothesis}`; unknown tags stored as empty string.
 - **Cross-file, tag-aware SHA-256 dedup** (`_dedup.py`) — write-time hash over `(tag, normalized_content)` blocks `[decision] foo` duplicates across files and sessions, but allows `[exp] foo` (different tag = different fact). Fixes the "ghi vào nhưng không dùng được" symptom.
 - **`/mem-recall --type=<tag>` retrieval** — new `_query.query_by_type(ws, tag, query)` pre-filters by tag before BM25 ranking. Schema is now first-class, not a formatting hint.
-- **`/mem-dream` skill** — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
-- **Command surface pruning (33→28)** — deleted `/mem-bootstrap` and `/mem-flush` (auto-run via hooks now), plus the four `/mem-workspace-*` subcommand stubs (`-create`, `-archive`, `-list`, `-map`) collapsed into one `/mem-workspace [<verb>]` parent. Net of the new `/mem-recall` and `/mem-dream` docs: 33 - 6 + 1 = 28.
+- **`/mem-ops dream` skill** — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
+- **Command surface pruning (33→28)** — deleted `mem-bootstrap` and `mem-flush` (auto-run via hooks now), plus the four `/mem-workspace *` subcommand stubs (`-create`, `-archive`, `-list`, `-map`) collapsed into one `/mem-workspace [<verb>]` parent. Net of the new `/mem-recall` and `/mem-ops dream` docs: 33 - 6 + 1 = 28.
 
 ### What's still in v3.3
 
@@ -24,8 +24,8 @@ v3.3's **deterministic-only retrieval** stays in force: no external embedding AP
 
 - **No LLM in the vector path.** Embedding calls (`_embed.py`) are gated behind explicit opt-in `GOWTH_MEM_USE_LLM_EMBED=1`. Default: FTS5 BM25 + char-trigram Jaccard fuzzy fallback.
 - **4-tier weighted context planner** (`_budget.py`, agentmemory-inspired) — classifies every file as `working / episodic / semantic / procedural`, combines tier weight + char-ngram Jaccard relevance + Ebbinghaus 14-day recency decay, and greedy-fills a token budget. Stable prefix (shared AGENTS/secrets/tools + workspace AGENTS/handoff + today's journal) always loads first for Anthropic prompt-cache hits.
-- **rtk-style pre-storage compression** (`_compress.py`) — collapses 3+ adjacent identical lines into `<line> (×N)` and merges adjacent `key: value` runs into `key: [N items: ...]`. Idempotent. Use via `/mem-compress`.
-- **Heuristic contradiction lint** (`_contradict.py`) — scans `[ref] / [decision] / [tool]` lines for polarity mismatches (`enabled` vs `disabled`, `true` vs `false`, etc.) sharing >=3 keywords; surfaces candidate pairs but never auto-mutates. Use via `/mem-lint`.
+- **rtk-style pre-storage compression** (`_compress.py`) — collapses 3+ adjacent identical lines into `<line> (×N)` and merges adjacent `key: value` runs into `key: [N items: ...]`. Idempotent. Use via `/mem-ops compress`.
+- **Heuristic contradiction lint** (`_contradict.py`) — scans `[ref] / [decision] / [tool]` lines for polarity mismatches (`enabled` vs `disabled`, `true` vs `false`, etc.) sharing >=3 keywords; surfaces candidate pairs but never auto-mutates. Use via `/mem-ops lint`.
 - **Deterministic fuzzy search** (`_lexical.py`) — char-trigram Jaccard with case/whitespace normalisation. Used as fallback when FTS5 BM25 underperforms (typos, multilingual morphology).
 
 ## What it does
@@ -68,11 +68,11 @@ Topic slugs are unique inside a workspace. v3 wikilink resolution falls back thr
 
 ### Upgrading from v2.x
 
-`/mem-install` detects `layout_version < 3` and offers `/mem-migrate-v3`:
+`/mem-install` detects `layout_version < 3` and offers `/mem-ops migrate-v3`:
 
 ```text
-/mem-migrate-v3              # dry-run is default — preview the move plan
-/mem-migrate-v3 --force      # execute: snapshot → classify → execute → verify
+/mem-ops migrate-v3              # dry-run is default — preview the move plan
+/mem-ops migrate-v3 --force      # execute: snapshot → classify → execute → verify
 ```
 
 The 7-step pipeline snapshots every workspace into `.backup/v2-pre-v3-<utc>/`,
@@ -136,7 +136,7 @@ After install:
 
 ```text
 memx                  build the search index
-/mem-migrate-global   import any older per-workspace .gowth-mem folders
+/mem-ops migrate-global   import any older per-workspace .gowth-mem folders
 ```
 
 ## Self-heal user-level hook (recommended one-time setup)
@@ -188,33 +188,33 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 | Command | Shortcut | Purpose |
 |---|---|---|
 | `/mem-install` | `memI` | First-time setup wizard |
-| `/mem-config` | `memg` | Change git remote, branch, token strategy, or workspace map |
+| `/mem-ops config` | `memg` | Change git remote, branch, token strategy, or workspace map |
 | `/mem-sync` | `memy` | Manual sync |
-| `/mem-sync-resolve` | `memC` | AI-mediated conflict resolution |
-| `/mem-migrate-global` | `memm` | Import older per-workspace `.gowth-mem/` data |
-| `/mem-migrate-v3` | — | Promote `~/.gowth-mem/` from v2.x to v3 topic-folder layout (7-step pipeline, dry-run default, rolling-2 backup) |
+| `/mem-sync resolve` | `memC` | AI-mediated conflict resolution |
+| `/mem-ops migrate-global` | `memm` | Import older per-workspace `.gowth-mem/` data |
+| `/mem-ops migrate-v3` | — | Promote `~/.gowth-mem/` from v2.x to v3 topic-folder layout (7-step pipeline, dry-run default, rolling-2 backup) |
 | `/mem-topic` | `memT` | List, inspect, or route topics |
 | `/mem-save` | `mems` | Save entry to a topic |
 | `/mem-distill` | `memd` | Journal to topics |
-| `/mem-reflect` | `memr` | Generate reflections |
-| `/mem-skillify` | `memk` | Extract reusable workflows |
-| `/mem-journal` | `memj` | Open today's journal |
+| `/mem-ops reflect` | `memr` | Generate reflections |
+| `/mem-ops skillify` | `memk` | Extract reusable workflows |
+| `/mem-ops journal` | `memj` | Open today's journal |
 | `/mem-recall` | — | v3.4 — deterministic FTS5 BM25 recall with optional `--type=<tag>` pre-filter (decision/exp/ref/tool/reflection/skill-ref/secret-ref/goal/hypothesis) |
-| `/mem-dream` | — | v3.4 — run Light/REM/Deep consolidation across a workspace (wraps `_consolidate.py`); supports `--ws`, `--dry-run`, per-phase skip flags |
-| `/mem-reindex` | `memx` | Rebuild SQLite FTS5 + optional vector index |
+| `/mem-ops dream` | — | v3.4 — run Light/REM/Deep consolidation across a workspace (wraps `_consolidate.py`); supports `--ws`, `--dry-run`, per-phase skip flags |
+| `/mem-ops reindex` | `memx` | Rebuild SQLite FTS5 + optional vector index |
 | `/mem-cost` | `memc` | Estimate bootstrap token footprint |
-| `/mem-prune` | `memp` | Remove outdated, superseded, or duplicate entries |
+| `/mem-ops prune` | `memp` | Remove outdated, superseded, or duplicate entries |
 | `/mem-lesson` | `memL` | Append a 5-field bug/lesson entry |
 | `/mem-doctor` | — | Self-heal plugin install path drift (issue #52218); pulls marketplace, materializes cache, patches registry |
-| `/mem-research-start <topic>` | — | Scaffold deep-research topic (`research/<topic>/raw/_locate.md` source-code map template) |
-| `/mem-research-distill <topic>` | — | Scaffold `distilled.md` (TL;DR / Architecture / Key facts / Code anchors / Delta / Open questions) + run quality gate (<800 words, every raw note has source ref) |
-| `/mem-research-status` | — | List research topics + state (pending / in-progress / distilled) |
+| `/mem-research start <topic>` | — | Scaffold deep-research topic (`research/<topic>/raw/_locate.md` source-code map template) |
+| `/mem-research distill <topic>` | — | Scaffold `distilled.md` (TL;DR / Architecture / Key facts / Code anchors / Delta / Open questions) + run quality gate (<800 words, every raw note has source ref) |
+| `/mem-research status` | — | List research topics + state (pending / in-progress / distilled) |
 | `/mem-workspace [<verb> [args]]` | — | Workspace management — list (default), create, archive, map |
-| `/mem-promote` | — | Promote topic to Obsidian wiki (requires claude-obsidian) |
-| `/mem-restructure` | — | Reorganize topics (move slugs, rebuild MOCs) |
-| `/mem-lint` | — | v3.3 — heuristic contradiction scan across `[ref]/[decision]/[tool]` lines (polarity-pair mismatches sharing >=3 keywords). Read-only. |
-| `/mem-compress` | — | v3.3 — rtk-style pre-storage compression (collapse 3+ identical lines + merge `key: value` runs). Deterministic, idempotent. |
-| `/mem-budget` | — | v3.3 — preview 4-tier weighted context plan for a query (working/episodic/semantic/procedural + Ebbinghaus decay) within a char budget. |
+| `/mem-ops promote` | — | Promote topic to Obsidian wiki (requires claude-obsidian) |
+| `/mem-ops restructure` | — | Reorganize topics (move slugs, rebuild MOCs) |
+| `/mem-ops lint` | — | v3.3 — heuristic contradiction scan across `[ref]/[decision]/[tool]` lines (polarity-pair mismatches sharing >=3 keywords). Read-only. |
+| `/mem-ops compress` | — | v3.3 — rtk-style pre-storage compression (collapse 3+ identical lines + merge `key: value` runs). Deterministic, idempotent. |
+| `/mem-ops budget` | — | v3.3 — preview 4-tier weighted context plan for a query (working/episodic/semantic/procedural + Ebbinghaus decay) within a char budget. |
 
 ## Multi-session safety
 
@@ -234,11 +234,11 @@ PreCompact    → auto-sync.py --commit-only
 PostCompact   → auto-sync.py --pull-rebase-push
 ```
 
-If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files. The next prompt reminds you to run `/mem-sync-resolve`.
+If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files. The next prompt reminds you to run `/mem-sync resolve`.
 
 ## Recall
 
-On-prompt recall hook was removed in v3.2 (token cost > retrieval benefit). Use direct queries via slash commands or grep/Read tools. The `index.db` (built by `/mem-reindex`) still powers `[[wikilink]]` slug resolution inside topic files.
+On-prompt recall hook was removed in v3.2 (token cost > retrieval benefit). Use direct queries via slash commands or grep/Read tools. The `index.db` (built by `/mem-ops reindex`) still powers `[[wikilink]]` slug resolution inside topic files.
 
 **v3.3 deterministic retrieval stack** (no LLM, pure stdlib):
 
@@ -337,7 +337,7 @@ Hoặc clone thủ công: `git clone https://github.com/OoOshisuiOoO/gowth-mem ~
 
 ```bash
 git clone <REMOTE-URL> ~/.gowth-mem
-/mem-config             # set remote+token (config.json gitignore nên không có trong clone)
+/mem-ops config             # set remote+token (config.json gitignore nên không có trong clone)
 memx                    # build local index
 ```
 
@@ -350,7 +350,7 @@ memx                    # build local index
 | PreCompact | `precompact-flush.py` | **HARD-BLOCK** distill journal → topics trước khi compact |
 | PreCompact | `auto-sync.py --commit-only` | Commit local không network |
 | PostCompact | `auto-sync.py --pull-rebase-push` | Sync đầy đủ; conflict → `SYNC-CONFLICT.md` |
-| UserPromptSubmit | `conflict-detect.py` | Nhắc chạy `/mem-sync-resolve` khi có conflict |
+| UserPromptSubmit | `conflict-detect.py` | Nhắc chạy `/mem-sync resolve` khi có conflict |
 | Stop | `auto-journal.py` | Mỗi 10 turn: BLOCK với hướng dẫn auto-distill + active prune |
 
 ### Slash command & shortcut
@@ -358,28 +358,28 @@ memx                    # build local index
 | Command | Shortcut | Mục đích |
 |---|---|---|
 | `/mem-install` | `memI` | Wizard cài lần đầu |
-| `/mem-config` | `memg` | Đổi remote / branch / token |
+| `/mem-ops config` | `memg` | Đổi remote / branch / token |
 | `/mem-sync` | `memy` | Sync thủ công |
-| `/mem-sync-resolve` | `memC` | AI giải conflict |
-| `/mem-migrate-global` | `memm` | Import v1.0 per-workspace → v2.x global |
+| `/mem-sync resolve` | `memC` | AI giải conflict |
+| `/mem-ops migrate-global` | `memm` | Import v1.0 per-workspace → v2.x global |
 | `/mem-topic` | `memT` | List / inspect / route topic |
 | `/mem-save` | `mems` | Lưu entry vào topic |
 | `/mem-distill` | `memd` | Journal → topics |
-| `/mem-reflect` | `memr` | Sinh reflection |
-| `/mem-skillify` | `memk` | Extract workflow tái dùng |
-| `/mem-journal` | `memj` | Mở journal hôm nay |
+| `/mem-ops reflect` | `memr` | Sinh reflection |
+| `/mem-ops skillify` | `memk` | Extract workflow tái dùng |
+| `/mem-ops journal` | `memj` | Mở journal hôm nay |
 | `/mem-recall` | — | v3.4 — FTS5 BM25 recall + tuỳ chọn `--type=<tag>` lọc theo 9-type schema |
-| `/mem-dream` | — | v3.4 — chạy Light/REM/Deep consolidation (`_consolidate.py`); hỗ trợ `--ws`, `--dry-run`, skip từng phase |
-| `/mem-reindex` | `memx` | Rebuild SQLite FTS5+vec |
+| `/mem-ops dream` | — | v3.4 — chạy Light/REM/Deep consolidation (`_consolidate.py`); hỗ trợ `--ws`, `--dry-run`, skip từng phase |
+| `/mem-ops reindex` | `memx` | Rebuild SQLite FTS5+vec |
 | `/mem-cost` | `memc` | Estimate token footprint của bootstrap |
-| `/mem-prune` | `memp` | Active DELETE outdated/superseded/duplicate |
+| `/mem-ops prune` | `memp` | Active DELETE outdated/superseded/duplicate |
 | `/mem-lesson` | `memL` | Append 5-field bug/lesson |
 | `/mem-doctor` | — | Self-heal install path drift (issue #52218) |
-| `/mem-lint` | — | v3.3 — quét contradiction giữa `[ref]/[decision]/[tool]` (polarity mismatch + >=3 keyword chung). Read-only. |
-| `/mem-compress` | — | v3.3 — nén rtk-style trước khi ghi (gộp 3+ dòng giống nhau + merge `key: value` chung key). Idempotent. |
-| `/mem-budget` | — | v3.3 — preview kế hoạch context 4-tier (working/episodic/semantic/procedural + Ebbinghaus decay) trong char budget. |
+| `/mem-ops lint` | — | v3.3 — quét contradiction giữa `[ref]/[decision]/[tool]` (polarity mismatch + >=3 keyword chung). Read-only. |
+| `/mem-ops compress` | — | v3.3 — nén rtk-style trước khi ghi (gộp 3+ dòng giống nhau + merge `key: value` chung key). Idempotent. |
+| `/mem-ops budget` | — | v3.3 — preview kế hoạch context 4-tier (working/episodic/semantic/procedural + Ebbinghaus decay) trong char budget. |
 
-Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-recall`, `/mem-dream`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp. `/mem-bootstrap` và `/mem-flush` đã bị xoá ở v3.4 (auto-run qua hook).
+Slash command vẫn dùng đầy đủ (`/mem-save`, `/mem-recall`, `/mem-ops dream`, ...). Shortcut auto-detect intent từ prefix prompt đã bỏ ở v3.2 — gõ command trực tiếp. `mem-bootstrap` và `mem-flush` đã bị xoá ở v3.4 (auto-run qua hook).
 
 ### 9-type schema (line-level prefix trong topic file)
 
@@ -407,7 +407,7 @@ Windows không có `fcntl` → khuyến nghị single-session.
 
 ### Recall (tìm lại knowledge cũ)
 
-On-prompt recall hook đã bỏ ở v3.2 (token cost > benefit). Dùng slash command + grep/Read trực tiếp. `index.db` (build bằng `/mem-reindex`) vẫn còn dùng để resolve `[[wikilink]]` slug.
+On-prompt recall hook đã bỏ ở v3.2 (token cost > benefit). Dùng slash command + grep/Read trực tiếp. `index.db` (build bằng `/mem-ops reindex`) vẫn còn dùng để resolve `[[wikilink]]` slug.
 
 **v3.3 — stack retrieval deterministic (không LLM):**
 
@@ -427,9 +427,9 @@ On-prompt recall hook đã bỏ ở v3.2 (token cost > benefit). Dùng slash com
 
 | Triệu chứng | Cách fix |
 |---|---|
-| `/mem-install` báo "already initialized" | Đã cài rồi. Dùng `/mem-config`, `/mem-sync`, `/mem-migrate-global` |
+| `/mem-install` báo "already initialized" | Đã cài rồi. Dùng `/mem-ops config`, `/mem-sync`, `/mem-ops migrate-global` |
 | Recall không tìm thấy entry vừa lưu | Chạy `memx` rebuild index. Vẫn không thấy → `_topic.py --list` xem entry vào file nào |
-| `SYNC-CONFLICT.md` xuất hiện hoài | Chạy `/mem-sync-resolve` |
+| `SYNC-CONFLICT.md` xuất hiện hoài | Chạy `/mem-sync resolve` |
 | Push bị reject | Token sai scope (cần `repo`). Check `~/.gowth-mem/config.json` + `echo $GOWTH_MEM_GIT_TOKEN` |
 | Plugin im lặng sau update | Issue Claude Code #52218 — chạy `/mem-doctor` (hoặc setup self-heal hook bên trên) |
 

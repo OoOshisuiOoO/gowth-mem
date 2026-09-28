@@ -409,7 +409,7 @@ class TestForgetOnReviewCadence(ReviewBase):
     def test_forget_runs_even_when_review_deferred(self):
         """v4.7.1 residual (reviewer N3): journal-off + reflection-on +
         capture-off must still archive — journal/<date>.md files keep arriving
-        from /mem-journal and precompact-flush.py regardless of capture."""
+        from /mem-ops journal and precompact-flush.py regardless of capture."""
         self._write_settings(journal_enabled=False, turn_interval=1, auto_forget=True,
                              capture_enabled=False)
         old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"
@@ -459,7 +459,7 @@ class TestV471RobustStdin(ReviewBase):
 
 class TestV471CaptureOnly(ReviewBase):
     def test_capture_only_config_still_captures(self):
-        """Both cadences OFF + capture_enabled true (a /mem-review-only user):
+        """Both cadences OFF + capture_enabled true (a review-only user):
         the early return silently killed the knob pre-v4.7.1 — journal/sessions/
         stayed empty forever with no notice."""
         self._write_settings(reflection_enabled=False, journal_enabled=False,
@@ -571,7 +571,7 @@ class TestV471PausedNotice(ReviewBase):
 
     def test_paused_notice_carries_backlog_nudge(self):
         """v4.7.1: no-transcript / capture-off cohorts can only ever be
-        reviewed via /mem-review-backlog — the paused notice is the ONLY
+        reviewed via /mem-ops review-backlog — the paused notice is the ONLY
         signal they still get, so it must carry the nudge."""
         claude_dir = self.home / "claude-config"
         proj = claude_dir / "projects" / "-tmp-proj"
@@ -589,7 +589,7 @@ class TestV471PausedNotice(ReviewBase):
         d = json.loads(r.stdout.strip())
         self.assertIn("review-paused", self._directive(d))
         self.assertIn("Backlog: 1 past conversation", self._directive(d))
-        self.assertIn("/mem-review-backlog", self._directive(d))
+        self.assertIn("/mem-ops review-backlog", self._directive(d))
 
 
 class TestV471MidnightSplit(ReviewBase):
@@ -631,7 +631,7 @@ class TestV471MidnightSplit(ReviewBase):
 class TestV471ForgetDaily(ReviewBase):
     def test_forget_runs_with_all_cadences_off(self):
         """journal-off + reflection-off never archived pre-v4.7.1, while
-        /mem-journal and precompact-flush.py keep writing journal/<date>.md."""
+        /mem-ops journal and precompact-flush.py keep writing journal/<date>.md."""
         self._write_settings(reflection_enabled=False, journal_enabled=False,
                              auto_forget=True)
         old = self.home / "workspaces" / "default" / "journal" / "2026-01-01.md"

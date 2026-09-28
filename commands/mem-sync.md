@@ -1,5 +1,5 @@
 ---
-description: Manual sync of ~/.gowth-mem/ with the configured git remote. Auto-commits local changes, pulls with rebase, pushes. On conflict, writes ~/.gowth-mem/SYNC-CONFLICT.md so /mem-sync-resolve can walk the user through resolution.
+description: "Sync the vault with its git remote; /mem-sync resolve handles conflicts"
 ---
 
 Sync `~/.gowth-mem/` with the configured git remote.
@@ -14,7 +14,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py" "$@"
 
 ## Pre-requisite
 
-`~/.gowth-mem/config.json` must contain `remote` + `branch` (use `/mem-install` or `/mem-config`).
+`~/.gowth-mem/config.json` must contain `remote` + `branch` (use `/mem-install` or `/mem-ops config`).
 
 Token: env var `GOWTH_MEM_GIT_TOKEN` preferred. Fallback: `config.json["token"]` (plaintext-on-disk; gitignored).
 
@@ -61,14 +61,14 @@ If `git pull --rebase` hits a conflict, `_sync.py` invokes `_conflict.py` which:
 2. Resets the working copy to the local side so files stay parseable (no raw `<<<<<<<` markers in topics).
 3. Exits with code 2.
 
-Then run `/mem-sync-resolve` (shortcut: `memC`). The skill walks each file with you, applies your choice, and finishes the rebase + push under lock.
+Then run `/mem-sync resolve` (shortcut: `memC`). The skill walks each file with you, applies your choice, and finishes the rebase + push under lock.
 
 ## After sync on a fresh machine
 
 Index is per-machine; rebuild it:
 
 ```
-memx        (or /mem-reindex)
+memx        (or /mem-ops reindex)
 ```
 
 ## Token security
@@ -76,3 +76,10 @@ memx        (or /mem-reindex)
 - Best: `export GOWTH_MEM_GIT_TOKEN=ghp_xxxx` in shell rc.
 - OK: `config.json["token"]` (gitignored, plaintext on disk; use a fine-scoped GitHub PAT).
 - Never: commit token into a tracked file or paste it into a topic file.
+
+## resolve — `/mem-sync resolve`
+
+When `~/.gowth-mem/SYNC-CONFLICT.md` exists, read `${CLAUDE_PLUGIN_ROOT}/templates/ops/sync-resolve.md`
+and follow it: walk each conflicted file, apply the user's choice (keep-local / keep-remote /
+merge / manual), `git rebase --continue`, then push. Conflicts on `workspaces/<ws>/memory/MEMORY.md`
+merge automatically since v4.8 (both free zones kept, block regenerated) and never appear there.

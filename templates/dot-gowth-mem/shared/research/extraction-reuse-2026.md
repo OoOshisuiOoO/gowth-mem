@@ -28,8 +28,8 @@ rules that reject junk at write time** (`_gate.py` enforces the deterministic su
 |---|---|---|---|
 | Capture | per event | append raw to journal (ephemeral buffer) | `precompact-flush` / `memj` |
 | Extract | session end / debounce ~30s idle | raw → atomic, self-contained, reusable entry | `/mem-distill` |
-| Consolidate | weekly | merge near-dups, promote repeated episodics, link | `/mem-dream` |
-| Forget | daily/weekly | archive raw past 7d TTL, decay stale | `_forget.py` / `/mem-forget` |
+| Consolidate | weekly | merge near-dups, promote repeated episodics, link | `/mem-ops dream` |
+| Forget | daily/weekly | archive raw past 7d TTL, decay stale | `_forget.py` / `/mem-ops forget` |
 
 Extraction runs **offline** (not mid-task) so it sees a *complete* cognitive loop
 (error → tried → fix), not half-formed utterances. (LangMem debounce; Gemini DR.)
@@ -133,7 +133,7 @@ Verify: <how it resolves — backtest / experiment / observation / code path to 
 
 ## [tool] <short title>          ← version + working `command`.
 ## [exp] <short title>           ← episodic, specific cause.
-## [reflection] <short title>    ← pattern (weekly via /mem-reflect).
+## [reflection] <short title>    ← pattern (weekly via /mem-ops reflect).
 
 ## Superseded                    ← entries marked (superseded) live here (history out of the way).
 ```
@@ -147,6 +147,6 @@ Verify: <how it resolves — backtest / experiment / observation / code path to 
 - **Order**: goal → decision → ref → tool → hypothesis → exp → reflection (canon §3 type order). Current truth on top; hypotheses sit below the verified types (lower trust).
 - **Superseded → trailing `## Superseded`** (positive framing: current truth on top, history
   in git + this section). `[decision]` is never hard-deleted — moved here marked `(superseded)`.
-- One file **≤ 500 lines / ~5k tokens** (canon §2; split via `/mem-promote` past that).
+- One file **≤ 500 lines / ~5k tokens** (canon §2; split via `/mem-ops promote` past that).
 - Each block obeys §2 (self-contained, when-to-apply, Source) + §3 hard rules.
 - Legacy `- [type] ...` bullets are still recognized on read; new writes use blocks.

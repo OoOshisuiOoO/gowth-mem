@@ -87,7 +87,7 @@ class TestJudgeRubricContract(unittest.TestCase):
 
     def test_backlog_jsonl_mode_documented(self):
         self.assertIn("Backlog mode", JUDGE,
-                      "/mem-review-backlog judges receive raw JSONL with zero "
+                      "/mem-ops review-backlog judges receive raw JSONL with zero "
                       "'## turn' blocks — without this mode they floor-skip everything")
 
 
