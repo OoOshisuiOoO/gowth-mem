@@ -127,6 +127,68 @@ def _rotate_stale_bullets(sections: list[str], cutoff: "_dt.date") -> tuple[list
     return out_sections, archived
 
 
+def digest(ws: str, max_lines: int = 60, max_line_chars: int = 160) -> list[str]:
+    """v4.8: the newest-first handoff slice for the MEMORY.md managed block.
+
+    Dated `##` sections come first, newest date first (equal dates keep file
+    order), then the undated structural sections in file order. Inside the
+    newest section, live `- host:` bullets ([blocker]/[doing]/[next]/[thread])
+    precede the others. Blank lines are dropped, lines longer than
+    `max_line_chars` are cut with an ellipsis, and at most `max_lines` lines
+    are returned. A file with no `##` heading (the idol-ai shape) yields its
+    first `max_lines` non-blank lines. Missing or unreadable file → [].
+    """
+    p = docs_dir(ws) / "handoff.md"
+    if not p.is_file():
+        return []
+    try:
+        text = p.read_text(errors="ignore")
+    except OSError:
+        return []
+
+    out: list[str] = []
+
+    def _emit(lines) -> bool:
+        for ln in lines:
+            s = ln.rstrip()
+            if not s.strip():
+                continue
+            if len(s) > max_line_chars:
+                s = s[: max_line_chars - 1] + "…"
+            out.append(s)
+            if len(out) >= max_lines:
+                return True
+        return False
+
+    _preamble, sections = _split_sections(text)
+    if not sections:
+        _emit(text.splitlines())
+        return out
+
+    dated: list[tuple] = []
+    undated: list[str] = []
+    for s in sections:
+        k = _section_date_key(s)
+        if k is None:
+            undated.append(s)
+        else:
+            dated.append((k, s))
+    dated.sort(key=lambda t: t[0], reverse=True)   # stable: equal dates keep file order
+    ordered = [s for _, s in dated] + undated
+
+    if ordered:
+        head, items, tail = _split_bullet_items(ordered[0])
+        if items:
+            live = [it for it in items if LIVE_STATUS_RE.search(it.splitlines()[0])]
+            rest = [it for it in items if it not in live]
+            ordered[0] = head + "".join(live + rest) + tail
+
+    for s in ordered:
+        if _emit(s.splitlines()):
+            break
+    return out
+
+
 def rotate_handoff(ws: str, keep: int, dry_run: bool,
                    max_age_days: int = DEFAULT_MAX_AGE_DAYS,
                    today: str | None = None) -> dict:
