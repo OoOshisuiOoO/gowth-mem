@@ -183,21 +183,24 @@ C — command consolidation, settings example, docs. Release only after all thre
 
 ### 4.4 `recall-on-prompt.sh` → `_recall_prompt.py` (UserPromptSubmit)
 
-- Bash pre-check, no Python: exit 0 silently when `recall.on_prompt.enabled` is `false` in
-  `settings.json` (grep), when the prompt (first 200 bytes extracted with `sed`) starts with `/`
-  or `!`, when it is shorter than 40 bytes, or when the event names a subagent
-  (`agent_type`/`in_loop` as in the Stop hook's subagent skip).
+- Bash pre-check, no Python: exit 0 silently when `recall.on_prompt_enabled` is `false` in
+  `settings.json` (grep on the flat key — nested keys cannot be scoped by grep), when the
+  prompt (first 200 bytes extracted with `sed`) starts with `/` or `!`, when it is shorter
+  than 40 bytes, or when the event names a subagent (`agent_type`/`in_loop` as in the Stop
+  hook's subagent skip). The prompt is capped at `recall.on_prompt_prompt_cap` (2,000 chars)
+  before profiling.
 - Python: `query = _profile.fts_match(_profile.profile(prompt))`; `rows = _query.query_ex(query,
   ws=active, limit=8, exclude=("research/", "docs/handoff-archive.md", "journal/", "memory/MEMORY.md"))`.
   Injection gate, all required:
-  - ≥ `recall.on_prompt.min_terms` (default 2) distinct query terms present in the chunk;
-  - `bm25 ≤ recall.on_prompt.score_threshold` (default calibrated in §7.3; stored in settings);
-  - chunk id not in `state.json.session[<sid>].injected` (capped at 300 ids, FIFO);
-  - at most `recall.on_prompt.max_entries` (3) entries and `max_chars` (2,000) in total.
-- Output format (additionalContext, through `clamp_context`):
+  - ≥ `recall.on_prompt_min_terms` (default 2) distinct query terms present in the chunk;
+  - `bm25 ≤ recall.on_prompt_score_threshold` (default calibrated in §7.3; stored in settings);
+  - chunk id not in `state.json.session[<sid>].recall.ids` (capped at 300 ids, FIFO);
+  - at most `recall.on_prompt_max_entries` (3) entries and `on_prompt_max_chars` (2,000) in total.
+- Output format (additionalContext, through `clamp_context`; the index stores no line numbers,
+  so the pointer is the path):
   ```
   [gowth-mem:recall ws=<ws>] related memory (read the file for more):
-  - <ws>/<path>:<line> [<type>] <title> — <snippet ≤ 700 chars>
+  - <path> [<type>] <title> — <snippet ≤ 700 chars>
   ```
   No qualifying chunk → no output at all (no `{}` envelope needed; exit 0 with empty stdout).
 - Telemetry: `state.json.session[<sid>].recall = {"prompts": n, "injected": n, "chars": n}`;
@@ -208,9 +211,9 @@ C — command consolidation, settings example, docs. Release only after all thre
 
 - `_index.py --incremental`: walk every workspace's `.md` files (≈2,000 stats), reindex those
   with mtime newer than the stored row or with no row, at most 200 files per run; prints the
-  count. The Stop hook runs it synchronously when `sources_changed` or when the last run is
-  older than 10 minutes; SessionStart starts it detached. The daily forget slot runs a full
-  `--rebuild`.
+  count. The Stop hook runs it synchronously (8 s timeout) when `sources_changed` or when the
+  last run is older than 10 minutes; SessionStart starts it detached. The daily forget slot
+  starts a detached full `--full` rebuild once per calendar day (`state.json.index_last_full`).
 - `list_workspaces()` returns every `workspaces/<name>/` directory that contains `docs/`,
   `journal/`, or a topic folder, with or without `workspace.json`; `/mem-doctor --fix` creates
   the missing `workspace.json`.
@@ -239,14 +242,16 @@ C — command consolidation, settings example, docs. Release only after all thre
 
 ### 4.7 Command surface
 
-- Keep 15 top-level commands: `mem-recall`, `mem-save`, `mem-review`, `mem-sync`, `mem-doctor`,
+- Keep 15 user-facing commands: `mem-recall`, `mem-save`, `mem-review`, `mem-sync`, `mem-doctor`,
   `mem-setup`, `mem-install`, `mem-workspace`, `mem-research` (subcommands `start | distill |
-  status`), `mem-distill`, `mem-topic`, `mem-lesson`, `mem-goal`, `mem-handoff`, `mem-cost`.
+  status`), `mem-distill`, `mem-topic`, `mem-lesson`, `mem-goal`, `mem-handoff`, `mem-cost` —
+  plus the `mem-ops` umbrella (16 files under `commands/`).
 - Everything else moves under `mem-ops <sub>`: `budget changelog compress config dream forget
   gate journal lint migrate-global migrate-v3 promote prune reflect reindex restructure retag
   review-backlog skillify validate verify`, plus `sync-resolve` becomes `mem-sync resolve`.
   `mem-ops.md` dispatches on the first argument and links each sub's instructions, which move
-  to `commands/ops/<sub>.md` (not listed; read on invocation).
+  to `templates/ops/<sub>.md` (`templates/` is not scanned for commands, so they never appear
+  in the skill listing; read on invocation).
 - Skills: keep `mem-save`, `mem-sync`, `mem-install`, `mem-distill`, `mem-sync-resolve` (retitled
   to fire on conflict text), add `mem-recall`; remove the other 8.
 - Every description ≤ 80 chars, no `Usage:` text, no bare `: ` (frontmatter rule), and
@@ -264,8 +269,10 @@ C — command consolidation, settings example, docs. Release only after all thre
   `_sync`, `_forget`, `_capture`, `_gate`, `_tags`, `_index`, `bootstrap-load`, `_topic`,
   `_lesson` use it.
 - New keys (all documented in the example): `native.enabled` (bool, default true),
-  `recall.on_prompt.{enabled, max_entries, max_chars, min_terms, score_threshold}`,
-  `memfile.{max_lines, max_chars}`. The 51 dead keys are deleted from
+  `recall.on_prompt_enabled`, `recall.on_prompt_max_entries`, `recall.on_prompt_max_chars`,
+  `recall.on_prompt_min_terms`, `recall.on_prompt_score_threshold`,
+  `recall.on_prompt_prompt_cap` (flat under `recall` so the bash gate can grep them),
+  `memfile.max_lines`, `memfile.max_chars`. The 51 dead keys are deleted from
   `settings.example.v3.json`; `archive_threshold_days` example value becomes 90 (code default).
 - `templates/AGENTS.md` §3 describes exactly what is loaded (MEMORY.md block, header, gated
   recall) and tells the model how to reach topics; §10's unimplemented recall formula is
