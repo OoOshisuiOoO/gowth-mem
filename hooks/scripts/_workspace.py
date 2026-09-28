@@ -293,6 +293,20 @@ def scaffold(name: str, title: str = "", description: str = "", tags: list[str] 
     return ws_path
 
 
+def ensure_workspace_json(name: str) -> bool:
+    """v4.8: write only `workspace.json` for a workspace directory that exists
+    without one (the idol-ai defect: 122 files invisible to the index and the
+    TTL sweep). Returns True when the file was created. Never scaffolds."""
+    ws_path = workspace_dir(name)
+    meta_path = ws_path / "workspace.json"
+    if not ws_path.is_dir() or meta_path.is_file():
+        return False
+    meta = {"name": name, "title": name.title(), "description": "",
+            "created": date.today().isoformat(), "tags": [], "remote": None}
+    atomic_write(meta_path, json.dumps(meta, indent=2) + "\n")
+    return True
+
+
 def archive(name: str) -> Path:
     """Move workspaces/<name>/ → workspaces/_archive/<name>-<today>/."""
     src = workspace_dir(name)

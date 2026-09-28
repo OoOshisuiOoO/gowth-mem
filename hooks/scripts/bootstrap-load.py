@@ -1,295 +1,237 @@
 #!/usr/bin/env python3
-"""SessionStart hook (v2.10.2): aggressive-cap bootstrap — 15k char hard limit.
+"""SessionStart hook (v4.8): native-first bootstrap.
 
-Stable prefix (always loaded, helps Anthropic prompt cache):
-  1. shared/AGENTS.md                    — global rules
-  2. shared/secrets.md                   — env-var pointers (small, stable)
-  3. shared/tools.md                     — system-wide tools (small, stable)
-  4. workspaces/<ws>/AGENTS.md           — workspace-specific rules (delta)
-  5. workspaces/<ws>/docs/handoff.md     — current session state
+Measured on Claude Code 2.1.283 (2026-09-28):
+  * hook additionalContext / SessionStart stdout of >= 10,000 chars is persisted
+    to a tool-results file; the model gets a 2,000-char preview. The previous
+    15,589-char bootstrap hit this in 193 sessions — handoff.md never arrived.
+  * auto-memory MEMORY.md (200 lines / 25 KB) is attached with the CLAUDE.md
+    bundle at session start, on resume and after every compaction, exempt from
+    that rule. `_memfile.py` keeps the working set there.
 
-Conditional (today only):
-  6. workspaces/<ws>/journal/<today>.md  — loaded ONLY if it already exists
+Modes (per workspace + project):
+  native   — the project's autoMemoryDirectory points at <ws>/memory and
+             MEMORY.md exists: print a <= 600-char header only.
+             `compact`: header + the 15 newest handoff lines (<= 1,500 chars).
+  fallback — not wired (or auto memory disabled on the host): print the same
+             sections as the block, handoff first, <= 8,500 chars, plus a
+             one-line nudge to run /mem-setup native.
 
-NOT loaded here (Claude reads on-demand via grep / `[[wikilink]]` / explicit Read):
-  - workspaces/<ws>/docs/{exp,ref,tools,files}.md
-  - topic files (workspace root subdirs)
-  - skills/ content
-  - shared/files.md, _MAP.md
-  - yesterday's journal and older
+Sources: startup / clear / empty → prepare (workspace.json, MEMORY.md refresh,
+detached incremental reindex) + emit; compact → emit; resume → nothing (the
+resumed transcript keeps its context).
 
-Caps: 15k total. Per-file truncation with [truncated: N chars omitted] marker.
-Final line: [bootstrap: loaded N/M files, X chars / Y cap]
+Every emission passes `_home.clamp_context` (HOOK_CONTEXT_MAX = 9000).
+`--report` prints what would be emitted, for /mem-cost.
 """
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _debug import log_debug  # type: ignore
-from _version import drift_nudge, version_tag  # type: ignore
 from _home import (  # type: ignore
+    HOOK_CONTEXT_MAX,
     active_workspace,
-    agents_md,
-    docs_dir,
-    gowth_home,
-    journal_dir,
+    clamp_context,
     read_settings,
-    secrets_md,
-    shared_tools_md,
-    workspace_agents_md,
+    setting,
 )
+from _version import drift_nudge, version_tag  # type: ignore
 
-MAX_TOTAL = 15_000
-
-# No single file may consume more than this. Before v4.3 the first file was handed
-# the ENTIRE remaining budget, so two oversized shared files exhausted the cap and
-# the loop broke at `room <= 200` — the live vault loaded 2 of 5 files and silently
-# dropped docs/handoff.md, the one file carrying current session state.
-MAX_PER_FILE = 4_000
-
-DEFERRED_NOTICE = (
-    "(docs/exp, docs/ref, docs/tools, docs/files, topic files, and skills "
-    "are loaded on-demand via recall)"
-)
+HEADER_MAX = 600
+COMPACT_MAX = 1_500
+COMPACT_HANDOFF_LINES = 15
+NUDGE = ("run /mem-setup native (one-time) so memory loads through MEMORY.md "
+         "(25 KB, re-attached after every compaction) instead of this capped bootstrap")
+_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 
-def _read_text(f: Path) -> str:
-    """Return *f*'s text, or "" for missing / empty / unreadable files."""
-    if not f.is_file():
-        return ""
+def _stdin_event() -> dict:
     try:
-        raw = f.read_text(errors="ignore")
+        raw = sys.stdin.read()
+    except Exception:
+        return {}
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_ws(cwd: str) -> str:
+    try:
+        return active_workspace(Path(cwd)) if cwd else active_workspace()
+    except Exception:
+        return active_workspace()
+
+
+def mode(ws: str, cwd: str, settings: dict) -> str:
+    """'native' when this project loads <ws>/memory/MEMORY.md through Claude
+    Code's auto memory; else 'fallback'."""
+    if not setting("native.enabled", bool, True, settings=settings):
+        return "fallback"
+    if not cwd:
+        return "fallback"
+    try:
+        from _memfile import memfile_path  # type: ignore
+        from _native import is_wired  # type: ignore
+        if is_wired(Path(cwd), ws) and memfile_path(ws).is_file():
+            return "native"
     except Exception as exc:
-        log_debug("bootstrap-load", f"read error {f}: {exc}")
+        log_debug("bootstrap-load", f"mode check failed: {exc}")
+    return "fallback"
+
+
+def _handoff_date(ws: str) -> str:
+    try:
+        from _handoff import digest  # type: ignore
+        for ln in digest(ws, max_lines=5):
+            m = _DATE_RE.search(ln)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def _header(ws: str, mode_: str) -> str:
+    lines = [f"[gowth-mem:bootstrap workspace={ws}{version_tag()}]"]
+    try:
+        nudge = drift_nudge()
+    except Exception:
+        nudge = ""
+    if nudge.strip():
+        lines.append(nudge.strip())
+    if mode_ == "native":
+        try:
+            from _memfile import topic_index  # type: ignore
+            n = len(topic_index(ws, max_lines=10_000))
+        except Exception:
+            n = 0
+        date = _handoff_date(ws) or "n/a"
+        lines.append(f"memory: MEMORY.md is attached by Claude Code ({n} topics, handoff {date}); "
+                     f"related entries are recalled automatically per prompt — /mem-recall <query> for more")
+    return "\n".join(lines)
+
+
+def emit(ws: str, source: str, mode_: str, settings: dict) -> str:
+    """The additionalContext for one SessionStart event ('' = print nothing)."""
+    if source == "resume":
         return ""
-    return raw if raw.strip() else ""
+    if mode_ == "native":
+        head = _header(ws, mode_)
+        if source == "compact":
+            try:
+                from _handoff import digest  # type: ignore
+                lines = [head, "## Handoff (newest)"] + digest(ws, max_lines=COMPACT_HANDOFF_LINES)
+            except Exception as exc:
+                log_debug("bootstrap-load", f"compact digest failed: {exc}")
+                lines = [head]
+            return clamp_context("\n".join(lines), COMPACT_MAX)
+        return clamp_context(head, HEADER_MAX)
 
-
-def _format_block(f: Path, gh: Path, raw: str, allowance: int) -> tuple[str, int]:
-    """Return (formatted_block, chars_used), truncating to *allowance*."""
-    if not raw or allowance <= 0:
-        return "", 0
+    from _memfile import render_hook_bootstrap  # type: ignore
+    body = render_hook_bootstrap(ws)
+    parts = [body.rstrip("\n")]
     try:
-        label = f"~/.gowth-mem/{f.relative_to(gh)}"
-    except ValueError:
-        label = str(f)
-    if len(raw) <= allowance:
-        return f"\n=== {label} ===\n{raw}", len(raw)
-    omitted = len(raw) - allowance
-    return (f"\n=== {label} ===\n{raw[:allowance]}"
-            f"\n[truncated: {omitted} chars omitted]"), allowance
+        layout = int(settings.get("layout_version", 0) or 0)
+    except Exception:
+        layout = 0
+    if layout < 3:
+        parts.append("layout_version < 3: run /mem-ops migrate-v3 to move this vault to the v3 topic layout")
+    parts.append(NUDGE)
+    return clamp_context("\n".join(parts), HOOK_CONTEXT_MAX)
 
 
-def _allocate(
-    texts: dict,
-    statics: list,
-    deltas: list,
-    total: int = MAX_TOTAL,
-    per_file: int = MAX_PER_FILE,
-) -> dict:
-    """Split *total* chars across files, reserving the per-session deltas FIRST.
-
-    `statics` are the large, slow-changing shared files (AGENTS/secrets/tools);
-    `deltas` are the small per-session files (workspace AGENTS.md, docs/handoff.md,
-    today's journal) that actually carry current state.
-
-    Reserving the deltas' share before allocating statics is what stops a bloated
-    shared file from starving them. Emission ORDER is unchanged (statics first) —
-    CLAUDE.md requires a stable prompt-cache prefix, and handoff.md changes every
-    session, so moving it to the front would invalidate the cached prefix behind it.
-    """
-    want = {f: min(len(texts.get(f, "")), per_file) for f in statics + deltas}
-    reserved = sum(want[f] for f in deltas)
-
-    allow: dict = {}
-    room = max(0, total - reserved)
-    for f in statics:
-        take = min(want[f], room)
-        allow[f] = take
-        room -= take
-
-    room = total - sum(allow.values())
-    for f in deltas:
-        take = min(want[f], room)
-        allow[f] = take
-        room -= take
-    return allow
+def _spawn_incremental_index() -> None:
+    script = Path(__file__).parent / "_index.py"
+    if not script.is_file():
+        return
+    try:
+        subprocess.Popen([sys.executable, str(script), "--incremental"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    except Exception as exc:
+        log_debug("bootstrap-load", f"incremental index spawn failed: {exc}")
 
 
-def _plan(ws: str, today) -> tuple[list, list, dict, dict]:
-    """Return (statics, deltas, texts, allowances) for one workspace.
-
-    Shared by the hook and `--report` so /mem-cost can never drift from what the
-    hook actually injects — the previous /mem-cost measured a pre-v2.7 layout that
-    no longer exists (0 of 9 files) and quoted a 60,000-char cap the code does not
-    use, which is precisely why the 2-of-5-files bootstrap regression went unnoticed.
-    """
-    statics: list[Path] = [agents_md(), secrets_md(), shared_tools_md()]
-    deltas: list[Path] = [workspace_agents_md(ws), docs_dir(ws) / "handoff.md"]
-    today_journal = journal_dir(ws) / f"{today.isoformat()}.md"
-    if today_journal.is_file():
-        deltas.append(today_journal)
-    texts = {f: _read_text(f) for f in statics + deltas}
-    return statics, deltas, texts, _allocate(texts, statics, deltas)
-
-
-def _report(ws: str, gh: Path, today) -> int:
-    """Print what the SessionStart hook would inject, per file. Used by /mem-cost."""
-    statics, deltas, texts, allow = _plan(ws, today)
-    print(f"bootstrap plan for workspace={ws}   cap={MAX_TOTAL} chars "
-          f"(per-file {MAX_PER_FILE})")
-    print(f"{'file':<52} {'on-disk':>8} {'loaded':>7} {'~tok':>6}  status")
-    print("-" * 88)
-    total = 0
-    loaded = 0
-    present = 0
-    for f, kind in [(f, "static") for f in statics] + [(f, "delta") for f in deltas]:
-        raw = texts.get(f, "")
-        a = allow.get(f, 0)
+def prepare(ws: str, settings: dict) -> None:
+    """Startup side effects: workspace.json, MEMORY.md refresh, detached reindex.
+    Each best-effort; the emission never depends on them."""
+    try:
+        from _workspace import ensure_workspace_json  # type: ignore
+        ensure_workspace_json(ws)
+    except Exception as exc:
+        log_debug("bootstrap-load", f"ensure_workspace_json failed: {exc}")
+    if setting("native.enabled", bool, True, settings=settings):
         try:
-            label = str(f.relative_to(gh))
-        except ValueError:
-            label = str(f)
-        if not raw:
-            print(f"{label:<52} {'-':>8} {'-':>7} {'-':>6}  missing/empty ({kind})")
-            continue
-        present += 1
-        if a <= 0:
-            status = f"DROPPED — no budget left ({kind})"
-        elif a < len(raw):
-            status = f"truncated, {len(raw) - a} chars omitted ({kind})"
-        else:
-            status = f"full ({kind})"
-        if a > 0:
-            loaded += 1
-            total += a
-        print(f"{label:<52} {len(raw):>8} {a:>7} {a // 4:>6}  {status}")
-    print("-" * 88)
-    print(f"{'TOTAL':<52} {'':>8} {total:>7} {total // 4:>6}  loaded {loaded}/{present}")
-    if loaded < present:
-        print("\nSome files got no budget. Trim the largest static file — shared/secrets.md "
-              "is meant to hold env-var POINTERS only, not prose.")
+            from _memfile import memfile_path, sources_changed, write  # type: ignore
+            if not memfile_path(ws).is_file() or sources_changed(ws):
+                write(ws)
+        except Exception as exc:
+            log_debug("bootstrap-load", f"memfile refresh failed: {exc}")
+    _spawn_incremental_index()
+
+
+def _report(ws: str, cwd: str, settings: dict) -> int:
+    from _memfile import (  # type: ignore
+        MAX_CHARS, MAX_LINES, memfile_path, render, render_hook_bootstrap, split)
+    mode_ = mode(ws, cwd, settings)
+    block = render(ws)
+    print(f"bootstrap (v4.8) workspace={ws} mode={mode_} cwd={cwd or '(none)'}")
+    p = memfile_path(ws)
+    free_lines = 0
+    if p.is_file():
+        free_lines = split(p.read_text(errors="ignore"))[1].count("\n")
+    print(f"memfile: {p} — block {block.count(chr(10))} lines / {len(block)} chars "
+          f"(budget {MAX_LINES} lines / {MAX_CHARS} chars), free zone {free_lines} lines, "
+          f"{'present' if p.is_file() else 'MISSING'}")
+    section = None
+    counts: dict = {}
+    for ln in block.splitlines():
+        if ln.startswith("## "):
+            section = ln[3:]
+            counts[section] = 0
+        elif section:
+            counts[section] += 1
+    for name, n in counts.items():
+        print(f"  {name:<24} {n:>4} lines")
+    start = emit(ws, "startup", mode_, settings)
+    comp = emit(ws, "compact", mode_, settings)
+    print(f"emission: startup {len(start)} chars (≈{len(start) // 4} tok), compact {len(comp)} chars; "
+          f"hook cap {HOOK_CONTEXT_MAX}, host persists at 10,000")
+    print(f"fallback bootstrap: {len(render_hook_bootstrap(ws))} chars")
+    if mode_ != "native":
+        print("native memory not wired for this project: run /mem-setup native")
     return 0
-
-
-def _budget_planner_enabled(settings: dict) -> bool:
-    if not isinstance(settings, dict):
-        return False
-    r = settings.get("retrieval", {})
-    if isinstance(r, dict) and bool(r.get("use_budget_planner", False)):
-        return True
-    cb = settings.get("context_budget", {})
-    return isinstance(cb, dict) and bool(cb.get("enabled", False))
-
-
-def _load_via_budget_planner(ws: str, gh: Path, settings: dict) -> tuple[list[str], int, int, int]:
-    """Use _budget.plan_context to fill the 15k cap. Falls back gracefully on import error."""
-    try:
-        from _budget import plan_context  # type: ignore
-    except Exception as exc:  # pragma: no cover
-        log_debug("bootstrap-load", f"budget planner import failed: {exc}")
-        return [], 0, 0, 0
-    try:
-        plan = plan_context(ws=ws, query="", budget_chars=MAX_TOTAL, settings=settings)
-    except Exception as exc:  # pragma: no cover
-        log_debug("bootstrap-load", f"budget planner failed: {exc}")
-        return [], 0, 0, 0
-    parts: list[str] = []
-    total = 0
-    loaded = 0
-    for p, snippet, _score in plan:
-        try:
-            rel = p.relative_to(gh)
-            label = f"~/.gowth-mem/{rel}"
-        except ValueError:
-            label = str(p)
-        block = f"\n=== {label} ===\n{snippet}"
-        parts.append(block)
-        total += len(snippet)
-        loaded += 1
-    return parts, total, loaded, len(plan)
 
 
 def main() -> int:
     try:
-        gh = gowth_home()
-        ws = active_workspace()
-        today = date.today()
+        ev = _stdin_event()
+        source = str(ev.get("source") or "")
+        cwd = str(ev.get("cwd") or "")
         settings = read_settings()
+        ws = _resolve_ws(cwd)
 
         if "--report" in sys.argv[1:]:
-            return _report(ws, gh, today)
+            return _report(ws, cwd or str(Path.cwd()), settings)
 
-        if _budget_planner_enabled(settings):
-            parts, total, loaded, attempted = _load_via_budget_planner(ws, gh, settings)
-            if loaded > 0:
-                summary = f"\n[bootstrap: loaded {loaded}/{attempted} files via budget-planner, {total} chars / {MAX_TOTAL} cap — {DEFERRED_NOTICE}]"
-                context = (f"[gowth-mem:bootstrap workspace={ws}{version_tag()} mode=budget-planner]"
-                           + drift_nudge() + "".join(parts) + summary)
-                out = {
-                    "hookSpecificOutput": {
-                        "hookEventName": "SessionStart",
-                        "additionalContext": context,
-                    }
-                }
-                print(json.dumps(out))
-                log_debug("bootstrap-load", f"budget-planner: {loaded}/{attempted} files, {total} chars")
-                return 0
-            log_debug("bootstrap-load", "budget planner returned 0 files; falling back to stable prefix")
-
-        statics, deltas, texts, allow = _plan(ws, today)
-        stable = statics + deltas
-
-        parts: list[str] = []
-        total = 0
-        loaded = 0
-        attempted = sum(1 for f in stable if texts.get(f))
-
-        for f in stable:
-            block, used = _format_block(f, gh, texts.get(f, ""), allow.get(f, 0))
-            if not block:
-                continue
-            parts.append(block)
-            total += used
-            loaded += 1
-
-        if not parts:
+        if source in ("startup", "clear", ""):
+            prepare(ws, settings)
+        mode_ = mode(ws, cwd, settings)
+        context = emit(ws, source, mode_, settings)
+        if not context.strip():
             return 0
-
-        summary = f"\n[bootstrap: loaded {loaded}/{attempted} files, {total} chars / {MAX_TOTAL} cap — {DEFERRED_NOTICE}]"
-
-        # v3.0 mismatch nudge: settings.layout_version < 3 → prepend upgrade hint.
-        nudge = ""
-        try:
-            layout = int(settings.get("layout_version", 0) or 0)
-        except Exception:
-            layout = 0
-        if layout < 3:
-            nudge = (
-                "\n=== gowth-mem v3.0 upgrade available ===\n"
-                "Your settings.json reports layout_version=" + str(layout) + " (< 3).\n"
-                "v3.0 uses topic-FOLDER + dated-aspect layout (<slug>/00-README.md + YYYY-MM-DD-<aspect>.md).\n"
-                "Run `/mem-migrate-v3` to migrate the local tree, then commit & sync.\n"
-                "Read-path stays permissive across v3/v2.4/v2.3 — but writes are strict v3.\n"
-            )
-
-        context = (f"[gowth-mem:bootstrap workspace={ws}{version_tag()}]"
-                   + drift_nudge() + nudge + "".join(parts) + summary)
-
-        out = {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }
-        print(json.dumps(out))
-        log_debug("bootstrap-load", f"done: {loaded}/{attempted} files, {total} chars")
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                 "additionalContext": context}}))
+        log_debug("bootstrap-load", f"source={source or 'empty'} mode={mode_} chars={len(context)}")
         return 0
-
     except Exception as exc:
         log_debug("bootstrap-load", f"unhandled error: {exc}")
         return 0

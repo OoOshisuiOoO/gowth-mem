@@ -38,8 +38,11 @@ if [ "$SOURCE" = "startup" ] || [ -z "$SOURCE" ]; then
     fi
 fi
 
-# Only run bootstrap on startup or compact sources
-if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "compact" ] || [ -z "$SOURCE" ]; then
+# Bootstrap on startup, clear and compact (v4.8: /clear used to get nothing —
+# a cleared conversation has no gowth-mem context otherwise). resume keeps its
+# transcript and gets nothing. bootstrap-load.py reads source + cwd from stdin
+# and decides native header vs fallback bootstrap.
+if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "compact" ] || [ "$SOURCE" = "clear" ] || [ -z "$SOURCE" ]; then
     python3 "$SCRIPTS_DIR/bootstrap-load.py" <<<"$INPUT"
 fi
 
