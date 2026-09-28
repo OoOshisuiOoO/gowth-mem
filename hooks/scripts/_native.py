@@ -18,7 +18,14 @@ Rules:
   * invalid JSON is never overwritten (`invalid`);
   * import runs dry by default; files pass through the privacy sanitizer;
     a name clash keeps the vault copy and writes the incoming file as
-    `<name>.from-<host>.md`; unmapped project slugs are listed, never guessed.
+    `<name>.from-<host>-<project>.md` (a numeric suffix when that clashes too;
+    the dry-run plans against the pending writes so it reports what apply
+    does — review I4); unmapped project slugs are listed, never guessed;
+  * the project is what Claude Code treats as the project: the canonical git
+    root (main worktree) when the cwd is inside a repo, else the cwd
+    (`project_root`, review I5) — settings.local.json lives there; a `**` glob
+    on a non-repo base wires the repos found beneath it, and native memory
+    slugs map by glob prefix.
 
 CLI:
   python3 _native.py wire   [--dry-run] [--force] [--project DIR --ws WS]
@@ -39,15 +46,48 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write, safe_write  # type: ignore
 from _debug import log_debug  # type: ignore
 from _home import active_workspace, read_config  # type: ignore
-from _memfile import memfile_path, memory_dir, split  # type: ignore
+from _lock import file_lock  # type: ignore
+from _memfile import HOST_LINE_LIMIT, HOST_MARGIN, floor_lines, memfile_path, memory_dir, split  # type: ignore
 
 SETTINGS_KEY = "autoMemoryDirectory"
+REPO_SCAN_DEPTH = 3
+_SKIP_DIRS = {"node_modules", "vendor", "target", "dist", "build", "__pycache__"}
 
 
 # ─── paths and values ─────────────────────────────────────────────────────
 
+def project_root(path) -> Path:
+    """The directory Claude Code treats as the project — where it reads
+    `.claude/settings.local.json` from: the canonical git root (the MAIN
+    worktree, via `--git-common-dir`) when `path` is inside a repository, else
+    the directory itself (review I5; measured on 2.1.283)."""
+    p = Path(path).expanduser()
+    try:
+        p = p.resolve()
+    except OSError:
+        p = Path(path)
+    if not p.is_dir():
+        p = p.parent
+    for args in (("rev-parse", "--path-format=absolute", "--git-common-dir"),
+                 ("rev-parse", "--show-toplevel")):
+        try:
+            r = subprocess.run(["git", "-C", str(p), *args], capture_output=True, text=True, timeout=10)
+        except Exception:
+            return p
+        out = (r.stdout or "").strip()
+        if r.returncode != 0 or not out:
+            continue
+        q = Path(out)
+        if args[-1] == "--git-common-dir":
+            if q.name == ".git" and q.parent.is_dir():
+                return q.parent.resolve()
+            continue                      # bare or unusual layout → toplevel
+        return q.resolve()
+    return p
+
+
 def settings_local_path(project_dir: Path) -> Path:
-    return Path(project_dir) / ".claude" / "settings.local.json"
+    return project_root(project_dir) / ".claude" / "settings.local.json"
 
 
 def memory_dir_value(ws: str) -> str:
@@ -109,9 +149,11 @@ def host_auto_memory_disabled(env=None) -> bool:
 
 
 def configured_dir(project_dir: Path, env=None) -> "str | None":
-    """The autoMemoryDirectory value a project declares (local first), or None."""
+    """The autoMemoryDirectory value a project declares (local first), or None.
+    `project_dir` may be any directory inside the project (review I5)."""
+    root = project_root(project_dir)
     for name in ("settings.local.json", "settings.json"):
-        p = Path(project_dir) / ".claude" / name
+        p = root / ".claude" / name
         try:
             data = json.loads(p.read_text())
         except Exception:
@@ -147,11 +189,12 @@ def wire(project_dir: Path, ws: str, *, force: bool = False, dry_run: bool = Fal
     """Merge autoMemoryDirectory into <project>/.claude/settings.local.json.
     Returns wired | already | conflict | tracked | invalid (dry_run: would-wire
     instead of wired)."""
-    p = settings_local_path(project_dir)
+    root = project_root(project_dir)
+    p = settings_local_path(root)
     want = memory_dir_value(ws)
     data: dict = {}
     if p.is_file():
-        if _is_tracked(project_dir):
+        if _is_tracked(root):
             return "tracked"
         try:
             data = json.loads(p.read_text())
@@ -184,22 +227,77 @@ def _glob_base(pattern: str) -> "Path | None":
     return Path(base).expanduser()
 
 
+def _glob_entries(config: dict) -> list:
+    """[(base, ws, recursive)] for every workspace_map pattern with a literal base."""
+    out: list = []
+    for pattern, ws in ((config or {}).get("workspace_map") or {}).items():
+        pat = str(pattern)
+        d = _glob_base(pat)
+        if d is None:
+            continue
+        out.append((d, str(ws), pat.rstrip("/").endswith("**")))
+    return out
+
+
+def _is_repo(d: Path) -> bool:
+    try:
+        return (d / ".git").exists()
+    except OSError:
+        return False
+
+
+def _repos_under(base: Path, depth: int = REPO_SCAN_DEPTH) -> list:
+    """Git repositories (main worktrees or `.git` files) under `base`, at most
+    `depth` levels down, hidden and build dirs skipped. Bounded walk."""
+    found: list = []
+    frontier = [(base, 0)]
+    visited = 0
+    while frontier and visited < 5000:
+        d, lvl = frontier.pop()
+        visited += 1
+        try:
+            children = [c for c in os.scandir(d) if c.is_dir(follow_symlinks=False)]
+        except OSError:
+            continue
+        for c in sorted(children, key=lambda e: e.name):
+            if c.name.startswith(".") or c.name in _SKIP_DIRS:
+                continue
+            cp = Path(c.path)
+            if _is_repo(cp):
+                found.append(cp)
+            if lvl + 1 < depth:
+                frontier.append((cp, lvl + 1))
+    return sorted(found)
+
+
 def projects_for_workspaces(config: dict, cwd: "Path | None" = None) -> list:
-    """[(project_dir, ws)] for every workspace_map glob whose base directory
-    exists on this machine, plus the cwd's own mapping when given."""
+    """[(project_dir, ws)] to wire: for every workspace_map glob whose base
+    exists on this machine — the base itself when it is a repository or the
+    pattern is not recursive, else every repository found beneath it (review
+    I5: a `**` glob on a parent directory used to wire the parent, which no
+    session ever runs in) — plus the cwd's own project root when given."""
     rows: list = []
     seen: set = set()
-    for pattern, ws in ((config or {}).get("workspace_map") or {}).items():
-        d = _glob_base(str(pattern))
-        if d is None or not d.is_dir():
-            continue
+
+    def _add(d: Path, ws: str) -> None:
         key = str(d.resolve())
         if key in seen:
-            continue
+            return
         seen.add(key)
-        rows.append((d.resolve(), str(ws)))
+        rows.append((d.resolve(), ws))
+
+    for base, ws, recursive in _glob_entries(config):
+        if not base.is_dir():
+            continue
+        targets = [base]
+        if recursive and not _is_repo(base):
+            repos = _repos_under(base)
+            if repos:
+                targets = repos
+        for t in targets:
+            _add(t, ws)
     if cwd is not None:
-        c = Path(cwd).resolve()
+        c = project_root(cwd)
         if str(c) not in seen:
             rows.append((c, active_workspace(c)))
     return rows
@@ -221,28 +319,64 @@ def _sanitized(text: str) -> str:
         return text
 
 
+def _ws_for_slug(slug: str, config: dict) -> "str | None":
+    """Workspace for a native project slug: exact match on a glob base, or the
+    LONGEST base whose recursive (`**`) glob covers it — Claude Code's slug is
+    the path with every non-alnum char as '-', so `<base-slug>-…` is 'under'
+    the base (review I5)."""
+    best = None
+    for base, ws, recursive in _glob_entries(config):
+        pre = project_slug(base)
+        if slug == pre or (recursive and slug.startswith(pre + "-")):
+            if best is None or len(pre) > len(best[0]):
+                best = (pre, ws)
+    return best[1] if best else None
+
+
+def _project_label(slug: str) -> str:
+    label = re.sub(r"[^A-Za-z0-9_-]", "-", slug.rstrip("-").rsplit("-", 1)[-1])[:32]
+    return label or "project"
+
+
 def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
     """Copy `<claude_dir>/projects/<slug>/memory/*.md` into the mapped
-    workspace's memory/. Dry-run unless apply=True."""
+    workspace's memory/. Dry-run unless apply=True; the dry-run plans against
+    the pending writes, so its report is exactly what apply does (review I4)."""
     report = {"imported": [], "renamed": [], "skipped_unmapped": [], "identical": [],
               "index_lines_added": 0, "workspaces": []}
-    rows = projects_for_workspaces(read_config())
-    slug_to_ws = {project_slug(p): ws for p, ws in rows}
+    config = read_config()
     host = socket.gethostname().split(".")[0] or "host"
     projects = Path(claude_dir) / "projects"
     if not projects.is_dir():
         return report
+    pending: dict = {}                      # target path → content planned so far
+
+    def _current(path: Path) -> "str | None":
+        if path in pending:
+            return pending[path]
+        try:
+            return path.read_text(errors="ignore") if path.exists() else None
+        except OSError:
+            return None
+
+    def _plan(path: Path, content: str) -> None:
+        pending[path] = content
+        if apply:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            safe_write(path, content)
+
     for mem in sorted(projects.glob("*/memory")):
         if not mem.is_dir():
             continue
         slug = mem.parent.name
-        ws = slug_to_ws.get(slug)
+        ws = _ws_for_slug(slug, config)
         if ws is None:
             report["skipped_unmapped"].append(slug)
             continue
         if ws not in report["workspaces"]:
             report["workspaces"].append(ws)
         dest = memory_dir(ws)
+        label = _project_label(slug)
         for f in sorted(mem.glob("*.md")):
             if f.name == "MEMORY.md":
                 continue
@@ -251,20 +385,26 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
             except OSError:
                 continue
             target = dest / f.name
-            if target.exists():
-                if target.read_text(errors="ignore") == incoming:
-                    report["identical"].append(f.name)
-                    continue
-                target = dest / f"{f.stem}.from-{host}{f.suffix}"
-                if target.exists() and target.read_text(errors="ignore") == incoming:
-                    report["identical"].append(target.name)
-                    continue
-                report["renamed"].append(target.name)
-            else:
+            cur = _current(target)
+            if cur is None:
                 report["imported"].append(f.name)
-            if apply:
-                dest.mkdir(parents=True, exist_ok=True)
-                safe_write(target, incoming)
+                _plan(target, incoming)
+                continue
+            if cur == incoming:
+                report["identical"].append(f.name)
+                continue
+            names = [f"{f.stem}.from-{host}-{label}{f.suffix}"]
+            names += [f"{f.stem}.from-{host}-{label}-{n}{f.suffix}" for n in range(2, 51)]
+            for name in names:
+                cand = dest / name
+                cur2 = _current(cand)
+                if cur2 is None:
+                    report["renamed"].append(name)
+                    _plan(cand, incoming)
+                    break
+                if cur2 == incoming:
+                    report["identical"].append(name)
+                    break
         src_index = mem / "MEMORY.md"
         if src_index.is_file():
             try:
@@ -272,15 +412,22 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
             except OSError:
                 lines = []
             target = memfile_path(ws)
-            existing = target.read_text(errors="ignore") if target.is_file() else ""
-            block, free = split(existing)
-            have = set(free.splitlines())
-            new = [ln for ln in lines if ln not in have and not ln.startswith("<!-- gowth-mem")]
-            report["index_lines_added"] += len(new)
-            if apply and new:
-                dest.mkdir(parents=True, exist_ok=True)
-                free_part = (free.rstrip("\n") + "\n") if free.strip() else ""
-                safe_write(target, block + free_part + "\n".join(_sanitized(ln) for ln in new) + "\n")
+
+            def _merge_index() -> None:
+                existing = _current(target) or ""
+                block, free = split(existing)
+                have = set(free.splitlines())
+                new = [ln for ln in lines if ln not in have and not ln.startswith("<!-- gowth-mem")]
+                report["index_lines_added"] += len(new)
+                if new:
+                    free_part = (free.rstrip("\n") + "\n") if free.strip() else ""
+                    _plan(target, block + free_part + "\n".join(_sanitized(ln) for ln in new) + "\n")
+
+            if apply:
+                with file_lock(f"memfile-{ws}", timeout=10.0):   # _memfile.write holds it too
+                    _merge_index()
+            else:
+                _merge_index()
     return report
 
 
@@ -289,6 +436,7 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
 def status(cwd: "Path | None" = None, env=None) -> dict:
     e = _env(env)
     c = Path(cwd or Path.cwd())
+    root = project_root(c)
     ws = active_workspace(c)
     mf = memfile_path(ws)
     lines = 0
@@ -301,16 +449,24 @@ def status(cwd: "Path | None" = None, env=None) -> dict:
     for p, w in projects_for_workspaces(read_config(), cwd=c):
         projects.append({"path": str(p), "ws": w, "wired": is_wired(p, w, e),
                          "tracked": _is_tracked(p) if settings_local_path(p).is_file() else False})
+    try:
+        unmapped = import_native(_claude_dir(e), apply=False)["skipped_unmapped"]
+    except Exception:
+        unmapped = []
     return {
         "workspace": ws,
-        "wired": is_wired(c, ws, e),
-        "configured": configured_dir(c, e),
+        "project_root": str(root),
+        "wired": is_wired(root, ws, e),
+        "configured": configured_dir(root, e),
         "host_disabled": host_auto_memory_disabled(e),
         "memfile_exists": mf.is_file(),
         "memfile_lines": lines,
         "free_zone_lines": free_lines,
-        "free_zone_over_budget": free_lines > 190,
+        # spec §4.1: the block cannot shrink below its floor, so the free zone is
+        # over budget once it leaves less than the floor under the host's limit
+        "free_zone_over_budget": free_lines > HOST_LINE_LIMIT - HOST_MARGIN - floor_lines(),
         "projects": projects,
+        "unmapped": unmapped,
     }
 
 
@@ -332,7 +488,8 @@ def _cli() -> int:
     try:
         if args.cmd == "wire":
             if args.project:
-                targets = [(Path(args.project).resolve(), args.ws or active_workspace(Path(args.project)))]
+                root = project_root(Path(args.project))
+                targets = [(root, args.ws or active_workspace(root))]
             else:
                 targets = projects_for_workspaces(read_config(), cwd=Path.cwd())
             for p, ws in targets:

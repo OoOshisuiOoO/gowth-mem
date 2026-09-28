@@ -29,6 +29,15 @@ GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAM
            "GIT_COMMITTER_EMAIL": "t@x"}
 
 
+GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@x", "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-c", "init.defaultBranch=main", "-C", str(cwd), *args],
+                          capture_output=True, text=True, check=True, env={**os.environ, **GIT_ENV})
+
+
 class _NativeCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="gowth_native_"))
@@ -144,6 +153,65 @@ class ProjectsTest(_NativeCase):
         self.assertIn(self.proj.resolve(), [p for p, _ in rows])
 
 
+class ProjectRootTest(_NativeCase):
+    """Review I5: Claude Code reads settings.local.json from the canonical git
+    root (the main worktree), not from the cwd."""
+
+    def test_project_root_is_the_git_root_from_a_subdirectory(self):
+        git(self.proj, "init", "-q")
+        sub = self.proj / "a" / "b"
+        sub.mkdir(parents=True)
+        self.assertEqual(_native.project_root(sub), self.proj.resolve())
+
+    def test_project_root_of_a_linked_worktree_is_the_main_worktree(self):
+        git(self.proj, "init", "-q")
+        (self.proj / "f.txt").write_text("x\n")
+        git(self.proj, "add", "-A")
+        git(self.proj, "commit", "-q", "-m", "base")
+        wt = self.tmp / "wt"
+        git(self.proj, "worktree", "add", "-q", str(wt), "-b", "wt")
+        (wt / "deep").mkdir()
+        self.assertEqual(_native.project_root(wt / "deep"), self.proj.resolve())
+
+    def test_project_root_outside_git_is_the_directory_itself(self):
+        self.assertEqual(_native.project_root(self.proj), self.proj.resolve())
+
+    def test_wire_and_is_wired_from_a_subdirectory(self):
+        git(self.proj, "init", "-q")
+        sub = self.proj / "pkg" / "src"
+        sub.mkdir(parents=True)
+        (self.vault / "config.json").write_text(json.dumps({"workspace_map": {f"{self.proj.resolve()}/**": "demo"}}))
+        self.assertEqual(_native.wire(sub, "demo"), "wired")
+        self.assertTrue(self.local().is_file(), "settings.local.json belongs at the git root")
+        self.assertFalse((sub / ".claude").exists())
+        self.assertTrue(_native.is_wired(sub, "demo", self.env))
+        self.assertTrue(_native.status(cwd=sub, env=self.env)["wired"])
+
+    def test_double_star_glob_enumerates_repos_under_a_non_repo_base(self):
+        base = self.tmp / "fg"
+        for name in ("r1", "r2"):
+            (base / name).mkdir(parents=True)
+            git(base / name, "init", "-q")
+        (base / "plain").mkdir()
+        (base / "r1" / "inner").mkdir()
+        git(base / "r1" / "inner", "init", "-q")          # nested repo: still one wire target
+        rows = _native.projects_for_workspaces({"workspace_map": {f"{base}/**": "devops"}})
+        paths = sorted(p for p, ws in rows if ws == "devops")
+        self.assertIn((base / "r1").resolve(), paths)
+        self.assertIn((base / "r2").resolve(), paths)
+        self.assertIn((base / "r1" / "inner").resolve(), paths)
+        self.assertNotIn(base.resolve(), paths, "a non-repo glob base must not be wired")
+        self.assertNotIn((base / "plain").resolve(), paths)
+
+    def test_double_star_glob_on_a_repo_base_wires_the_base(self):
+        base = self.tmp / "repo"
+        base.mkdir()
+        git(base, "init", "-q")
+        (base / "sub").mkdir()
+        rows = _native.projects_for_workspaces({"workspace_map": {f"{base}/**": "w"}})
+        self.assertEqual([p for p, _ in rows], [base.resolve()])
+
+
 class ImportTest(_NativeCase):
     def _native_memory(self, project: Path, files: dict) -> Path:
         slug = re.sub(r"[^A-Za-z0-9]", "-", str(project.resolve()))
@@ -183,6 +251,70 @@ class ImportTest(_NativeCase):
         self.assertEqual(rep2["index_lines_added"], 0)
         self.assertEqual((mem / "MEMORY.md").read_text().count("Postgres notes"), 1)
 
+    def test_three_way_clash_keeps_every_project_and_dry_run_matches_apply(self):
+        """Review I4: the rename was a fixed `<stem>.from-<host>.md`, so a third
+        project's copy overwrote the second's, and the dry-run reported three
+        imports while apply renamed two into one name."""
+        projs = [self.tmp / "work" / n for n in ("alpha", "beta", "gamma")]
+        for i, pr in enumerate(projs):
+            pr.mkdir(parents=True)
+            self._native_memory(pr, {"feedback_testing.md": f"---\nname: testing\n---\nrule from {pr.name} #{i}\n"})
+        (self.vault / "config.json").write_text(json.dumps(
+            {"workspace_map": {f"{pr.resolve()}/**": "demo" for pr in projs}}))
+        dry = _native.import_native(self.tmp / "claude", apply=False)
+        rep = _native.import_native(self.tmp / "claude", apply=True)
+        for k in ("imported", "renamed", "identical"):
+            self.assertEqual(dry[k], rep[k], f"dry-run and apply disagree on {k}")
+        mem = self.vault / "workspaces" / "demo" / "memory"
+        texts = [f.read_text() for f in mem.glob("feedback_testing*.md")]
+        for name in ("alpha", "beta", "gamma"):
+            self.assertTrue(any(f"rule from {name}" in t for t in texts), f"{name}'s file was lost")
+        self.assertEqual(len(rep["renamed"]), 2)
+        self.assertEqual(len(set(rep["renamed"])), 2, "renames must not collide")
+        again = _native.import_native(self.tmp / "claude", apply=True)
+        self.assertEqual((again["imported"], again["renamed"]), ([], []))
+        self.assertEqual(len(again["identical"]), 3)
+
+    def test_memfile_append_takes_the_memfile_lock(self):
+        taken = []
+        real = _native.file_lock
+
+        class _Rec:
+            def __init__(self, name, timeout=30.0):
+                taken.append(name)
+                self._cm = real(name, timeout=timeout)
+
+            def __enter__(self):
+                return self._cm.__enter__()
+
+            def __exit__(self, *a):
+                return self._cm.__exit__(*a)
+
+        _native.file_lock = _Rec
+        try:
+            _native.import_native(self.tmp / "claude", apply=True)
+        finally:
+            _native.file_lock = real
+        self.assertIn("memfile-demo", taken)
+
+    def test_import_maps_native_slugs_by_glob_prefix(self):
+        """Review I5: 7 of the live devops memory dirs sit UNDER the glob base;
+        exact-slug matching mapped none of them."""
+        base = self.tmp / "fg"
+        (base / "r1" / "nested").mkdir(parents=True)
+        (self.tmp / "fgx" / "r9").mkdir(parents=True)
+        (self.vault / "config.json").write_text(json.dumps({"workspace_map": {
+            f"{self.p1.resolve()}/**": "demo", f"{base.resolve()}/**": "devops"}}))
+        self._native_memory(base / "r1", {"MEMORY.md": "- r1\n", "r1.md": "r1 note\n"})
+        self._native_memory(base / "r1" / "nested", {"MEMORY.md": "- nested\n", "nested.md": "nested note\n"})
+        self._native_memory(self.tmp / "fgx" / "r9", {"MEMORY.md": "- r9\n"})
+        rep = _native.import_native(self.tmp / "claude", apply=False)
+        self.assertIn("devops", rep["workspaces"])
+        self.assertIn("r1.md", rep["imported"])
+        self.assertIn("nested.md", rep["imported"])
+        self.assertTrue(any(sl.endswith("-fgx-r9") for sl in rep["skipped_unmapped"]), rep["skipped_unmapped"])
+        self.assertFalse(any(sl.endswith("-fg-r1") for sl in rep["skipped_unmapped"]))
+
     def test_clash_keeps_vault_copy_and_renames_incoming(self):
         mem = self.vault / "workspaces" / "demo" / "memory"
         mem.mkdir(parents=True)
@@ -197,8 +329,28 @@ class ImportTest(_NativeCase):
 class StatusTest(_NativeCase):
     def test_status_keys(self):
         st = _native.status(cwd=self.proj, env=self.env)
-        for k in ("workspace", "wired", "memfile_exists", "host_disabled", "projects"):
+        for k in ("workspace", "wired", "memfile_exists", "host_disabled", "projects", "unmapped"):
             self.assertIn(k, st)
+
+    def test_status_lists_unmapped_memory_dirs_and_budget_rule(self):
+        """Review M9: spec §4.1 — status names the machine-local memory dirs
+        nothing maps, and the free-zone budget is 190 − floor, not a bare 190."""
+        (self.vault / "config.json").write_text(json.dumps({"workspace_map": {f"{self.proj.resolve()}/**": "demo"}}))
+        slug = re.sub(r"[^A-Za-z0-9]", "-", str((self.tmp / "orphan").resolve()))
+        d = self.tmp / "claude" / "projects" / slug / "memory"
+        d.mkdir(parents=True)
+        (d / "MEMORY.md").write_text("- x\n")
+        st = _native.status(cwd=self.proj, env=self.env)
+        self.assertIn(slug, st["unmapped"])
+        import _memfile  # type: ignore
+        mem = self.vault / "workspaces" / "demo" / "memory"
+        mem.mkdir(parents=True)
+        n = 190 - _memfile.floor_lines() + 1
+        (mem / "MEMORY.md").write_text("<!-- gowth-mem:begin ws=demo -->\nx\n<!-- gowth-mem:end -->\n"
+                                       + "".join(f"- note {i}\n" for i in range(n)))
+        st = _native.status(cwd=self.proj, env=self.env)
+        self.assertTrue(st["free_zone_over_budget"])
+        self.assertEqual(st["free_zone_lines"], n)
 
 
 if __name__ == "__main__":
