@@ -62,16 +62,28 @@ BOLD_LABEL_RE = re.compile(r"\*\*[^*]+?:\*\*")   # **Symptom:** **Root cause:**
 EMPHASIS_RE = re.compile(r"[*~]{1,3}")
 
 # ── priority (high-value) identifier patterns ────────────────────────────
-DOTTED_RE = re.compile(r"[A-Za-z_][\w-]*(?:\.[A-Za-z_][\w-]*)+")   # _topic.py settings.json
-SNAKE_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+")   # GOWTH_MEM_HOME snake_case
-KEBAB_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")                  # topic-routing data-quality
-CAMEL_RE = re.compile(r"[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*")          # CamelCase fooBar PostgreSQL
+# v4.7.6: each identifier pattern may START only at a token start — its
+# lookbehind rejects every character its body can consume. Unanchored, they
+# started inside words: "Stop-hook" → #top-hook, "FTS5-only" → #5-only
+# (85 mangled tags in the live vault), and each start re-scanned the rest of
+# the run, so one 40k-char base64/hex run cost 52 s of extract_tags (4x per
+# doubling). `(?<![^\W_])` = not after a (Unicode) letter or digit; `_` stays
+# a valid boundary so `_run_forget_daily` still yields `run_forget_daily`.
+# DOTTED may start after `.` (dots only separate, never extend a run), so
+# dotfiles keep their tag: `.claude.json` → claude.json, `.gitlab-ci.yml`;
+# and it may start on digits that a letter, `_` or `-` follows, so
+# `01-db-findings.md` stays whole (the old mid-token start yielded
+# db-findings.md) while a numbered list item `1.Install` is no identifier.
+DOTTED_RE = re.compile(r"(?<![\w-])(?:[A-Za-z_]|\d+[A-Za-z_-])[\w-]*(?:\.[A-Za-z_][\w-]*)+")  # _topic.py .claude.json 01-x.md
+SNAKE_RE = re.compile(r"(?<![^\W_])[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+")          # GOWTH_MEM_HOME snake_case
+KEBAB_RE = re.compile(r"(?<![^\W_])(?<!\.)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+")   # topic-routing Stop-hook
+CAMEL_RE = re.compile(r"(?<![^\W_])[A-Za-z0-9]*[a-z][A-Z][A-Za-z0-9]*")      # CamelCase fooBar PostgreSQL
 FLAG_RE = re.compile(r"--[a-z][a-z0-9-]*")                         # --apply --ws
 ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,}\b")                  # DXY FTS5 BM25 OOM
 _PRIORITY_REGEXES = (DOTTED_RE, SNAKE_RE, KEBAB_RE, CAMEL_RE, FLAG_RE, ACRONYM_RE)
 
 # ── drop filters (applied after normalization) ───────────────────────────
-_VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)+[a-z0-9]*$")   # 3.9 v3.4 1.95.0
+_VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)+[a-z0-9]*$|^v?\d+(?:\.\d+)*\.x$")   # 3.9 v3.4 1.95.0 v2.x
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HEX_RE = re.compile(r"^[0-9a-f]{7,}$")                   # commit hashes
 _PURE_DIGIT_RE = re.compile(r"^\d+$")
@@ -166,8 +178,21 @@ def strip_tags(line: str) -> str:
     (when x doesn't itself end in a hashtag-shaped token). Non-trailing hashtags
     are preserved.
     """
-    return re.sub(r"\s*(?:#[A-Za-z0-9_][A-Za-z0-9._-]*)(?:\s+#[A-Za-z0-9_][A-Za-z0-9._-]*)*\s*$",
-                  "", line)
+    if not line:
+        return line
+    m = _TAG_TAIL_REV_RE.match(line[::-1])
+    return line[:len(line) - m.end()] if m else line
+
+
+# The trailing tag run, spelled BACKWARDS and matched at the start of the
+# reversed line (= the line's end): one attempt, linear. v4.7.6 — the forward
+# `re.sub(r"\s*#T(?:\s+#T)*\s*$")` tried every start inside a whitespace run
+# and re-scanned to the end from each (40k spaces: 2.3 s), on every line that
+# `_dedup` / `_index` hash. Output is byte-identical (the leftmost forward
+# match IS the longest match of the reversed grammar; pinned by a differential
+# fuzz against the old regex), so no stored dedup hash moves.
+_TAG_TAIL_REV_RE = re.compile(
+    r"\s*[A-Za-z0-9._-]*[A-Za-z0-9_]#(?:\s+[A-Za-z0-9._-]*[A-Za-z0-9_]#)*\s*")
 
 
 def strip_tags_text(text: str) -> str:
@@ -186,8 +211,25 @@ def _normalize_tag(tok: str) -> str:
     return t.strip("-.")
 
 
-def _dropworthy(t: str, min_len: int) -> bool:
-    if not t or len(t) < min_len:
+# v4.7.6: a pasted base64/hex run became ONE tag (40k chars, e.g. `blob-aaaa…`)
+# appended to the entry line and unioned into frontmatter. Two caps: prose words
+# and bigrams stop at 64 (the longest real prose tag is 53); identifiers get 128
+# because router aspect filenames reach 74 chars (`YYYY-MM-DD-` + a 60-char
+# slug + `.md`) and Java FQNs / env vars run past 80. A longer "identifier" is
+# a blob: `_harvest_priority` neither tags nor blanks it, so its words still
+# reach the prose scorer.
+MAX_TAG_LEN = 64
+MAX_PRIORITY_TAG_LEN = 128
+# Substring collapse is O(k²) over the candidates (88k chars of distinct words
+# took 2.4 s, quadrupling per doubling), so the pool is bounded per class. 512
+# is above the largest real entry (182 identifier / 385 prose candidates in the
+# live vault): no real entry's tags change, measured against an unbounded pool
+# on all 3,595 entries — a 64 pool changed 37 of them.
+_COLLAPSE_POOL = 512
+
+
+def _dropworthy(t: str, min_len: int, max_len: int = MAX_PRIORITY_TAG_LEN) -> bool:
+    if not t or len(t) < min_len or len(t) > max_len:
         return True
     if _PURE_DIGIT_RE.match(t) or _VERSION_RE.match(t) or _DATE_RE.match(t) or _HEX_RE.match(t):
         return True
@@ -225,10 +267,12 @@ def _harvest_priority(text: str) -> tuple[list[str], str]:
         base = m.start(1)
         for rx in _PRIORITY_REGEXES:
             for mm in rx.finditer(inner):
-                ordered.append((base + mm.start(), mm.group(0)))
+                if len(mm.group(0)) <= MAX_PRIORITY_TAG_LEN:
+                    ordered.append((base + mm.start(), mm.group(0)))
         # Also take plain identifier words inside code (e.g. `atomic`).
         for mm in re.finditer(r"[A-Za-z][A-Za-z0-9_]{2,}", inner):
-            ordered.append((base + mm.start(), mm.group(0)))
+            if len(mm.group(0)) <= MAX_PRIORITY_TAG_LEN:
+                ordered.append((base + mm.start(), mm.group(0)))
         spans.append((m.start(), m.end()))
 
     # Blank code fences + inline code so the priority regexes below skip them.
@@ -249,6 +293,8 @@ def _harvest_priority(text: str) -> tuple[list[str], str]:
             # scorer sees it lowercased and it must earn its place by frequency.
             if rx is ACRONYM_RE and tok.isalpha() and len(tok) >= 5:
                 continue
+            if len(tok) > MAX_PRIORITY_TAG_LEN:
+                continue  # a blob, not an identifier: leave it (unblanked) to prose
             ordered.append((m.start(), tok))
             for i in range(m.start(), min(m.end(), len(masked))):
                 masked[i] = " "
@@ -369,11 +415,16 @@ def extract_tags(text: str, max_tags: int = DEFAULT_MAX_TAGS) -> list[str]:
     seen: set[str] = set()
     normalized: list[str] = []
     prio_norm: set[str] = set()
+    n_prio = n_prose = 0
     for i, raw in enumerate(ordered_candidates):
-        t = _normalize_tag(raw)
         is_prio = i < len(priority)
+        if (n_prio if is_prio else n_prose) >= _COLLAPSE_POOL:
+            if is_prio:
+                continue
+            break  # prose comes last, best score first
+        t = _normalize_tag(raw)
         min_len = 2 if is_prio else 3
-        if _dropworthy(t, min_len):
+        if _dropworthy(t, min_len, MAX_PRIORITY_TAG_LEN if is_prio else MAX_TAG_LEN):
             continue
         # Post-normalize junk guard: an UPPER-harvested stopword ("ONLY") or a
         # bare path component ("opt") is noise regardless of origin.
@@ -385,6 +436,9 @@ def extract_tags(text: str, max_tags: int = DEFAULT_MAX_TAGS) -> list[str]:
         normalized.append(t)
         if is_prio:
             prio_norm.add(t)
+            n_prio += 1
+        else:
+            n_prose += 1
 
     collapsed = _collapse_prefixes(normalized)
     # Soft target 3-5 with a prose reservation: identifier-heavy entries must

@@ -234,9 +234,18 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
     rebuilds frontmatter `last_touched` only if Aspects content changed.
 
     Returns the README path written, or None if `folder` is not a topic folder
-    (defensive — caller should pre-filter via `is_topic_folder`).
+    (defensive — caller should pre-filter via `is_topic_folder`) or resolves
+    outside the workspaces tree.
+
+    v4.7.6: a topic folder symlinked to notes kept elsewhere (another repo) was
+    rebuilt THROUGH the link — its hand-written README overwritten by the
+    skeleton rebuild after any lesson save. Such folders are read, never written.
     """
     if not is_topic_folder(folder):
+        return None
+    try:
+        folder.resolve().relative_to(workspaces_root().resolve())
+    except (ValueError, OSError):
         return None
     readme = topic_readme(folder)
     today = date.today().isoformat()

@@ -87,7 +87,12 @@ Do this WITHOUT user prompting before yielding control:
    `--append` call per entry, `--ws <target_ws>` set per step 3's routing. The
    interface performs the §1 gate, `#tags`, SHA-1 dedup, and reindexing for
    you; on `duplicate` output apply mem0 UPDATE/NOOP judgment (canon §5)
-   instead of re-appending. Overlap ≥ 0.4 + polarity flip vs an existing entry
+   instead of re-appending. On `rejected:<rule>` output the §1 gate refused
+   the entry and NOTHING was written: fix what the rule names (add the
+   `Source:`, the rationale, the version…) and `--append` it once more, or
+   count it as dropped. `rejected:unroutable` is not a content problem — the
+   vault has no safe topic for it (e.g. a folder that resolves outside the
+   vault): do not retry; name it in your report. Overlap ≥ 0.4 + polarity flip vs an existing entry
    → flag it as a contradiction in your report, don't silently overwrite.
    Never blind append; never raw-Write topic files.
 6. Update workspaces/{ws}/docs/handoff.md (prefix host:<machine>) with new task / next / blocker.

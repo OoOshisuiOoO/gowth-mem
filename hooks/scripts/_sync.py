@@ -50,6 +50,7 @@ _DEFAULT_GITIGNORE = (
     "__pycache__/\n"
     "*.pyc\n"
     "SYNC-CONFLICT.md\n"
+    ".*.pruning-*\n"
 )
 
 # review-ledger.json is machine-local: it references transcript paths under
@@ -62,8 +63,12 @@ _DEFAULT_GITIGNORE = (
 # `.archive/`, `.backup/` and `*.log` were missing from the default, so a fresh
 # (non-clone) install would start committing gzip archive blobs and per-machine hook
 # logs. Listed in _REQUIRED_IGNORES too so existing vaults backfill them.
+#
+# `.*.pruning-*`: a README `_validate.py --prune-junk` holds aside mid-delete
+# (v4.7.6) — only ever left behind by a hard kill, never worth syncing.
 _REQUIRED_IGNORES = (".audit/", ".dedup-window.json", "review-ledger.json",
-                     ".archive/", ".backup/", ".session-workspace", "*.log")
+                     ".archive/", ".backup/", ".session-workspace", "*.log",
+                     ".*.pruning-*")
 
 
 def _gitignore_has_entry(existing: str, entry: str) -> bool:

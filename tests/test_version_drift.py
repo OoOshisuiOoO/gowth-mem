@@ -155,13 +155,32 @@ class VersionTagTest(unittest.TestCase):
 
 
 class DriftNudgeTest(unittest.TestCase):
+    # Every case pins claude_dir: drift_nudge reads installed_plugins.json, and
+    # the developer machine's real registry must not decide a test.
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="gowth_nudge_"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _install(self, version):
+        ip = self.tmp / "plugins" / "cache" / "gowth-mem" / "gowth-mem" / version
+        (ip / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+        (ip / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": version}))
+        return str(ip)
+
+    def _registry(self, *entries):
+        reg = self.tmp / "plugins" / "installed_plugins.json"
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        reg.write_text(json.dumps({"version": 2, "plugins": {"gowth-mem@gowth-mem": list(entries)}}))
+
     def test_silent_when_healthy(self):
-        self.assertEqual(V.drift_nudge("4.7.1", "4.7.1"), "")
-        self.assertEqual(V.drift_nudge(None, None), "")
-        self.assertEqual(V.drift_nudge("4.8.0", "4.7.1"), "")
+        self.assertEqual(V.drift_nudge("4.7.1", "4.7.1", claude_dir=self.tmp), "")
+        self.assertEqual(V.drift_nudge(None, None, claude_dir=self.tmp), "")
+        self.assertEqual(V.drift_nudge("4.8.0", "4.7.1", claude_dir=self.tmp), "")
 
     def test_names_both_versions_and_the_exact_fix(self):
-        n = V.drift_nudge("3.9.0", "4.7.1")
+        n = V.drift_nudge("3.9.0", "4.7.1", claude_dir=self.tmp)
         self.assertTrue(n, "a stale machine must be told")
         self.assertIn("3.9.0", n)
         self.assertIn("4.7.1", n)
@@ -173,7 +192,74 @@ class DriftNudgeTest(unittest.TestCase):
     def test_says_it_in_one_line(self):
         # Mirrors the review-paused notice contract: a nudge must not derail the
         # session into an upgrade project.
-        self.assertIn("ONE line", V.drift_nudge("3.9.0", "4.7.1"))
+        self.assertIn("ONE line", V.drift_nudge("3.9.0", "4.7.1", claude_dir=self.tmp))
+
+    def test_registry_already_updated_means_reload_not_update(self):
+        # v4.7.6 live case: registry at 4.7.5, session still on 4.7.2 after a
+        # /compact. The old text claimed the registry was pinned and prescribed
+        # `claude plugin update`; the real fix is a reload.
+        self._registry({"scope": "user", "version": "4.7.5", "installPath": self._install("4.7.5")})
+        n = V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp)
+        self.assertIn("/reload-plugins", n)
+        self.assertIn("4.7.2", n)
+        self.assertIn("4.7.5", n)
+        self.assertIn("ONE line", n)
+        self.assertIn("/mem-doctor", n)          # escalation kept for a reload that doesn't take
+        self.assertNotIn("claude plugin update", n)
+        self.assertNotIn("pinned", n)
+
+    def test_version_field_alone_never_proves_current(self):
+        # No installPath → nothing proves what would load: never reload advice.
+        self._registry({"scope": "user", "version": "4.7.5"})
+        self.assertEqual(V.registry_versions(self.tmp), [None])
+        self.assertIn("claude plugin update", V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp))
+
+    def test_missing_install_path_never_gets_reload_advice(self):
+        # Round-2 review H1: installPath set but gone (bug #52218 as doctor.sh
+        # describes it) — a reload would load from a missing dir and silently
+        # skip every hook; the update/doctor path is the only right advice.
+        missing = str(self.tmp / "plugins" / "cache" / "gowth-mem" / "gowth-mem" / "4.7.5")
+        self._registry({"scope": "user", "version": "4.7.5", "installPath": missing})
+        self.assertEqual(V.registry_versions(self.tmp), [None])
+        n = V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp)
+        self.assertIn("claude plugin update gowth-mem", n)
+        self.assertNotIn("/reload-plugins", n)
+
+    def test_version_field_is_not_trusted_over_the_install_path(self):
+        # Bug #52218 shape (review M3): the `version` field was bumped but
+        # installPath still holds 4.7.2 — that is what loads, so a reload
+        # would run 4.7.2 again. The fix is the update/doctor path.
+        self._registry({"scope": "user", "version": "4.7.5", "installPath": self._install("4.7.2")})
+        self.assertEqual(V.registry_versions(self.tmp), ["4.7.2"])
+        n = V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp)
+        self.assertIn("claude plugin update gowth-mem", n)
+        self.assertNotIn("/reload-plugins", n)
+
+    def test_stale_registry_keeps_the_update_fix(self):
+        self._registry({"scope": "user", "version": "4.7.2"})
+        n = V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp)
+        self.assertIn("claude plugin update gowth-mem", n)
+        self.assertNotIn("/reload-plugins", n)
+
+    def test_mixed_scopes_keep_the_update_fix(self):
+        # A stale project-scope entry may be the one this session runs.
+        self._registry({"scope": "user", "version": "4.7.5"},
+                       {"scope": "project", "version": "4.7.2"})
+        self.assertIn("claude plugin update", V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp))
+
+    def test_unprovable_registry_keeps_the_update_fix(self):
+        self._registry({"scope": "user", "version": "0120fb83da5d"})   # git sha
+        self.assertIn("claude plugin update", V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp))
+        (self.tmp / "plugins" / "installed_plugins.json").write_text("{not json")
+        self.assertIn("claude plugin update", V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp))
+
+    def test_registry_entry_without_version_reads_its_install_path(self):
+        ip = self.tmp / "cache" / "gowth-mem" / "4.7.5"
+        (ip / ".claude-plugin").mkdir(parents=True)
+        (ip / ".claude-plugin" / "plugin.json").write_text(json.dumps({"version": "4.7.5"}))
+        self._registry({"scope": "user", "installPath": str(ip)})
+        self.assertEqual(V.registry_versions(self.tmp), ["4.7.5"])
+        self.assertIn("/reload-plugins", V.drift_nudge("4.7.2", "4.7.5", claude_dir=self.tmp))
 
 
 class BootstrapHeaderTest(unittest.TestCase):

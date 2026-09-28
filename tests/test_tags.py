@@ -9,13 +9,21 @@ Covers:
   - append_entry writes inline suffix + frontmatter union (idempotent)
   - topic auto-create denylist (AKIA placeholder → misc, not akia... topic)
   - backfill dry-run vs --apply on a tmp GOWTH_MEM_HOME fixture
+  - v4.7.6: identifier patterns start only at token starts (no #top-hook
+    fragments), linear on long runs, strip_tags identical to the old regex
 """
+from __future__ import annotations  # `dict | None` below; the suite targets 3.9+
+
 import importlib.util
 import json
 import os
+import random
+import shutil
+import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -397,6 +405,198 @@ class BackfillTests(unittest.TestCase):
                 self.assertIn(entry + "\n", text)
             finally:
                 os.environ.pop("GOWTH_MEM_HOME", None)
+
+
+# The pre-v4.7.6 strip_tags, kept as the reference implementation: dedup hashes
+# stored in index.db were computed with it, so the rewrite must match it exactly.
+_OLD_STRIP_RE = re.compile(
+    r"\s*(?:#[A-Za-z0-9_][A-Za-z0-9._-]*)(?:\s+#[A-Za-z0-9_][A-Za-z0-9._-]*)*\s*$")
+
+
+class TokenBoundaryV476Tests(unittest.TestCase):
+    """v4.7.6: identifier patterns start only at a token start."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gowth_tags_bound_")
+        self._prev_home = os.environ.get("GOWTH_MEM_HOME")
+        os.environ["GOWTH_MEM_HOME"] = self.tmp
+        self.t = load_module("gowth_tags_bound", SCRIPTS / "_tags.py")
+
+    def tearDown(self):
+        if self._prev_home is None:
+            os.environ.pop("GOWTH_MEM_HOME", None)
+        else:
+            os.environ["GOWTH_MEM_HOME"] = self._prev_home
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_capitalized_compounds_stay_whole(self):
+        # Live-vault fragments: Stop-hook → #top-hook, Self-review → #elf-review,
+        # Port-forwarded → #ort-forwarded, FTS5-only → #5-only.
+        for text, whole, fragment in (
+            ("Stop-hook path fires the directive", "stop-hook", "top-hook"),
+            ("Self-review loop scores the session", "self-review", "elf-review"),
+            ("Port-forwarded to the replica", "port-forwarded", "ort-forwarded"),
+            ("FTS5-only index for recall", "fts5-only", "5-only"),
+        ):
+            tags = self.t.extract_tags(text)
+            self.assertIn(whole, tags, (text, tags))
+            self.assertNotIn(fragment, tags, (text, tags))
+
+    def test_no_identifier_tag_starts_mid_word(self):
+        lines = [
+            "[exp] Pass-through guard uses find -newermt matching FLUSH_GRACE=300",
+            "[exp] xiaozhi ESP32-S3 (native USB-JTAG) intermittently drops its serial port",
+            "[decision] Rules-system target = the toc repo because 1tokenai is frozen",
+            "[exp] LR-BC54 scorecard: APPROVED-WITH-CONDITIONS since B6 PASS",
+            "[tool] fooBar-baz and 0xdead_beef in the 2fa_token path",
+        ]
+        checked = 0
+        for ln in lines:
+            low = ln.lower()
+            for tag in self.t.extract_tags(ln):
+                # Identifier tags appear verbatim; prose bigrams (xiaozhi-native)
+                # join two separate words and are not identifiers.
+                if not re.search(r"[-._]", tag) or tag not in low:
+                    continue
+                checked += 1
+                self.assertRegex(low, r"(?<![a-z0-9])" + re.escape(tag),
+                                 f"{tag!r} starts inside a word of {ln!r}")
+        self.assertGreaterEqual(checked, 8)  # the property was actually exercised
+
+    def test_dotfiles_and_digit_led_filenames_stay_whole(self):
+        self.assertIn("claude.json", self.t.extract_tags("`teammateDefaultModel` lives in `.claude.json`"))
+        self.assertIn("gitlab-ci.yml", self.t.extract_tags("edit .gitlab-ci.yml before the deploy stage"))
+        self.assertIn("01-db-findings.md", self.t.extract_tags("constraints from cleanup/01-db-findings.md"))
+
+    def test_leading_underscore_identifier_keeps_its_name(self):
+        self.assertIn("run_forget_daily", self.t.extract_tags("_run_forget_daily archives journals"))
+
+    def test_version_wildcards_are_not_tags(self):
+        tags = self.t.extract_tags("pin requests v2.x or urllib3 1.x for the vendored client")
+        self.assertFalse({"v2.x", "2.x", "1.x"} & set(tags), tags)
+        self.assertIn("urllib3", tags)
+
+    def test_numbered_steps_and_extensions_are_not_identifiers(self):
+        # Review L3: a digit start made `1.Install` an identifier and the
+        # wildcard filter ate `2.xlsx` — HEAD tagged the plain words.
+        self.assertFalse({"1.install", "2.restart"} & set(self.t.extract_tags(
+            "[exp] 1.Install the plugin then 2.Restart Claude Code")))
+        tags = self.t.extract_tags("[exp] export to 2.xlsx and 1.xml then diff")
+        self.assertIn("xlsx", tags)
+        self.assertIn("xml", tags)
+        self.assertNotIn("4.dist-info", self.t.extract_tags("[exp] pin numpy-1.26.4.dist-info in the lock"))
+
+    def test_long_identifiers_are_tagged_whole(self):
+        # Review M4: router aspect filenames reach 74 chars and FQNs / env vars
+        # run past 80 — a 64-char cap dropped them AND (already blanked) their
+        # words, so the entry lost its most specific tags.
+        for text, whole in (
+            ("[exp] see 2026-09-28-checkpoints-overflowed-precompact-regression-transcript.md for it",
+             "2026-09-28-checkpoints-overflowed-precompact-regression-transcript.md"),
+            ("[exp] org.apache.kafka.clients.consumer.internals.ConsumerCoordinatorRebalanceListener leaks",
+             "org.apache.kafka.clients.consumer.internals.consumercoordinatorrebalancelistener"),
+            ("[exp] GOWTH_MEM_DISABLE_CAPTURE_FOR_HEADLESS_SUBAGENT_TEAMMATE_SESSIONS_ONLY_V2 disables it",
+             "gowth_mem_disable_capture_for_headless_subagent_teammate_sessions_only_v2"),
+        ):
+            self.assertGreater(len(whole), self.t.MAX_TAG_LEN)
+            self.assertIn(whole, self.t.extract_tags(text), text)
+
+    def test_an_over_long_identifier_leaves_its_words_to_prose(self):
+        blob = "Zm9vYmFy" * 40          # CamelCase-shaped 320-char run: not an identifier
+        tags = self.t.extract_tags(f"[ref] cache blob {blob} expires nightly")
+        self.assertLessEqual(max(map(len, tags)), self.t.MAX_TAG_LEN)
+        self.assertTrue({"cache", "expires", "nightly"} & set(tags), tags)
+
+    def test_many_distinct_words_stay_fast(self):
+        # Pre-fix: substring collapse was O(k²) over every candidate — 88k chars
+        # of distinct words took 2.4 s, quadrupling per doubling.
+        text = "[exp] " + " ".join(f"word{i:05d}q" for i in range(16000))
+        t0 = time.perf_counter()
+        tags = self.t.extract_tags(text)
+        self.assertLess(time.perf_counter() - t0, 2.0)
+        self.assertTrue(tags)
+
+    def test_long_runs_are_linear(self):
+        # Pre-fix: 52.6 s for one 40k-char run (each regex re-scanned the run
+        # from every start). Linear now: milliseconds. Generous bound, no flake.
+        for run in ("a" * 40000, ("Zm9vYmFy" * 5000), ("a1" * 20000), ("a-" * 20000) + "ấ"):
+            t0 = time.perf_counter()
+            tags = self.t.extract_tags("[ref] blob " + run + " end")
+            self.assertLess(time.perf_counter() - t0, 2.0, run[:12])
+            # The rest of the entry is still tagged (alone or as a bigram)...
+            self.assertTrue(any("blob" in t for t in tags), tags)
+            # ...and the run itself never becomes a giant tag.
+            self.assertLessEqual(max(map(len, tags)), self.t.MAX_TAG_LEN, run[:12])
+
+    def test_real_write_entry_point_tags_the_whole_compound(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            _scaffold(home)
+            code = (
+                "import sys; sys.path.insert(0,'hooks/scripts')\n"
+                "from _topic import append_entry\n"
+                "from _tags import _tags_from_frontmatter\n"
+                "c='[exp] Stop-hook path: the Self-review block fires because the counter resets'\n"
+                "p,w=append_entry(c, ws='w1')\n"
+                "assert w, 'write should succeed'\n"
+                "txt=p.read_text()\n"
+                "line=[l for l in txt.splitlines() if l.startswith('[exp] Stop-hook')][0]\n"
+                "print('LINE', line)\n"
+                "print('FM', _tags_from_frontmatter(txt))\n"
+            )
+            out = _run_in_home(code, home, {"GOWTH_WORKSPACE": "w1"}).stdout
+            line = [ln for ln in out.splitlines() if ln.startswith("LINE ")][0]
+            self.assertIn("#stop-hook", line)
+            self.assertIn("#self-review", line)
+            self.assertNotIn("#top-hook", line)
+            self.assertNotIn("#elf-review", line)
+            fm = [ln for ln in out.splitlines() if ln.startswith("FM ")][0]
+            self.assertIn("'stop-hook'", fm)
+
+
+class StripTagsLinearV476Tests(unittest.TestCase):
+    """v4.7.6: strip_tags matches the reversed line — linear, same output."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gowth_tags_strip476_")
+        self._prev_home = os.environ.get("GOWTH_MEM_HOME")
+        os.environ["GOWTH_MEM_HOME"] = self.tmp
+        self.t = load_module("gowth_tags_strip476", SCRIPTS / "_tags.py")
+
+    def tearDown(self):
+        if self._prev_home is None:
+            os.environ.pop("GOWTH_MEM_HOME", None)
+        else:
+            os.environ["GOWTH_MEM_HOME"] = self._prev_home
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_identical_to_the_old_regex(self):
+        rnd = random.Random(4760)
+        alphabet = [" ", "\t", "\n", "\r", "\x1c", " ", " ", "#", "#", "#",
+                    "a", "Z", "0", "_", ".", "-", ",", "ấ", "/"]
+        for _ in range(40000):
+            s = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 24)))
+            self.assertEqual(self.t.strip_tags(s), _OLD_STRIP_RE.sub("", s), repr(s))
+        for _ in range(20000):
+            body = "".join(rnd.choice("ab #.-_ \t") for _ in range(rnd.randint(0, 12)))
+            tags = "".join(rnd.choice([" ", "  ", "\t"]) + "#"
+                           + "".join(rnd.choice("ab0_.-") for _ in range(rnd.randint(0, 4)))
+                           for _ in range(rnd.randint(0, 4)))
+            s = body + tags + rnd.choice(["", " ", "\n", " x", "#", "\r\n"])
+            self.assertEqual(self.t.strip_tags(s), _OLD_STRIP_RE.sub("", s), repr(s))
+
+    def test_long_whitespace_runs_are_linear(self):
+        # Pre-fix: 2.3 s for 40k spaces (quadratic); 80k would take ~9 s.
+        cases = (
+            (" " * 80000 + "x", " " * 80000 + "x"),          # no tags: untouched
+            ("x" + " " * 80000 + "#a #b", "x"),              # tags after a huge gap: stripped
+            (" " * 80000 + "#a", ""),
+            ("x " + "#a " * 26000 + "y", "x " + "#a " * 26000 + "y"),  # tag run not at the end
+        )
+        for line, expected in cases:
+            t0 = time.perf_counter()
+            self.assertEqual(self.t.strip_tags(line), expected)
+            self.assertLess(time.perf_counter() - t0, 1.0)
 
 
 if __name__ == "__main__":

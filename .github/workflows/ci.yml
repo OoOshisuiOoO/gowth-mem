@@ -6,11 +6,24 @@ on:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 = the oldest supported runtime (hooks are "pure stdlib 3.9+").
+        # With only '3.x', test_tags.py failed to import on 3.9 for months
+        # (its 32 tests silently never ran there) and nothing noticed.
+        # 3.9 is pinned to ubuntu-24.04: 3.9.25 has no ubuntu-26.04 build, and
+        # ubuntu-latest will move there.
+        include:
+          - python-version: '3.9'
+            os: ubuntu-24.04
+          - python-version: '3.x'
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: ${{ matrix.python-version }}
       - run: python -m py_compile hooks/scripts/*.py
       - run: python -m unittest discover -s tests

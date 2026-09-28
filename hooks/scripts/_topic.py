@@ -110,9 +110,43 @@ _DENY_NEW_SLUG_RE = re.compile(
 )
 
 
+class UnroutableError(ValueError):
+    """The vault offers no safe topic folder for an entry (every `-notes`
+    name beside a domain is taken, or the folder resolves outside the
+    workspace). `append_entry_status` reports it as `rejected:unroutable`;
+    any OTHER ValueError is a bug and must surface, not read as a refusal."""
+
+
+def _min_overlap(s) -> int:
+    """`topic_routing.min_keyword_overlap`, or 3 when it is no integer — a
+    hand-edited `"three"` used to raise inside planning on every append."""
+    routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
+    v = routing.get("min_keyword_overlap", 3) if isinstance(routing, dict) else 3
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 3
+
+
+def _default_topic(s) -> str:
+    """`topic_routing.default_topic`, or `misc` when the setting is no usable
+    top-level topic name — hand-edited settings like `Misc`, `docs`,
+    `misc notes`, or `../..` (which made planning scan the vault's PARENT
+    for topic folders before the gate had even run)."""
+    routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
+    t = routing.get("default_topic", "misc") if isinstance(routing, dict) else "misc"
+    if isinstance(t, str) and SLUG_RE.match(t) and not is_reserved(t) and not is_reserved(f"{t}.md"):
+        return t
+    return "misc"
+
+
 def _guard_new_slug(slug: str, default_topic: str) -> str:
-    """Return `default_topic` if `slug` looks like a junk/placeholder topic name."""
-    return default_topic if _DENY_NEW_SLUG_RE.search(slug) else slug
+    """Return `default_topic` if `slug` looks like a junk/placeholder topic name
+    — or is a reserved workspace name: `ensure_topic_folder` refuses `research`,
+    `docs`, …, so "[exp] see the research" crashed the write (v4.7.6)."""
+    if _DENY_NEW_SLUG_RE.search(slug) or is_reserved(slug) or is_reserved(f"{slug}.md"):
+        return default_topic
+    return slug
 
 
 # v4.0: workspace name guard. Public entrypoints that take `ws` and cause a
@@ -156,9 +190,19 @@ def _validate_aspect_slug(slug: str) -> str:
     return slug
 
 
+def _keywords_in_order(text: str, min_len: int = 4) -> list[str]:
+    """Distinct keywords in order of first appearance."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for w in re.findall(rf"\b\w{{{min_len},}}\b", text.lower()):
+        if w not in STOPWORDS and w not in seen:
+            seen.add(w)
+            out.append(w)
+    return out
+
+
 def _extract_keywords(text: str, min_len: int = 4) -> set[str]:
-    words = re.findall(rf"\b\w{{{min_len},}}\b", text.lower())
-    return {w for w in words if w not in STOPWORDS}
+    return set(_keywords_in_order(text, min_len))
 
 
 def _slugify(words: list[str], max_len: int = 60) -> str:
@@ -168,6 +212,20 @@ def _slugify(words: list[str], max_len: int = 60) -> str:
     return s[:max_len] or "misc"
 
 
+def _ranked(words: list[str], n: int) -> list[str]:
+    """Top-`n` distinctive keywords: longest first; equal lengths keep their
+    order of first appearance in the text (a stable sort).
+
+    v4.7.6: `sorted(<set>, key=len)` kept the set's iteration order among
+    equal-length words, and str hashing is randomised per process — the same
+    entry minted a different topic folder or aspect filename on every run
+    (three runs, three slugs). An alphabetical tie-break was deterministic but
+    put the gate-mandated `because` into slugs systematically (`because-cooling`);
+    first appearance favours the subject, which leads the sentence.
+    """
+    return sorted(words, key=len, reverse=True)[:n]
+
+
 def derive_aspect_slug(content: str, max_words: int = 5, max_len: int = 60) -> str:
     """v3.0: derive `<aspect>` from top 3-5 distinctive keywords of an entry.
 
@@ -175,10 +233,10 @@ def derive_aspect_slug(content: str, max_words: int = 5, max_len: int = 60) -> s
     when keyword extraction yields no usable slug, or when the candidate
     collides with the blocklist (00-README / lessons) / leading `_` / pure digits.
     """
-    words = _extract_keywords(content)
+    words = _keywords_in_order(content)
     if not words:
         return "note"
-    ranked = sorted(words, key=len, reverse=True)[:max_words]
+    ranked = _ranked(words, max_words)
     candidate = _slugify(ranked, max_len=max_len)
     if not candidate or candidate in ASPECT_BLOCKLIST or candidate.startswith("_") or candidate.isdigit():
         return "note"
@@ -270,58 +328,283 @@ def ensure_topic_folder(slug: str, ws: str | None = None,
     return resolved
 
 
-def resolve_topic_folder(slug: str, ws: str | None = None) -> Path:
+def resolve_topic_folder(slug: str, ws: str | None = None, *, ensure: bool = True) -> Path:
     """v3.0 (F4 fix): folder-only resolver for lessons / reflections / evergreen.
 
     Returns the topic FOLDER path. Idempotently ensures the folder exists
     (via `ensure_topic_folder`) but does NOT create any dated aspect file.
     Use this when the caller writes to `<folder>/lessons.md` directly.
+
+    v4.7.6: a topic that exists only NESTED (`<ws>/<domain>/<slug>/`) resolves
+    to that folder instead of getting a top-level twin; none → `<ws>/<slug>/`,
+    as before. A slug naming a DOMAIN, or matching several nested topics,
+    raises ValueError naming the candidates (a README would have hidden the
+    domain's topics; a third top-level twin helps nobody), as does one that
+    resolves outside the workspace through a symlink. `ensure=False` returns
+    the same folder without creating anything.
     """
-    return ensure_topic_folder(slug, ws=ws)
+    ws = ws or active_workspace()
+    _validate_slug(slug)
+    root = workspace_dir(ws)
+    top = root / slug
+    if top.is_dir():
+        if not _inside_workspace(top, ws):
+            raise ValueError(f"topic {slug!r} resolves outside the workspace (symlink?)")
+        if _is_domain(top):
+            inner = sorted(p.parent.name for p in iter_topic_landings(ws)
+                           if top in p.parent.parents)
+            raise ValueError(f"{slug!r} is a domain folder, not a topic — name one of: "
+                             + ", ".join(inner))
+        return _ensure_landing(top, ws) if ensure else top
+    nested = [p.parent for p in iter_topic_landings(ws) if p.parent.name == slug]
+    if any(not _inside_workspace(n, ws) for n in nested):
+        raise ValueError(f"topic {slug!r} resolves outside the workspace (symlink?)")
+    if len(nested) > 1:
+        raise ValueError(f"topic {slug!r} is ambiguous — "
+                         + ", ".join(str(n.relative_to(root)) for n in nested))
+    if nested:
+        return _ensure_landing(nested[0], ws) if ensure else nested[0]
+    return ensure_topic_folder(slug, ws=ws) if ensure else top
+
+
+def _pick_topic(content: str, ws: str,
+                settings: dict | None) -> tuple[str, Path | None]:
+    """Topic selection shared by `route()`, `derive_topic_slug()` and
+    `derive_topic_folder()` — one copy, so the three can no longer drift.
+
+    Returns `(slug, folder)`. `folder` is an EXISTING topic folder to write
+    into (best keyword-overlap match, or an existing nested folder named like
+    the new slug). `None` means `<ws>/<slug>/` is to be created: no keywords
+    (default topic), no match good enough (new slug from the top-2 keywords),
+    or a legacy flat `<ws>/<slug>.md` match (promoted to a folder).
+
+    v4.7.6: topic identity is WHERE a file lives (`slug_for_path`), never its
+    frontmatter `slug:`. A dated aspect carries `slug: <topic>-<aspect>`
+    (`_validate.fix_aspect`), so each time an aspect out-scored its folder's
+    README the old code minted a README-only `<topic>-<aspect>/` sibling
+    (31 in the live vault) — and `_lesson` filed a lesson inside one.
+    """
+    s = settings or read_settings()
+    min_overlap = _min_overlap(s)
+    default_topic = _default_topic(s)
+
+    kws_in_order = _keywords_in_order(content)
+    kws = set(kws_in_order)
+    if not kws:
+        return _avoid_domain(default_topic, workspace_dir(ws)), None
+
+    # The UNRESOLVED dir: `_walk_topics` yields paths under exactly this base.
+    # A resolved root never equals `f.parent` under a symlinked home (every
+    # macOS temp dir), which misread a flat `<ws>/<name>.md` as a folder file.
+    ws_dir = workspace_dir(ws)
+    slug_index: dict[str, Path] = {}
+    domains: dict[Path, bool] = {}
+    best_path: Path | None = None
+    best_overlap = 0
+    # Sorted: `rglob` order is filesystem-dependent (APFS vs ext4), and ties
+    # keep the FIRST best file — so two machines sharing one vault could route
+    # the same entry to different topics.
+    for f in sorted(_walk_topics(ws)):
+        slug = slug_for_path(f, ws_dir)
+        if not SLUG_RE.match(slug):
+            continue
+        if f.parent == ws_dir and (is_dated_aspect_filename(f.name) or is_reserved(slug)):
+            # Not a legacy flat topic: a loose root-level aspect is an artifact
+            # (the symlinked-home bug wrote some) and would be promoted into a
+            # date-named folder; `<ws>/research.md` cannot become a folder.
+            continue
+        if f.parent != ws_dir:
+            dom = domains.get(f.parent)
+            if dom is None:
+                dom = domains[f.parent] = _is_domain(f.parent)
+            if dom:
+                # A loose file inside a DOMAIN: "its folder" has no landing, so
+                # every entry that matched it would pile up where no MOC, list
+                # or bootstrap ever looks.
+                continue
+        try:
+            text = f.read_text(errors="ignore")
+        except Exception:
+            continue
+        slug_index.setdefault(slug, f)
+        overlap = len(kws & _extract_keywords(text))
+        if overlap > best_overlap:
+            best_overlap, best_path = overlap, f
+
+    if best_path is not None and best_overlap >= min_overlap:
+        folder = best_path.parent
+        if folder != ws_dir:
+            return slug_for_path(best_path, ws_dir), folder
+        # Legacy flat `<ws>/<stem>.md` → promoted to `<ws>/<stem>/` — unless
+        # that name is already a domain's.
+        return _avoid_domain(slug_for_path(best_path, ws_dir), ws_dir), None
+
+    new_slug = _avoid_domain(
+        _guard_new_slug(_slugify(_ranked(kws_in_order, 2)) or default_topic, default_topic), ws_dir)
+    # Already exists (e.g. nested via /mem-restructure) → write there, don't shadow.
+    existing = slug_index.get(new_slug)
+    if existing is not None and existing.parent != ws_dir:
+        return new_slug, existing.parent
+    return new_slug, None
+
+
+def _inside_workspace(folder: Path, ws: str) -> bool:
+    """True iff `folder` RESOLVES inside the workspace — a symlinked topic
+    folder pointing elsewhere does not (a lesson written through it is never
+    synced or indexed, while the CLI said "appended")."""
+    try:
+        folder.resolve().relative_to(workspace_dir(ws).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _avoid_domain(slug: str, ws_dir: Path) -> str:
+    """A NEW (or promoted) topic must not take a DOMAIN folder's name —
+    `ensure_topic_folder` would give the domain a README and hide its topics
+    (e.g. a default topic `misc/` that holds topic folders). Use the first of
+    `<slug>-notes`, `<slug>-notes-2`, … that is not a domain; the stem is
+    shortened so every candidate stays within the 60-char slug limit."""
+    if not _is_domain(ws_dir / slug):
+        return slug
+    for i in range(1, 21):
+        suffix = "-notes" if i == 1 else f"-notes-{i}"
+        cand = slug[:60 - len(suffix)].rstrip("-") + suffix
+        if not _is_domain(ws_dir / cand):
+            return cand
+    raise UnroutableError(f"no free topic name beside domain {slug!r}")
+
+
+def _is_domain(folder: Path) -> bool:
+    """A folder with no landing of its own that holds topic folders somewhere
+    below it. `iter_topic_landings` recurses into such a folder; a README
+    there would end the recursion and hide every topic under it."""
+    if is_topic_folder(folder):
+        return False
+    try:
+        return any(is_topic_folder(d) for d in folder.rglob("*") if d.is_dir())
+    except OSError:
+        return False
+
+
+def _ensure_landing(folder: Path, ws: str) -> Path:
+    """F3 for an EXISTING topic folder: add a skeleton README only when the
+    folder has no landing at all. The README is placed from the folder's own
+    location (parents + name), never re-derived from a slug, so this can only
+    ever touch `folder` itself — the old `ensure_topic_folder(best_slug)` built
+    `<ws>/<best_slug>/`, a top-level sibling for nested topics and for any
+    aspect-derived slug. A legacy `<dir>/<dir>.md` landing counts: a skeleton
+    README would shadow it in `topic_landing()`.
+    """
+    if not _inside_workspace(folder, ws):
+        # Never swallowed (unlike the reserved-segment case below): writing
+        # through a symlink out of the vault loses the entry silently.
+        raise UnroutableError(f"{folder} resolves outside workspace {ws!r} (symlink?)")
+    if is_topic_folder(folder) or _is_domain(folder):
+        return folder  # already a topic — or a DOMAIN, which a README would turn into one
+    try:
+        rel = folder.relative_to(workspace_dir(ws))
+        ensure_topic_folder(rel.parts[-1], ws=ws, parents=list(rel.parts[:-1]))
+    except (ValueError, OSError) as exc:
+        # Reserved or non-conforming segment (e.g. an unmigrated `My Notes/`):
+        # the folder exists, so the entry is still written — only the README
+        # is skipped (the old path raised here and lost the write).
+        try:
+            from _debug import log_debug  # type: ignore
+            log_debug("topic", f"no landing added to {folder}: {exc}")
+        except Exception:
+            pass
+    return folder
 
 
 def derive_topic_slug(content: str, ws: str | None = None,
                       settings: dict | None = None) -> str:
     """v3.0: return the topic FOLDER slug for `content` without spawning files.
 
-    Mirrors `route()` slug-selection logic (existing-topic match by keyword
-    overlap, else top-2 distinctive keywords, else default `misc`) but never
-    calls `ensure_topic_folder` and never returns a file path. Used by
-    `_lesson.py` to pick the topic folder for `lessons.md` without creating
-    a parasitic dated-aspect file as a side-effect.
+    Same selection as `route()` (`_pick_topic`: existing-topic match by keyword
+    overlap, else top-2 distinctive keywords, else default `misc`), but never
+    touches the filesystem. Writers should use `derive_topic_folder()`, which
+    also resolves NESTED topic folders.
     """
-    s = settings or read_settings()
-    routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
-    min_overlap = int(routing.get("min_keyword_overlap", 3))
-    default_topic = routing.get("default_topic", "misc")
+    slug, _folder = _pick_topic(content, ws or active_workspace(), settings)
+    return slug
+
+
+def plan_topic_folder(content: str, ws: str | None = None,
+                      settings: dict | None = None) -> tuple[str, Path | None]:
+    """The topic choice for `content`, touching nothing: `(slug, folder)` as
+    `_pick_topic` returns it. Pair with `materialise_topic_folder` to decide,
+    check (dedup / gate), and only then create — with a single vault walk."""
+    return _pick_topic(content, ws or active_workspace(), settings)
+
+
+def materialise_topic_folder(slug: str, folder: Path | None, ws: str | None = None) -> Path:
+    """Create what `plan_topic_folder` chose (see `_materialise`)."""
+    return _materialise(slug, folder, ws or active_workspace())
+
+
+def derive_topic_folder(content: str, ws: str | None = None,
+                        settings: dict | None = None, *, ensure: bool = True) -> Path:
+    """v4.7.6: the topic FOLDER `content` belongs in — ensured, but with no
+    dated aspect spawned. Used by `_lesson.py` for `lessons.md`.
+
+    Unlike `resolve_topic_folder(derive_topic_slug(...))` it returns the
+    matched folder itself, so a nested topic (`<ws>/<domain>/<slug>/`) never
+    gets a top-level `<ws>/<slug>/` twin. `ensure=False` returns the same
+    folder without creating anything (for a rejected write).
+    """
     ws = ws or active_workspace()
+    slug, folder = _pick_topic(content, ws, settings)
+    if not ensure:
+        return folder if folder is not None else workspace_dir(ws) / slug
+    return _materialise(slug, folder, ws)
 
-    kws = _extract_keywords(content)
-    if not kws:
-        return default_topic
 
-    ws_root = workspace_dir(ws).resolve()
-    best_slug = default_topic
-    best_overlap = 0
-    for f in _walk_topics(ws):
-        try:
-            text = f.read_text(errors="ignore")
-        except Exception:
-            continue
-        fm, _ = parse_file(f)
-        slug = fm.get("slug") or slug_for_path(f, ws_root)
-        if not SLUG_RE.match(slug):
-            continue
-        overlap = len(kws & _extract_keywords(text))
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_slug = slug
+def _plan(content: str, ws: str, s: dict) -> tuple[str, Path | None, Path | None, str | None]:
+    """The routing DECISION — reads the vault, never writes: `(slug, folder,
+    side, section_hint)`. `side` is the side-channel file for `[secret-ref]` /
+    `[skill-ref]` (nothing is ensured for those); otherwise `folder` is the
+    existing topic folder to write into, or None to create `<ws>/<slug>/`.
+    Split from the side effects (`_materialise`) so a write can be refused
+    before anything is created."""
+    default_topic = _default_topic(s)
 
-    if best_overlap >= min_overlap:
-        return best_slug
+    first_line = content.splitlines()[0] if content else ""
+    line_type = _detect_line_type(first_line)
+    section_hint = SECTION_FOR_PREFIX.get(line_type) if line_type else None
 
-    distinctive = sorted(kws, key=len, reverse=True)[:2]
-    return _guard_new_slug(_slugify(distinctive) or default_topic, default_topic)
+    # Side-channel: [secret-ref] → shared/secrets.md
+    if line_type == "secret-ref":
+        return "secrets", None, shared_dir() / "secrets.md", None
+
+    # Side-channel: [skill-ref] → workspaces/<ws>/skills/<slug>.md
+    if line_type == "skill-ref":
+        skill_slug = _derive_skill_slug(content) or default_topic
+        return skill_slug, None, skills_dir(ws) / f"{skill_slug}.md", None
+
+    slug, folder = _pick_topic(content, ws, s)
+    return slug, folder, None, section_hint
+
+
+def _planned_target(content: str, ws: str, s: dict):
+    """`(slug, folder, side, section_hint, target)` — the file an entry would
+    be appended to, computed without creating anything."""
+    slug, folder, side, hint = _plan(content, ws, s)
+    target = side if side is not None else _today_aspect_path(
+        folder if folder is not None else workspace_dir(ws) / slug, derive_aspect_slug(content))
+    return slug, folder, side, hint, target
+
+
+def _materialise(slug: str, folder: Path | None, ws: str) -> Path:
+    """The side-effect half of routing: an existing folder gets a README only
+    if it has no landing; otherwise `<ws>/<slug>/` is created (or a legacy
+    flat `<ws>/<slug>.md` topic promoted to a folder)."""
+    if folder is not None:
+        return _ensure_landing(folder, ws)
+    try:
+        return ensure_topic_folder(slug, ws=ws)
+    except ValueError as exc:   # e.g. `<ws>/<slug>` is a symlink out of the vault
+        raise UnroutableError(str(exc)) from exc
 
 
 def route(content: str, ws: str | None = None,
@@ -339,91 +622,13 @@ def route(content: str, ws: str | None = None,
     Otherwise routes to `<ws>/<slug>/<today>-<aspect>.md`.
     """
     s = settings or read_settings()
-    routing = s.get("topic_routing", {}) if isinstance(s, dict) else {}
-    min_overlap = int(routing.get("min_keyword_overlap", 3))
-    default_topic = routing.get("default_topic", "misc")
     ws = ws or active_workspace()
-
-    first_line = content.splitlines()[0] if content else ""
-    line_type = _detect_line_type(first_line)
-    section_hint = SECTION_FOR_PREFIX.get(line_type) if line_type else None
-
-    # Side-channel: [secret-ref] → shared/secrets.md
-    if line_type == "secret-ref":
-        return ("secrets", shared_dir() / "secrets.md", None)
-
-    # Side-channel: [skill-ref] → workspaces/<ws>/skills/<slug>.md
-    if line_type == "skill-ref":
-        skill_slug = _derive_skill_slug(content) or default_topic
-        return (skill_slug, skills_dir(ws) / f"{skill_slug}.md", None)
-
-    kws = _extract_keywords(content)
-    if not kws:
-        # No keywords → default topic folder + today's "note" aspect
-        folder = ensure_topic_folder(default_topic, ws=ws)
-        return (default_topic, _today_aspect_path(folder, "note"), section_hint)
-
-    ws_root = workspace_dir(ws).resolve()
-    candidates = _walk_topics(ws)
-    slug_index: dict[str, Path] = {}
-    best_slug = default_topic
-    best_overlap = 0
-    best_path: Path | None = None
-    for f in candidates:
-        try:
-            text = f.read_text(errors="ignore")
-        except Exception:
-            continue
-        fm, _ = parse_file(f)
-        slug = fm.get("slug") or slug_for_path(f, ws_root)
-        # v4.1.2: never TRUST a frontmatter slug — an invalid one (e.g. >60
-        # chars from a pre-clamp fix_aspect) would flow into best_slug and
-        # crash ensure_topic_folder. Fall back to the path-derived slug.
-        if not SLUG_RE.match(slug):
-            slug = slug_for_path(f, ws_root)
-            if not SLUG_RE.match(slug):
-                continue
-        if slug not in slug_index:
-            slug_index[slug] = f
-        file_kws = _extract_keywords(text)
-        overlap = len(kws & file_kws)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_slug = slug
-            best_path = f
-
-    if best_overlap >= min_overlap and best_path is not None:
-        # Match an existing topic — route to ITS folder's today-dated aspect.
-        matched_folder = best_path.parent if best_path.parent != ws_root else None
-        if matched_folder is not None:
-            # F3 fix: ensure folder + README exist even when slug matched via index
-            # (multi-machine sync may have deleted the folder locally).
-            ensure_topic_folder(best_slug, ws=ws)
-            aspect_slug = derive_aspect_slug(content)
-            return (best_slug, _today_aspect_path(matched_folder, aspect_slug), section_hint)
-        # Legacy flat match at ws root — promote to folder for new aspect.
-        ensure_topic_folder(best_slug, ws=ws)
-        new_folder = ws_root / best_slug
-        aspect_slug = derive_aspect_slug(content)
-        return (best_slug, _today_aspect_path(new_folder, aspect_slug), section_hint)
-
-    # No good match → new topic from top-2 distinctive keywords.
-    distinctive = sorted(kws, key=len, reverse=True)[:2]
-    new_slug = _guard_new_slug(_slugify(distinctive) or default_topic, default_topic)
-
-    # If the new slug already exists in the index (e.g. nested via /mem-restructure),
-    # route to that folder instead of shadowing.
-    existing = slug_index.get(new_slug)
-    if existing is not None:
-        existing_folder = existing.parent if existing.parent != ws_root else None
-        if existing_folder is not None:
-            ensure_topic_folder(new_slug, ws=ws)
-            aspect_slug = derive_aspect_slug(content)
-            return (new_slug, _today_aspect_path(existing_folder, aspect_slug), section_hint)
-
-    folder = ensure_topic_folder(new_slug, ws=ws)
-    aspect_slug = derive_aspect_slug(content)
-    return (new_slug, _today_aspect_path(folder, aspect_slug), section_hint)
+    slug, folder, side, section_hint = _plan(content, ws, s)
+    if side is not None:
+        return (slug, side, None)
+    # No keywords → default topic with a "note" aspect (derive_aspect_slug's fallback).
+    folder = _materialise(slug, folder, ws)
+    return (slug, _today_aspect_path(folder, derive_aspect_slug(content)), section_hint)
 
 
 def append_entry(content: str, ws: str | None = None,
@@ -434,19 +639,38 @@ def append_entry(content: str, ws: str | None = None,
     previously used `route()` + raw write should switch to this helper so
     `is_duplicate(ws_root, tag, content)` actually blocks cross-file repeats.
 
-    `written` is False when dedup rejected the entry; the path is still
-    returned so callers can log it. Section heading injection is left to
-    the caller (matches existing route() contract).
+    `written` is False when dedup or the gate refused the entry — see
+    `append_entry_status()` for which; nothing is created on disk then. The
+    path is still returned so callers can log it. Section heading injection
+    is left to the caller (matches existing route() contract).
+    """
+    path, status = append_entry_status(content, ws=ws, settings=settings)
+    return path, status == "written"
+
+
+def append_entry_status(content: str, ws: str | None = None,
+                        settings: dict | None = None) -> tuple[Path, str]:
+    """v4.7.6: `append_entry` with the outcome spelled out — `written`,
+    `duplicate` or `rejected:<gate rule>` — and decided BEFORE anything is
+    created. The old order routed first, so a refused entry still left a
+    README-only topic folder behind (one no junk check can prove), and the
+    CLI printed `duplicate` for a gate refusal: the memory teammate then
+    no-op'd an entry it could have repaired (e.g. by adding its `Source:`).
     """
     ws = ws or active_workspace()
-    validate_workspace(ws)  # reject junk ws BEFORE any mkdir (route → ensure_topic_folder)
+    validate_workspace(ws)  # reject junk ws BEFORE any mkdir
     s = settings if isinstance(settings, dict) else read_settings()
-    slug, target, _section = route(content, ws=ws, settings=s)
+    try:
+        slug, folder, side, _section, target = _planned_target(content, ws, s)
+    except UnroutableError as exc:   # no routable topic name (e.g. every candidate is a domain)
+        from _debug import log_debug  # type: ignore
+        log_debug("topic", f"unroutable: {exc}")
+        return workspace_dir(ws), "rejected:unroutable"
     tag = _extract_tag(content)
     # Dedup + gate run on the ORIGINAL (untagged) content. is_duplicate hashes
     # tag-stripped content, so the check is stable regardless of inline #tags.
     if tag and is_duplicate(workspace_dir(ws), tag, content):
-        return target, False
+        return target, "duplicate"
     # v3.6: hard write-rules gate — reject junk before it lands (canon §1).
     # Deterministic, no LLM. Gated by settings.gate.enabled (default true).
     try:
@@ -456,9 +680,17 @@ def append_entry(content: str, ws: str | None = None,
             if not _v.ok:
                 from _debug import log_debug  # type: ignore
                 log_debug("topic", f"gate reject [{_v.reason}]: {content[:80]}")
-                return target, False
+                return target, f"rejected:{_v.reason or 'gate'}"
     except Exception:
         pass  # gate is best-effort; never block a write on gate internals failing
+
+    if side is None:
+        try:
+            target = _today_aspect_path(_materialise(slug, folder, ws), derive_aspect_slug(content))
+        except UnroutableError as exc:   # e.g. the folder resolves outside the workspace
+            from _debug import log_debug  # type: ignore
+            log_debug("topic", f"unroutable: {exc}")
+            return target, "rejected:unroutable"
 
     # v4.0: deterministic auto-tagging. Append inline #tags to the entry's first
     # line, then union them into the aspect file's frontmatter tags:.
@@ -509,7 +741,7 @@ def append_entry(content: str, ws: str | None = None,
     except Exception:
         pass  # best-effort; a stale index must never fail a write
 
-    return target, True
+    return target, "written"
 
 
 def _derive_skill_slug(content: str) -> str | None:
@@ -517,11 +749,10 @@ def _derive_skill_slug(content: str) -> str | None:
     m = re.search(r"\[skill-ref:([a-z0-9][a-z0-9-]{0,59})\]", content)
     if m:
         return m.group(1)
-    kws = _extract_keywords(content)
+    kws = _keywords_in_order(content)
     if not kws:
         return None
-    distinctive = sorted(kws, key=len, reverse=True)[:1]
-    return _slugify(distinctive) or None
+    return _slugify(_ranked(kws, 1)) or None
 
 
 def ensure_topic(slug: str, ws: str | None = None, title: str | None = None,
@@ -584,11 +815,14 @@ if __name__ == "__main__":
     ap.add_argument("--summary", default="", help="cốt lõi 1-line summary for --ensure")
     args = ap.parse_args()
     if args.route:
-        slug, path, section = route(args.route, ws=args.ws)
+        # A PREVIEW (/mem-topic route): it must not create the folder it
+        # predicts — a previewed gate-reject used to leave permanent junk.
+        slug, _f, _side, section, path = _planned_target(
+            args.route, args.ws or active_workspace(), read_settings())
         print(f"{slug}\t{path}\t{section or ''}")
     elif args.append:
-        path, written = append_entry(args.append, ws=args.ws)
-        print(f"{path}\t{'written' if written else 'duplicate'}")
+        path, status = append_entry_status(args.append, ws=args.ws)
+        print(f"{path}\t{status}")   # written | duplicate | rejected:<gate rule>
     elif args.list:
         for t in list_topics(args.ws):
             print(f"{t['slug']:30s} {t['status']:10s} {t['last_touched']:10s} {t['title']}")

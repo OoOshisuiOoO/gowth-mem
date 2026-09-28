@@ -10,8 +10,9 @@
 
 Storage v3.0: one `lessons.md` per topic folder.
   - Explicit --topic <slug>:  workspaces/<ws>/<slug>/lessons.md (ensure folder via F4)
-  - Auto-route via _topic.derive_topic_slug: pick top-keyword slug, ensure folder,
-    write lessons.md inside (NEVER spawn a dated-aspect file for lessons).
+  - Auto-route via _topic.plan_topic_folder: the best keyword-matched topic
+    FOLDER (or a new one), created only after dedup + the gate pass; write
+    lessons.md inside (NEVER spawn a dated aspect).
 
 Format per entry: H2 heading "## [YYYY-MM-DD] <symptom truncated>" + 5 bold-prefix bullets.
 Newest entries appended at TOP under "## Entries" section so most-recent-first reading
@@ -38,7 +39,10 @@ from _home import (  # type: ignore
     workspace_dir,
 )
 from _tags import extract_tags, format_suffix, max_per_entry, tags_enabled  # type: ignore
-from _topic import derive_topic_slug, resolve_topic_folder, validate_workspace  # type: ignore
+from _topic import (  # type: ignore
+    materialise_topic_folder, plan_topic_folder, resolve_topic_folder,
+    validate_workspace,
+)
 
 
 HEADER = "# Lessons & Troubleshooting\n\n> Append-only ledger. Newest-first under `## Entries`. Schema cited from NASA LLIS / Army AAR / AWS EKS / Stripe / 5 Whys.\n\n## Entries\n\n"
@@ -47,20 +51,6 @@ HEADER = "# Lessons & Troubleshooting\n\n> Append-only ledger. Newest-first unde
 def _truncate(s: str, n: int = 60) -> str:
     s = s.strip().splitlines()[0]
     return (s[:n] + "…") if len(s) > n else s
-
-
-def _resolve_target(ws: str, topic: str | None, content: str) -> Path:
-    """v3.0: return path to `<folder>/lessons.md` for the routed topic folder.
-
-    Uses `resolve_topic_folder` (F4) so we never spawn a parasitic dated-aspect
-    file just to figure out where lessons should live.
-    """
-    if topic:
-        folder = resolve_topic_folder(topic, ws=ws)
-    else:
-        slug = derive_topic_slug(content, ws=ws)
-        folder = resolve_topic_folder(slug, ws=ws)
-    return folder / TOPIC_LESSONS
 
 
 def append_lesson(
@@ -74,18 +64,48 @@ def append_lesson(
     ws: str | None = None,
     today: str | None = None,
 ) -> Path:
-    """Append a 5-field lesson entry to the topic's lessons.md. Returns the path written."""
+    """Append a 5-field lesson entry to the topic's lessons.md. Returns the path
+    written (or, when refused, the path it would have gone to)."""
+    return append_lesson_status(symptom, tried, root_cause, fix, source,
+                                topic=topic, ws=ws, today=today)[0]
+
+
+def append_lesson_status(
+    symptom: str,
+    tried: str,
+    root_cause: str,
+    fix: str,
+    source: str = "",
+    *,
+    topic: str | None = None,
+    ws: str | None = None,
+    today: str | None = None,
+) -> tuple[Path, str]:
+    """`append_lesson` plus the outcome: `written`, `duplicate` or
+    `rejected:<gate rule>`. v4.7.6: dedup and the gate run BEFORE the topic
+    folder is created — a refused lesson used to leave a README-only folder
+    behind, and the CLI printed "appended:" for it.
+
+    Raises ValueError when an explicit `topic` names a domain folder, matches
+    several nested topics, or resolves outside the workspace (a symlink) —
+    the message names the candidates; nothing is written."""
     ws = ws or active_workspace()
     validate_workspace(ws)  # reject junk ws BEFORE any mkdir (resolve_topic_folder)
     today = today or date.today().isoformat()
 
     routing_text = " ".join(filter(None, [symptom, tried, root_cause, fix]))
-    target = _resolve_target(ws, topic, routing_text)
+    # Decide once (one vault walk), check, and only then create.
+    if topic:
+        planned = resolve_topic_folder(topic, ws=ws, ensure=False) / TOPIC_LESSONS
+    else:
+        t_slug, t_folder = plan_topic_folder(routing_text, ws=ws)
+        planned = (t_folder if t_folder is not None
+                   else workspace_dir(ws) / t_slug) / TOPIC_LESSONS
 
     # v3.4: cross-file dedup — skip if (tag, content) already indexed.
     # Lessons live under the [exp] tag in _index.py's chunking model.
     if is_duplicate(workspace_dir(ws), "exp", routing_text):
-        return target
+        return planned, "duplicate"
 
     # v3.6: hard write-rules gate on the 5-field lesson (canon §1; deterministic).
     try:
@@ -96,9 +116,13 @@ def append_lesson(
             if not _v.ok:
                 from _debug import log_debug  # type: ignore
                 log_debug("lesson", f"gate reject [{_v.reason}]")
-                return target
+                return planned, f"rejected:{_v.reason or 'gate'}"
     except Exception:
         pass
+
+    folder = (resolve_topic_folder(topic, ws=ws) if topic
+              else materialise_topic_folder(t_slug, t_folder, ws=ws))
+    target = folder / TOPIC_LESSONS
 
     # v4.0: deterministic auto-tags on the entry's first line (the heading).
     # lessons.md has no frontmatter — inline only (no frontmatter union).
@@ -140,7 +164,7 @@ def append_lesson(
     except Exception:
         pass
 
-    return target
+    return target, "written"
 
 
 def _cli() -> int:
@@ -153,16 +177,24 @@ def _cli() -> int:
     p.add_argument("--topic", help="Force topic slug (skip auto-routing)")
     p.add_argument("--ws", help="Workspace (default: active)")
     args = p.parse_args()
-    written = append_lesson(
-        symptom=args.symptom,
-        tried=args.tried,
-        root_cause=args.root,
-        fix=args.fix,
-        source=args.source,
-        topic=args.topic,
-        ws=args.ws,
-    )
-    print(f"appended: {written}")
+    try:
+        path, status = append_lesson_status(
+            symptom=args.symptom,
+            tried=args.tried,
+            root_cause=args.root,
+            fix=args.fix,
+            source=args.source,
+            topic=args.topic,
+            ws=args.ws,
+        )
+    except ValueError as exc:   # --topic names a domain, an ambiguous or an invalid slug
+        print(f"not appended: {exc}")
+        return 2
+    # v4.7.6: said "appended:" even when dedup or the gate refused the lesson.
+    if status != "written":
+        print(f"not appended ({status}): {path}")
+        return 0
+    print(f"appended: {path}")
     # Trigger MOC refresh — best-effort
     try:
         import subprocess

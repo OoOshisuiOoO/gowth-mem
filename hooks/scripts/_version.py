@@ -90,6 +90,30 @@ def marketplace_version(market: str = PLUGIN_MARKET,
     return read_plugin_version(marketplace_root(market, claude_dir))
 
 
+def registry_versions(claude_dir: Path | None = None) -> list[str | None]:
+    """The version EVERY `installed_plugins.json` entry for gowth-mem would load
+    (user/project/local scopes), or [] when unreadable. Read ONLY from the
+    plugin.json at the entry's `installPath` — that directory is what actually
+    runs; bug #52218 can bump the `version` field without moving `installPath`,
+    so the field alone proves nothing. An entry with no readable installPath
+    (missing, empty, or a directory that is gone — the plugin cannot load)
+    yields None, so the caller never advises a reload into it. Never raises.
+    """
+    try:
+        data = json.loads((_claude_dir(claude_dir) / "plugins" / "installed_plugins.json")
+                          .read_text(encoding="utf-8"))
+        entries = (data.get("plugins") or {}).get(f"{PLUGIN_NAME}@{PLUGIN_MARKET}") or []
+        out: list[str | None] = []
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict):
+                continue
+            ip = e.get("installPath")
+            out.append(read_plugin_version(Path(ip)) if isinstance(ip, str) and ip.strip() else None)
+        return out
+    except Exception:
+        return []
+
+
 def parse_version(v: str | None) -> tuple[int, ...] | None:
     if not isinstance(v, str):
         return None
@@ -172,6 +196,14 @@ def drift_nudge(running: str | None = "__auto__",
 
     Never raises. Silent unless the drift is provable from two readable
     manifests.
+
+    v4.7.6: two different situations produce the same drift, with different
+    fixes. If every registry entry already records the available version, the
+    registry is fine — this SESSION started before the update (SessionStart
+    also fires on /compact, /clear and resume with the old plugin root), so
+    the fix is a reload, not `claude plugin update` (which the old text
+    prescribed while wrongly claiming the registry was pinned). "Records" is
+    judged by what each entry's installPath holds, not its `version` field.
     """
     try:
         run = running_version() if running == "__auto__" else running
@@ -179,6 +211,17 @@ def drift_nudge(running: str | None = "__auto__",
                  if available == "__auto__" else available)
         if not is_outdated(run, avail):
             return ""
+        reg = registry_versions(claude_dir)
+        if reg and all(parse_version(v) is not None and not is_outdated(v, avail) for v in reg):
+            return (
+                "\n=== gowth-mem update not loaded in THIS session ===\n"
+                f"Running v{run}; installed_plugins.json already records v{avail}, so this\n"
+                "session simply started before the update and its hooks still execute the\n"
+                f"v{run} code until the plugins are reloaded.\n"
+                "Fix here:  /reload-plugins   (or restart Claude Code).\n"
+                "If it still reports the old version, run /mem-doctor.\n"
+                "Tell the user this in ONE line, then continue — do not turn it into a project.\n"
+            )
         return (
             "\n=== gowth-mem upgrade pending on THIS machine ===\n"
             f"Running v{run}, but v{avail} is installed in this machine's marketplace clone.\n"

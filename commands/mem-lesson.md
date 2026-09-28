@@ -27,7 +27,11 @@ Append a 5-field lesson entry to the active workspace's matching topic. Entries 
 /mem-lesson --topic <slug> <symptom> -- <tried> -- <root cause> -- <fix>
 ```
 
-`--topic <slug>` forces the destination topic. Otherwise auto-route via `_topic.route` (keyword overlap with existing topic files in active workspace).
+`--topic <slug>` forces the destination topic (an existing nested `<domain>/<slug>/` topic is
+used in place). Otherwise auto-route via `_topic.plan_topic_folder` (keyword overlap with
+existing topic files in the active workspace; the matched topic's own folder).
+The CLI prints `appended: <path>`, or `not appended (duplicate|rejected:<gate rule>): <path>` —
+on a rejection, fix what the rule names (e.g. add the `--source`) and run it again.
 
 ### B. Interactive
 
@@ -51,10 +55,10 @@ fi
 
 # One-liner detection: contains " -- "
 if [[ "$ARG" == *" -- "* ]]; then
-  python3 - "$ARG" $TOPIC_FLAG <<'PYEOF'
+  if python3 - "$ARG" $TOPIC_FLAG <<'PYEOF'
 import sys
 sys.path.insert(0, "${CLAUDE_PLUGIN_ROOT}/hooks/scripts")
-from _lesson import parse_oneliner, append_lesson
+from _lesson import parse_oneliner, append_lesson_status
 
 text = sys.argv[1]
 topic = None
@@ -66,18 +70,28 @@ if parsed is None:
     print("Malformed. Need 4-5 fields separated by ' -- '. Use interactive: /mem-lesson")
     sys.exit(2)
 
-written = append_lesson(topic=topic, **parsed)
-print(f"lesson saved: {written}")
+try:
+    path, status = append_lesson_status(topic=topic, **parsed)
+except ValueError as exc:  # --topic names a domain / an ambiguous or invalid slug
+    print(f"not saved: {exc}")
+    sys.exit(2)
+if status != "written":
+    print(f"not saved ({status}): {path}")   # nothing was written — fix what the rule names
+    sys.exit(3)
+print(f"lesson saved: {path}")
 PYEOF
+  then
+    # Refresh MOC + index only after a lesson was actually saved (a refused
+    # lesson used to leave fresh _MAP.md files and an index on a new vault).
+    WS=$(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" active)
+    python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py" --ws "$WS"
+    python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py"
+  fi
 else
   # Interactive flow — Claude prompts user 5 questions, then calls _lesson.py
+  # (which refreshes the MOC itself after a successful write).
   echo "Interactive mode. Asking user for 5 fields…"
 fi
-
-# Refresh MOC
-WS=$(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" active)
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py" --ws "$WS"
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_index.py"
 ```
 
 ## Interactive flow (Claude executes when no one-liner)
@@ -108,8 +122,9 @@ matches the `starrocks` topic, the lesson lands in `starrocks/lessons.md` (folde
 ledger) — a single ledger covers all `YYYY-MM-DD-<aspect>.md` aspects of the topic.
 The H2 heading prefix can mention the aspect or date manually if needed.
 
-Routing: `_lesson.py` calls `derive_topic_slug(content)` (no `--topic`) or
-`resolve_topic_folder(slug)` (with `--topic`), both via `_topic.py`. Neither path
+Routing: `_lesson.py` calls `plan_topic_folder(content)` (no `--topic`: the
+matched topic's own folder, nested ones included) or `resolve_topic_folder(slug)`
+(with `--topic`), both via `_topic.py`. Neither path
 ever spawns a dated aspect file — lessons go straight to the topic folder's
 `lessons.md`. The topic folder + `00-README.md` MOC are created on-demand if
 missing (idempotent via `ensure_topic_folder`).

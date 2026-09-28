@@ -901,3 +901,142 @@ the Claude Code, CI-like and hostile runner envs; `bin/test-install.sh` green.
 **Known limits (not covered, all pre-existing):** PuTTY `.ppk` and TSS2 keys; Kubernetes
 base64-wrapped PEM (`LS0tLS1CRUdJTi…`); keys quoted with `> `; an unclosed PHP-escaped JSON key;
 a < 16-char key fragment left at a capture-window cut.
+
+## v4.7.6 — Topics are their folders; tags start at token starts; 3.9 is tested (2026-09-28)
+
+Four open items from the v4.7.3–v4.7.5 sessions, each measured on the live vault first.
+
+**Fixes:**
+
+- **The router no longer mints junk topic folders.** `route()` / `derive_topic_slug()` took the
+  topic slug from the best-matching file's frontmatter `slug:`. A dated aspect carries
+  `slug: <topic>-<aspect>` (`_validate.fix_aspect`), so whenever an aspect out-scored its
+  folder's README, `ensure_topic_folder(<topic>-<aspect>)` created a README-only sibling while
+  the entry itself still landed in the right folder: **31 junk folders** in the live vault
+  (devops 16, trade 13, personal 2), and `_lesson` — same slug — filed a real lesson inside one.
+  On 120 sampled real entries the old selection would have minted a junk folder for **34**.
+  One shared `_pick_topic()` now derives identity from where the file lives (`slug_for_path`);
+  `_ensure_landing()` adds a skeleton README only inside the matched folder, never via a
+  re-derived slug, and never inside a DOMAIN (a folder with topic folders anywhere below it — a
+  README would hide them); a loose file inside a domain is no match candidate (entries matching
+  it piled up where no MOC or list looks). `_lesson.py` decides with `plan_topic_folder()` and
+  creates with `materialise_topic_folder()` (one vault walk); an explicit `--topic` that exists
+  only nested resolves in place, and one naming a domain or several nested topics is refused
+  with the candidates listed — as is one that resolves outside the workspace through a symlink
+  (HEAD's path-escape guard; a first draft of this fix bypassed it for folders that already had a
+  landing, sending lessons to the link target — never synced, never indexed). A new or promoted
+  topic never takes a domain's name (a default `misc/` holding topics gets `misc-notes/`, then
+  `-notes-2`…, within the 60-char limit), and a hand-edited `default_topic` that is no usable slug
+  (`docs`, `Misc`, `../..` — the last one made planning scan the vault's parent) falls back to
+  `misc`. The MOC rebuild no longer writes READMEs through a topic folder symlinked out of the
+  vault (pre-existing: it overwrote hand-written notes kept in another repo). The same root cause had three more victims, reproduced
+  on HEAD first: a NESTED topic got a top-level twin; a legacy `<dir>/<dir>.md` folder note was
+  shadowed by a new skeleton README; and under a symlinked `GOWTH_MEM_HOME` (every macOS temp
+  dir) a legacy flat `<ws>/<name>.md` match wrote the new aspect loose at the workspace root plus
+  a `<ws>/<ws>/` folder (the walk yields unresolved paths; `route()` compared them to a resolved
+  root). Loose root-level aspects are no longer treated as flat topics. Routing is
+  deterministic across machines: equal-length keywords keep their order of first appearance
+  (`sorted(set, key=len)` followed per-process str-hash order — three runs, three slugs; an
+  alphabetical tie-break, tried first, made the gate-mandated `because` a systematic slug word)
+  and the vault walk is sorted (`rglob` order differs between APFS and ext4). A reserved word as a new topic
+  (`[exp] see the research`) used to crash the write; it now goes to the default topic.
+- **Refused writes create nothing, and say why.** `append_entry` routed — creating folders —
+  before its dedup check and the §1 gate, so a refused entry left a README-only folder no junk
+  check can prove; `_lesson` did the same. `_plan()` (pure) now decides, the checks run, and only
+  then `_materialise()` touches disk. `_topic.py --append` prints `written`, `duplicate` or
+  `rejected:<gate rule>` — or `rejected:unroutable` when no safe topic exists (a gate refusal used
+  to print `duplicate`, and the memory teammate then
+  no-op'd an entry it could repair by adding its `Source:`); the teammate template now says to fix
+  and retry. `_lesson.py` prints `not appended (…)` instead of `appended:` for a refused lesson and
+  refreshes the MOC only after a real write; the `/mem-lesson` one-liner reports the status too.
+  The `/mem-topic route` preview (`_topic.py --route`) no longer creates the folder it predicts —
+  a previewed gate-reject used to leave permanent, unprovable junk.
+- **Junk folders are repairable — explicitly.** `_validate.py --scan` reports
+  `junk-topic-folder`; the new `--prune-junk` (NOT `--fix`) deletes one only when every condition
+  holds: a real, non-symlink folder at the workspace root; nothing in it but a plain
+  `00-README.md` (+ a tolerated `.DS_Store`); that README is the pristine DEFAULT skeleton,
+  frontmatter included (only the dates may differ); and its name is the `slug:` of a file in
+  another folder — ANY file: 6 of the 31 live junk folders came from slugs `fix_aspect` never
+  wrote (a date-prefixed, a moved, a renamed and a research-imported aspect, a different clamp, a
+  `lessons.md`). The README is renamed aside and re-verified before the unlink (an edit racing
+  the prune is restored; if a newer README appeared meanwhile, an edited copy is kept visibly as
+  `00-README.conflict-<pid>.md`), the folder is re-listed right before the delete and removed with
+  `rmdir` (if even that loses a race, the README is written back from the verified bytes), and
+  `_MAP.md` is rebuilt; the delete loop can only ever unlink a tolerated `.DS_Store`. An
+  interrupt puts the README back, and an undeletable file restores it and moves on to the next
+  folder. A hard kill's leftover `.00-README.md.pruning-<pid>` is reported by `--scan` and restored
+  by the next prune once its process is gone or it is an hour old (pids repeat, and mean nothing
+  for a leftover synced from another machine); `--prune-junk` backfills the vault's `.gitignore`
+  with `.*.pruning-*`. With `--fix --prune-junk` the prune runs first, so a slug stamped
+  by the same run is no evidence.
+  Machines still on ≤ v4.7.5 keep minting junk until upgraded, hence a command. Live vault: the
+  stranded lesson moved verbatim into `devops/service-health-alerting/lessons.md`, then **32
+  folders removed**; re-checked against the final rule from the backup: no symlinks, all 31
+  router-minted READMEs pristine including frontmatter; `_MAP.md` diffs drop exactly those 32
+  topics. The 15 other README-only folders (deliberate placeholders like `trade/ema-cross`) did
+  not match and were left alone.
+- **Tags start at token starts, in linear time.** `_tags.py`'s identifier patterns could start
+  inside a word: "Stop-hook" → `#top-hook`, "Port-forwarded" → `#ort-forwarded`, "FTS5-only" →
+  `#5-only` — **85 mangled tags** in the vault; 193 mid-word fragments across 3,595 real entry
+  lines, **0** now. Each start also re-scanned the rest of the run, so DOTTED/SNAKE/KEBAB/CAMEL
+  were quadratic: one 40k-char base64/hex run made `extract_tags` take **52.6 s** (4× per
+  doubling). Each pattern's lookbehind now rejects every character its body can consume — one
+  attempt per run, ~2× per doubling, ~10 ms at 40k. KEBAB is case-insensitive (`stop-hook`,
+  `esp32-s3`, `usb-jtag`); DOTTED may start after a `.` or on digits a letter/`_`/`-` follows,
+  so `.claude.json`, `.gitlab-ci.yml`, `01-db-findings.md` stay whole while a numbered step
+  `1.Install` is no identifier. Tags have two caps: 64 for prose and bigrams (a pasted blob had
+  become one 40,000-char tag), 128 for identifiers (router aspect filenames reach 74 chars, FQNs
+  and env vars run past 80); a longer "identifier" is not harvested and its words go to prose.
+  Substring collapse was O(k²) over every candidate (88k chars of distinct words: 2.4 s); the
+  pool is bounded at 512 per class — above the largest real entry (182 identifier / 385 prose
+  candidates), so none of the 3,595 vault entries changes a tag (a 64 pool changed 37); 700k
+  chars of adversarial input now take < 0.2 s. `v2.x` wildcards are dropped.
+  `strip_tags()` was quadratic on whitespace runs (40k: 2.3 s) on every line `_dedup` /
+  `_index` hash; it now matches the reversed line at its start, byte-identical to the old regex
+  (400,000-case differential fuzz; the reviewer added 2.4 M exhaustive strings ≤ 7 chars and all
+  29 `\s` code points on 3.9 and 3.14), so no stored dedup hash moves. Existing mangled tags are
+  left as written (`/mem-retag` never rewrites entry lines); new writes are clean.
+- **The drift notice names the right fix.** A session that started before the local update
+  (SessionStart also fires on `/compact`, `/clear`, resume) printed "Claude Code left
+  installed_plugins.json pinned … `claude plugin update`" while the registry already recorded the
+  new version. `drift_nudge()` now reads every registry entry — the version at its `installPath`,
+  which is what loads (bug #52218 can bump the `version` field alone, so the field never counts on
+  its own; an `installPath` that is missing or gone is unprovable, never current — a reload from
+  it would skip every hook):
+  all current → "update not loaded in THIS session … `/reload-plugins`" (with the `/mem-doctor`
+  escalation); stale, mixed scopes or unprovable → the old text.
+- **Python 3.9 is tested.** `tests/test_tags.py` annotated `dict | None` without the
+  `__future__` import, so on 3.9 the module failed to import and its 32 tests silently never ran
+  (CI used `3.x` only). CI now runs 3.9 (pinned to `ubuntu-24.04`: 3.9.25 has no 26.04 build)
+  and `3.x`; `tests/test_py39_compat.py` fails the build
+  on 3.9-incompatible syntax or runtime-evaluated PEP 604 annotations (class bodies inside
+  functions included) on any interpreter.
+
+**Verified:** every fix reproduced on HEAD first — the routing tests fail there by reproducing
+the bugs (the junk sibling, a lesson filed inside one, the symlinked-home flat match; the rest
+exercise API that is new), and 10 of the 13 new tag tests fail (they take 70 s on HEAD: the
+quadratic paths). On real data: 120 sampled entries → the old selection mints junk for 34; 3,595 entry
+lines → 193 mid-word fragments become 0, dotted tags lost only as fragments now kept whole; the
+bounded collapse pool changes 0 of 3,595 entries; every changed regex ≤ ~2.1× per doubling over
+10k/20k/40k chars on 30+ adversarial shapes; `strip_tags` identical to the old regex on 400,000
+fuzz cases (the reviewer added 2.4 M exhaustive strings). Delete path mutation-tested: every
+protection's revert turns a test red (redundant layers removed pairwise). Live vault: 32 junk
+folders removed (re-checked against the final rule from a backup), the stranded lesson moved
+verbatim, 193 aspects' frontmatter repaired with 193/193 bodies byte-identical, scan: 0 issues.
+Fresh-context review: 6 rounds — REQUEST CHANGES ×3, each with a HIGH in this release's own new
+code (a same-run slug stamp deciding a delete; reload advice into a missing installPath; an
+explicit `--topic` written through a symlink out of the vault), then APPROVE ×3 (4 + 2 LOWs
+fixed in-release, 3 test/preview LOWs left as follow-ups). +78 tests (**764 total**), green on
+Python 3.9.21 and 3.14.6; `bin/test-install.sh` green.
+
+**Process lesson (now a Development Rule):** the live cleanup ran one minute BEFORE the review of
+its own delete code, whose round 1 found a delete-outside-the-vault symlink defect in that path —
+the backup and the re-check showed nothing was lost, but new delete paths now run only on a copy
+until reviewed, then only with the user's go-ahead.
+
+**Follow-ups (not in this release):** `ensure_topic` / `/mem-topic ensure` can still put a README
+on a domain; `_forget.py --aspects` walks symlinked topic folders (manual path; auto-archive is off
+by default); `[skill-ref]` writes follow a symlinked `skills/`; tests for the `_materialise`
+wrap and `_ensure_landing`'s error type; the `--route` preview's traceback when all 21 `-notes`
+names are taken; `_commitmsg` labelled the 32-README cleanup commit "2 lessons"; the 85 mangled
+tags already in the vault stay as written.
