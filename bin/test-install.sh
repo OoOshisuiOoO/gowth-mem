@@ -119,6 +119,7 @@ HOOK_LIST=(
   precompact-flush.py
   conflict-detect.py
   auto-sync.py
+  _recall_prompt.py
 )
 for h in "${HOOK_LIST[@]}"; do
   hp="$SCRIPTS/$h"

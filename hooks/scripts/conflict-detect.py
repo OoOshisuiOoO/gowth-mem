@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _home import conflict_md, read_settings  # type: ignore
+from _home import clamp_context, conflict_md, read_settings  # type: ignore
 
 
 def _v3_nudge() -> str:
@@ -52,10 +52,12 @@ def main() -> int:
         "```\n"
     )
 
+    # v4.8: 30 long lines could cross the host's 10,000-char persist rule
+    # (the model would then see a 2,000-char preview of this notice).
     out = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": msg,
+            "additionalContext": clamp_context(msg),
         }
     }
     sys.stdout.write(json.dumps(out))
