@@ -94,6 +94,19 @@ def _unmerged_paths(gh: Path) -> list[str]:
     return sorted({ln.split("\t")[-1] for ln in r.stdout.splitlines() if "\t" in ln})
 
 
+def _sanitize_memory_before_commit() -> None:
+    """v4.8 (review C3): Claude-written <ws>/memory/*.md go through the privacy
+    sanitizer before `git add -A` on EVERY commit path (Stop autosync,
+    PreCompact --commit-only, PostCompact). Best-effort; never blocks the commit."""
+    try:
+        from _memsan import sanitize_memory_files  # type: ignore
+        r = sanitize_memory_files()
+        if r.get("sanitized"):
+            log_debug("auto-sync", f"sanitized memory files before commit: {r['sanitized']}")
+    except Exception as e:
+        log_debug("auto-sync", f"memory sanitize before commit failed: {e}")
+
+
 def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -> bool:
     """Stage and commit. Returns True if a commit was made.
 
@@ -109,6 +122,7 @@ def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -
             f"git status", quiet=quiet, err=True)
         return False
 
+    _sanitize_memory_before_commit()
     run_git(gh, "add", "-A", check=False)
     status = run_git(gh, "status", "--porcelain", check=False).stdout
     if not status.strip():

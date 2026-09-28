@@ -118,7 +118,6 @@ from _home import (  # type: ignore
     read_settings,
     setting,
     state_path,
-    workspace_dir,
 )
 from _lock import file_lock  # type: ignore
 from _version import supports_stop_context  # type: ignore
@@ -525,49 +524,25 @@ def _run_incremental_index(force: bool = False) -> None:
         log_debug("auto-journal", f"index stamp skipped: {e}")
 
 
-def _sanitize_memory_dir(ws: str) -> None:
-    """v4.8: Claude Code's auto memory writes <ws>/memory/*.md directly (no
-    gate, no safe_write). Sanitize every file newer than the last pass before
-    the vault can sync it (state.json `memory_sanitized_at`)."""
-    mdir = workspace_dir(ws) / "memory"
-    if not mdir.is_dir():
-        return
+def _sanitize_memory_dirs() -> None:
+    """v4.8 (review C3): Claude Code's auto memory writes <ws>/memory/*.md
+    directly (no gate, no safe_write). Every workspace's memory dir is
+    sanitized (per-file content hash in state.json) BEFORE the autosync is
+    spawned; the commit paths run the same pass before `git add -A`."""
     try:
-        since = float(_load_state().get("memory_sanitized_at") or 0.0)
-    except Exception:
-        since = 0.0
-    touched = False
-    for p in sorted(mdir.glob("*.md")):
-        try:
-            if p.stat().st_mtime <= since:
-                continue
-        except OSError:
-            continue
-        touched = True
-        try:
-            from _atomic import atomic_write  # type: ignore
-            from _privacy import sanitize  # type: ignore
-            text = p.read_text(errors="ignore")
-            cleaned, n = sanitize(text)
-            if n > 0 and isinstance(cleaned, str) and cleaned != text:
-                atomic_write(p, cleaned)
-                log_debug("auto-journal", f"sanitized {n} secret(s) in {p}")
-        except Exception as e:
-            log_debug("auto-journal", f"memory sanitize failed for {p}: {e}")
-    if touched:
-        try:
-            with file_lock("state", timeout=2.0):
-                state = _load_state()
-                state["memory_sanitized_at"] = time.time()
-                _save_state(state)
-        except Exception as e:
-            log_debug("auto-journal", f"sanitize stamp skipped: {e}")
+        from _memsan import sanitize_memory_files  # type: ignore
+        r = sanitize_memory_files()
+        if r.get("sanitized"):
+            log_debug("auto-journal", f"sanitized memory files: {r['sanitized']}")
+    except Exception as e:
+        log_debug("auto-journal", f"memory sanitize failed: {e}")
 
 
 def _post_turn(ws: str, settings: dict) -> None:
     """v4.8: after a real turn — regenerate the MEMORY.md block when its sources
     changed (hash-gated), sanitize Claude-written memory files, refresh the
-    index. Every step is best-effort; the hook's envelope never depends on it."""
+    index. Every step is best-effort; the hook's envelope never depends on it.
+    Runs BEFORE _autosync() so the sanitized files are what the push carries."""
     changed = False
     if setting("native.enabled", bool, True, settings=settings):
         try:
@@ -577,7 +552,7 @@ def _post_turn(ws: str, settings: dict) -> None:
                 write(ws)
         except Exception as e:
             log_debug("auto-journal", f"memfile refresh failed: {e}")
-    _sanitize_memory_dir(ws)
+    _sanitize_memory_dirs()
     _run_incremental_index(force=changed)
 
 
@@ -822,10 +797,10 @@ def main() -> int:
     # a session that never compacts never pushed — a live vault was found holding 116
     # uncommitted changes at ahead=0/behind=0, invisible to the user's other machine.
     # Debounced (default 30 min) + spawned detached, so a turn never waits on network.
-    _autosync()
-
-    # v4.8: MEMORY.md block, memory/*.md sanitizer, incremental index.
+    # v4.8: MEMORY.md block, memory/*.md sanitizer, incremental index — BEFORE the
+    # push is spawned (review C3: the sanitizer used to run after it).
     _post_turn(ws, settings)
+    _autosync()
 
     reasons: list[str] = []
     journal_fired = False

@@ -110,6 +110,18 @@ def write_default_gitignore(gh: Path) -> None:
     atomic_write(gi, f"{existing}{sep}{additions}")
 
 
+def _sanitize_memory_before_commit() -> None:
+    """v4.8 (review C3): Claude-written <ws>/memory/*.md go through the privacy
+    sanitizer before `git add -A` (manual /mem-sync and --init). Best-effort."""
+    try:
+        from _memsan import sanitize_memory_files  # type: ignore
+        r = sanitize_memory_files()
+        if r.get("sanitized"):
+            print(f"sync: sanitized memory file(s) before commit: {', '.join(r['sanitized'])}")
+    except Exception as e:
+        log_debug("sync", f"memory sanitize before commit failed: {e}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--init", action="store_true")
@@ -162,6 +174,7 @@ def main() -> int:
                 except subprocess.CalledProcessError:
                     has_head = False
                 if not has_head:
+                    _sanitize_memory_before_commit()
                     run_git(gh, "add", "-A")
                     try:
                         from _commitmsg import build_message as _bm  # type: ignore
@@ -215,6 +228,7 @@ def main() -> int:
                 pass
 
             if not args.pull_only:
+                _sanitize_memory_before_commit()
                 run_git(gh, "add", "-A", check=False)
                 status = run_git(gh, "status", "--porcelain", check=False).stdout
                 if status.strip():
