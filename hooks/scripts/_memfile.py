@@ -18,11 +18,14 @@ vault and git never conflicts on it.
 
 Layout of the block:
     <!-- gowth-mem:begin ws=<ws> -->
-    [gowth-mem:bootstrap workspace=<ws> vX.Y.Z]      (+ drift nudge lines)
+    [gowth-mem:bootstrap workspace=<ws>]             (version + drift nudge travel in the
+                                                      SessionStart header only — review I2:
+                                                      a peer's machine-local lines must not
+                                                      sync into every machine's MEMORY.md)
     ## Rules                 <= 25 fixed lines
     ## Handoff               <= 60 lines, newest first (_handoff.digest)
     ## Topics                <= 40 lines: slug — summary (last_touched)
-    ## Recent decisions      <= 10 lines from the index, last 7 days
+    ## Recent decisions      <= 10 lines from dated aspect FILES (synced), last 7 days
     ## Secrets (pointers only)  <= 8 lines of env-var NAMES
     ## Using memory          3 fixed lines
     <!-- gowth-mem:end -->
@@ -34,7 +37,9 @@ Handoff. Rules and Using memory are never cut (the floor).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -50,6 +55,7 @@ from _home import (  # type: ignore
     gowth_home,
     secrets_md,
     setting,
+    state_path,
     workspace_dir,
 )
 from _lock import file_lock  # type: ignore
@@ -98,6 +104,9 @@ _USING = [
 ]
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_ASPECT_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-.+\.md$")
+_DECISION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:-\s*)?\[decision\]\s*(.+?)\s*$")
+SEEN_KEY = "memfile_seen"
 _ENV_RE = re.compile(r"`([A-Z][A-Z0-9_]{3,})`")
 
 
@@ -188,33 +197,71 @@ def topic_index(ws: str, max_lines: int = TOPIC_LINES) -> list[str]:
     return ordered[:max_lines]
 
 
+def _dated_aspects(ws: str) -> list:
+    """[(date, path)] for every `YYYY-MM-DD-<aspect>.md` under the workspace's
+    topic folders (reserved and hidden dirs skipped)."""
+    root = workspace_dir(ws)
+    if not root.is_dir():
+        return []
+    out: list = []
+    for p in root.rglob("*.md"):
+        m = _ASPECT_RE.match(p.name)
+        if not m:
+            continue
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        parts = rel.parts[:-1]
+        if not parts or any(x.startswith(".") or x in RESERVED_SUBDIRS for x in parts):
+            continue
+        try:
+            d = _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        out.append((d, p))
+    return out
+
+
 def recent_decisions(ws: str, days: int = 7, max_lines: int = DECISION_LINES) -> list[str]:
-    """`- YYYY-MM-DD [decision] <title> — <path>` from the index, newest first.
-    Empty when the index is missing (fail-open, like every read path)."""
+    """`- YYYY-MM-DD [decision] <title> — <path>` from the dated aspect FILES
+    (filename date within `days`), newest first, one line per file.
+
+    Review I2: the index.db is machine-local and git-ignored, so a block built
+    from it differed between machines (and was empty where no index existed).
+    Filenames and contents are synced, so every machine renders the same lines
+    on the same day."""
     try:
-        from _query import query_by_type  # type: ignore
-        rows = query_by_type(ws, "decision", "", limit=max_lines * 3, days=days)
+        cutoff = _dt.date.today() - _dt.timedelta(days=max(0, days))
+        gh = gowth_home()
+        rows: list = []
+        for d, p in _dated_aspects(ws):
+            if d < cutoff:
+                continue
+            try:
+                text = p.read_text(errors="ignore")
+            except OSError:
+                continue
+            for ln in text.splitlines():
+                m = _DECISION_RE.match(ln)
+                if m:
+                    heading = re.sub(r"\s+", " ", m.group(1)).strip()
+                    if len(heading) > 100:
+                        heading = heading[:99] + "…"
+                    try:
+                        rel = p.relative_to(gh).as_posix()
+                    except ValueError:
+                        rel = p.as_posix()
+                    rows.append((d, rel, heading))
+                    break                      # one line per file
+        rows.sort(key=lambda r: (r[0], r[1]))
+        rows.reverse()
     except Exception as exc:
         log_debug("memfile", f"recent_decisions failed: {exc}")
         return []
     out: list[str] = []
-    seen: set = set()
-    for r in rows:
-        path = str(r.get("path") or "")
-        if not path or path in seen:
-            continue
-        seen.add(path)
-        heading = (r.get("heading") or "").strip()
-        if not heading:
-            content = (r.get("content") or "").strip()
-            heading = content.splitlines()[0] if content else ""
-        heading = re.sub(r"^\s*(?:##\s*)?(?:-\s*)?\[decision\]\s*", "", heading).strip()
-        heading = re.sub(r"\s+", " ", heading)
-        if len(heading) > 100:
-            heading = heading[:99] + "…"
-        m = _DATE_RE.search(Path(path).name)
-        date = m.group(1) if m else ""
-        out.append(f"- {date + ' ' if date else ''}[decision] {heading} — {path}")
+    for d, rel, heading in rows:
+        out.append(f"- {d.isoformat()} [decision] {heading} — {rel}")
         if len(out) >= max_lines:
             break
     return out
@@ -245,6 +292,14 @@ def secret_pointers(max_lines: int = SECRET_LINES) -> list[str]:
 # ─── rendering ───────────────────────────────────────────────────────────
 
 def _header(ws: str) -> list[str]:
+    """The synced block's header: workspace only. Deterministic across machines
+    (review I2 — the running version and the drift nudge are machine-local)."""
+    return [f"[gowth-mem:bootstrap workspace={ws}]"]
+
+
+def _hook_header(ws: str) -> list[str]:
+    """The fallback SessionStart bootstrap's header: this machine's version and
+    its drift nudge belong here (never synced)."""
     lines = [f"[gowth-mem:bootstrap workspace={ws}{version_tag()}]"]
     try:
         nudge = drift_nudge()
@@ -278,7 +333,7 @@ _SHRINK_STEPS = (("decisions", 0), ("topics", 10), ("handoff", 20), ("secrets", 
 
 
 def _fit(ws: str, *, max_lines: int, max_chars: int, free_zone_lines: int,
-         order: tuple, begin: str, end: str) -> str:
+         order: tuple, begin: str, end: str, header: "list[str] | None" = None) -> str:
     """Render the sections in `order`, shrinking until the block fits."""
     # handoff `## <date>` headers are demoted one level so the block's own
     # `## ` sections stay the only H2 lines in MEMORY.md
@@ -296,7 +351,7 @@ def _fit(ws: str, *, max_lines: int, max_chars: int, free_zone_lines: int,
         "decisions": "## Recent decisions", "secrets": "## Secrets (pointers only)",
         "using": "## Using memory",
     }
-    header = _header(ws)
+    header = list(header) if header is not None else _header(ws)
 
     def build() -> str:
         return _compose(header, [(titles[k], parts[k]) for k in order], begin, end)
@@ -343,7 +398,7 @@ def render_hook_bootstrap(ws: str, max_chars: int = HOOK_BOOTSTRAP_CHARS) -> str
     """Fallback SessionStart payload when native memory is not wired: same
     sections, no markers, handoff before rules, under the host preview rule."""
     return _fit(ws, max_lines=HOST_LINE_LIMIT, max_chars=max_chars, free_zone_lines=0,
-                order=_HOOK_ORDER, begin="", end="")
+                order=_HOOK_ORDER, begin="", end="", header=_hook_header(ws))
 
 
 # ─── file handling ───────────────────────────────────────────────────────
@@ -374,30 +429,86 @@ def write(ws: str) -> bool:
                                max_lines=setting("memfile.max_lines", int, MAX_LINES),
                                max_chars=setting("memfile.max_chars", int, MAX_CHARS),
                                free_zone_lines=free_lines)
+            started = _newest_source_mtime(ws)    # what this render accounts for
             if old_block and hashlib.sha1(old_block.encode()).hexdigest() == \
                     hashlib.sha1(new_block.encode()).hexdigest():
+                _mark_seen(ws, started)           # review M3: close the gate on a no-op
                 return False
             p.parent.mkdir(parents=True, exist_ok=True)
             safe_write(p, new_block + free)
+            _mark_seen(ws, started)
             return True
     except Exception as exc:
         log_debug("memfile", f"write failed for ws={ws}: {exc}")
         return False
 
 
+def _sources(ws: str) -> list:
+    """The SYNCED inputs of the block — handoff, secrets, topic READMEs, dated
+    aspects; never index.db or the plugin tree (review I2/M3)."""
+    out = [docs_dir(ws) / "handoff.md", secrets_md()]
+    out.extend(_topic_readmes(ws))
+    out.extend(pth for _d, pth in _dated_aspects(ws))
+    return out
+
+
+def _newest_source_mtime(ws: str) -> float:
+    newest = 0.0
+    for c in _sources(ws):
+        try:
+            if c.is_file():
+                newest = max(newest, c.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def _load_state() -> dict:
+    sp = state_path()
+    try:
+        data = json.loads(sp.read_text()) if sp.is_file() else {}
+    except Exception:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _mark_seen(ws: str, stamp: float) -> None:
+    """Remember the newest source mtime the last render of `ws` accounted for
+    (state.json `memfile_seen`), so an unchanged block does not keep
+    `sources_changed()` open forever (review M3)."""
+    try:
+        with file_lock("state", timeout=2.0):
+            state = _load_state()
+            seen = state.get(SEEN_KEY) if isinstance(state.get(SEEN_KEY), dict) else {}
+            seen[ws] = stamp
+            state[SEEN_KEY] = seen
+            from _atomic import atomic_write  # type: ignore
+            atomic_write(state_path(), json.dumps(state, indent=1))
+    except Exception as exc:
+        log_debug("memfile", f"seen stamp skipped: {exc}")
+
+
+def _seen(ws: str) -> float:
+    try:
+        v = (_load_state().get(SEEN_KEY) or {}).get(ws)
+        return float(v) if v is not None else 0.0
+    except Exception:
+        return 0.0
+
+
 def sources_changed(ws: str) -> bool:
-    """True when any input of the block is newer than the file (or no file)."""
+    """True when any input of the block is newer than the last render (the file
+    or the `memfile_seen` stamp, whichever is later), or when there is no file.
+    Inputs are the SYNCED files only — handoff, secrets, topic READMEs and
+    dated aspects; never index.db or the plugin tree (review I2/M3)."""
     p = memfile_path(ws)
     if not p.is_file():
         return True
     try:
-        ref = p.stat().st_mtime
+        ref = max(p.stat().st_mtime, _seen(ws))
     except OSError:
         return True
-    candidates = [docs_dir(ws) / "handoff.md", secrets_md(), gowth_home() / "index.db",
-                  Path(__file__).resolve().parent.parent.parent / ".claude-plugin" / "plugin.json"]
-    candidates.extend(_topic_readmes(ws))
-    for c in candidates:
+    for c in _sources(ws):
         try:
             if c.is_file() and c.stat().st_mtime > ref:
                 return True

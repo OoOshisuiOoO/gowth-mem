@@ -157,15 +157,66 @@ class RenderTest(_MemfileCase):
         self.assertLess(text.index("## Handoff"), text.index("## Rules"))
         self.assertTrue(text.startswith("[gowth-mem:bootstrap workspace=demo"))
 
-    def test_recent_decisions_come_from_the_index(self):
-        aspect = self.wsd / "beta" / "2026-09-12-choice.md"
-        aspect.write_text("---\nslug: beta-choice\ntags: []\n---\n"
-                          "## [decision] Use FTS5 for recall\n\nBecause it is stdlib. Rationale: no deps.\n")
+    def _seed_decisions(self):
+        import datetime as _d
+        recent = (_d.date.today() - _d.timedelta(days=1)).isoformat()
+        old = (_d.date.today() - _d.timedelta(days=40)).isoformat()
+        (self.wsd / "beta" / f"{recent}-choice.md").write_text(
+            "---\nslug: beta-choice\ntags: []\n---\n"
+            "## [decision] Use FTS5 for recall\n\nBecause it is stdlib. Rationale: no deps.\n")
+        (self.wsd / "alpha" / f"{recent}-bullet.md").write_text(
+            "---\nslug: alpha-bullet\n---\n- [decision] Keep the bullet form too — rationale: legacy files\n")
+        (self.wsd / "gamma" / f"{old}-stale.md").write_text(
+            "---\nslug: gamma-stale\n---\n## [decision] An old choice nobody needs today\n\nRationale: x.\n")
+        return recent
+
+    def test_recent_decisions_come_from_dated_aspects_without_an_index(self):
+        """Review I2: decisions are read from the synced files (filename date),
+        never from the machine-local index.db."""
+        recent = self._seed_decisions()
+        self.assertFalse((self.home / "index.db").exists())
+        lines = _memfile.recent_decisions(self.ws)
+        self.assertTrue(any("[decision]" in l and "FTS5" in l and recent in l for l in lines), lines)
+        self.assertTrue(any("bullet form" in l for l in lines), lines)
+        self.assertFalse(any("old choice" in l for l in lines), lines)
+        self.assertTrue(all(l.startswith(f"- {recent} [decision] ") for l in lines), lines)
+
+    def test_block_identical_with_and_without_index_db(self):
+        self._seed_decisions()
+        without = _memfile.render(self.ws)
         r = subprocess.run([sys.executable, str(SCRIPTS / "_index.py")], capture_output=True, text=True,
                            env={**os.environ, "GOWTH_MEM_HOME": self.tmp})
         self.assertEqual(r.returncode, 0, r.stderr)
-        lines = _memfile.recent_decisions(self.ws)
-        self.assertTrue(any("[decision]" in l and "FTS5" in l for l in lines), lines)
+        self.assertTrue((self.home / "index.db").is_file())
+        self.assertEqual(without, _memfile.render(self.ws))
+        self.assertIn("## Recent decisions", without)
+
+    def test_block_carries_no_machine_local_version_or_nudge(self):
+        """Review I2: a drifted peer's "update not loaded in THIS session" text and
+        its version were rendered INTO the synced block and pushed to every
+        machine. Those lines belong to the SessionStart header only."""
+        import _version  # type: ignore
+        base = _memfile.render(self.ws)
+        self.assertIn("\n[gowth-mem:bootstrap workspace=demo]\n", base)
+        patched = {}
+        for mod in (_version, _memfile):
+            for name, fake in (("drift_nudge", lambda *a, **k: "=== gowth-mem update not loaded in THIS session ===\nFix here: /reload-plugins"),
+                               ("version_tag", lambda *a, **k: " v9.9.9")):
+                if hasattr(mod, name):
+                    patched[(mod, name)] = getattr(mod, name)
+                    setattr(mod, name, fake)
+        try:
+            drifted = _memfile.render(self.ws)
+            hook = _memfile.render_hook_bootstrap(self.ws)
+        finally:
+            for (mod, name), orig in patched.items():
+                setattr(mod, name, orig)
+        self.assertEqual(drifted, base)
+        self.assertNotIn("v9.9.9", drifted)
+        self.assertNotIn("reload-plugins", drifted)
+        # the hook FALLBACK bootstrap still tells this machine about its drift
+        self.assertIn("v9.9.9", hook)
+        self.assertIn("reload-plugins", hook)
 
 
 class WriteTest(_MemfileCase):
@@ -209,6 +260,26 @@ class WriteTest(_MemfileCase):
         future = time.time() + 5
         os.utime(h, (future, future))
         self.assertTrue(_memfile.sources_changed(self.ws))
+
+    def test_sources_changed_closes_after_a_noop_write(self):
+        """Review M3: when the block is unchanged write() never touched MEMORY.md,
+        so a newer source kept sources_changed() true on every later Stop
+        (re-render + forced reindex each time)."""
+        self.assertTrue(_memfile.write(self.ws))
+        h = self.wsd / "docs" / "handoff.md"
+        future = time.time() + 5
+        os.utime(h, (future, future))                    # newer, but same digest
+        self.assertTrue(_memfile.sources_changed(self.ws))
+        self.assertFalse(_memfile.write(self.ws))        # block unchanged → no rewrite
+        self.assertFalse(_memfile.sources_changed(self.ws), "gate must close after a no-op write")
+
+    def test_sources_changed_ignores_index_db(self):
+        _memfile.write(self.ws)
+        db = self.home / "index.db"
+        db.write_bytes(b"")
+        future = time.time() + 5
+        os.utime(db, (future, future))
+        self.assertFalse(_memfile.sources_changed(self.ws))
 
     def test_free_zone_lines_shrink_the_block(self):
         _memfile.write(self.ws)
