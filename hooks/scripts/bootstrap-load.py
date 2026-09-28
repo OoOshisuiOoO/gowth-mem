@@ -206,6 +206,21 @@ def _report(ws: str, cwd: str, settings: dict) -> int:
     print(f"emission: startup {len(start)} chars (≈{len(start) // 4} tok), compact {len(comp)} chars; "
           f"hook cap {HOOK_CONTEXT_MAX}, host persists at 10,000")
     print(f"fallback bootstrap: {len(render_hook_bootstrap(ws))} chars")
+    # v4.8 per-prompt recall telemetry (state.json, written only when something was injected)
+    try:
+        from _home import state_path  # type: ignore
+        st = json.loads(state_path().read_text()) if state_path().is_file() else {}
+        prompts = entries = chars = 0
+        for sess in (st.get("session") or {}).values():
+            r = sess.get("recall") if isinstance(sess, dict) else None
+            if isinstance(r, dict):
+                prompts += int(r.get("injected", 0) or 0)
+                entries += int(r.get("entries", 0) or 0)
+                chars += int(r.get("chars", 0) or 0)
+        print(f"recall: {prompts} prompts got memory, {entries} entries, {chars} chars "
+              f"(≈{chars // 4} tok) across sessions in state.json")
+    except Exception as exc:
+        print(f"recall: (no telemetry: {exc})")
     if mode_ != "native":
         print("native memory not wired for this project: run /mem-setup native")
     return 0

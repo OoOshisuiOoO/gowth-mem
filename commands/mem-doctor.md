@@ -81,3 +81,17 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_version.py"
 Heal events go to stderr. Stdout stays empty. Exit code is always 0 — safe to chain into hooks.
 
 After a heal, restart Claude Code (or `/reload-plugins`) so the new `installPath` takes effect.
+
+## Native memory wiring (v4.8)
+
+Also report whether this project loads `MEMORY.md` from the vault:
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_native.py" status
+```
+
+`wired: false` → run `/mem-setup native` (one-time per machine). `host_disabled: true` →
+auto memory is off in `~/.claude/settings.json` (`autoMemoryEnabled`) or via
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`; the hooks fall back to the capped bootstrap.
+`free_zone_over_budget: true` → Claude's own notes below the end marker exceed ~190 lines
+and the host will cut the file at 200: trim or move notes into topic files.

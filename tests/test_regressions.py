@@ -64,9 +64,13 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(p.is_file(), "settings.example.v3.json missing")
         data = json.loads(p.read_text())
         self.assertEqual(data.get("layout_version"), 3)
-        self.assertEqual(data.get("topic_layout", {}).get("mode"), "folder")
-        # Reserved subdirs include research/ in v3
-        self.assertIn("research", data.get("topic_layout", {}).get("reserved_subdirs", []))
+        # v4.8: `topic_layout.mode` / `reserved_subdirs` were documented-but-unread
+        # keys and left the example; the v3 reserved set lives in code.
+        import sys
+        sys.path.insert(0, str(ROOT / "hooks" / "scripts"))
+        import _home  # type: ignore
+        self.assertIn("research", _home.RESERVED_SUBDIRS)
+        self.assertIn("memory", _home.RESERVED_SUBDIRS)
 
     def test_no_command_references_flat_topics_path(self):
         cmds = ROOT / "commands"

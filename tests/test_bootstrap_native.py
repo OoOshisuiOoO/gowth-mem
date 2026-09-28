@@ -153,6 +153,17 @@ class FallbackModeTest(_BootCase):
         self.assertIn("memfile:", out)
         self.assertIn("mode=fallback", out)
 
+    def test_report_lists_recall_telemetry(self):
+        (self.vault / "state.json").write_text(json.dumps({"session": {
+            "s1": {"turn_count": 3, "recall": {"injected": 2, "entries": 4, "chars": 1800, "ids": [1, 2, 3, 4]}},
+            "s2": {"turn_count": 1, "recall": {"injected": 1, "entries": 1, "chars": 300, "ids": [9]}},
+        }}))
+        out = self.run_bootstrap("startup", "--report")
+        self.assertIn("recall:", out)
+        self.assertIn("3 prompts", out)
+        self.assertIn("5 entries", out)
+        self.assertIn("2100 chars", out)
+
 
 class SessionStartScriptTest(_BootCase):
     def test_clear_emits_bootstrap(self):

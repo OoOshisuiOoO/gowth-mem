@@ -15,8 +15,8 @@ v3.4 cuts hook token waste, makes the 9-type schema actually queryable, and ship
 - **Tag-aware FTS5 schema** — `chunks` and `chunks_fts` gain a `tag TEXT` column. Existing DBs auto-migrate (`ALTER TABLE` + backfill from leading `[tag]` marker). `KNOWN_TAGS = {decision, exp, ref, tool, reflection, skill-ref, secret-ref, goal, hypothesis}`; unknown tags stored as empty string.
 - **Cross-file, tag-aware SHA-256 dedup** (`_dedup.py`) — write-time hash over `(tag, normalized_content)` blocks `[decision] foo` duplicates across files and sessions, but allows `[exp] foo` (different tag = different fact). Fixes the "ghi vào nhưng không dùng được" symptom.
 - **`/mem-recall --type=<tag>` retrieval** — new `_query.query_by_type(ws, tag, query)` pre-filters by tag before BM25 ranking. Schema is now first-class, not a formatting hint.
-- **`/mem-ops dream` skill** — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
-- **Command surface pruning (33→28)** — deleted `mem-bootstrap` and `mem-flush` (auto-run via hooks now), plus the four `/mem-workspace *` subcommand stubs (`-create`, `-archive`, `-list`, `-map`) collapsed into one `/mem-workspace [<verb>]` parent. Net of the new `/mem-recall` and `/mem-ops dream` docs: 33 - 6 + 1 = 28.
+- **`mem-dream` skill** (since v4.8: `/mem-ops dream`) — new orchestrator `_dream.py` wraps `_consolidate.py`'s three phases (Light / REM / Deep). Maps directly onto sleep-dependent consolidation: SWS replay+prune in Light, counterfactual cross-topic synthesis in REM, schema abstraction in Deep. Supports `--ws`, `--dry-run`, per-phase skip flags. JSON output to stdout, progress to stderr.
+- **Command surface pruning (33→28)** — deleted `mem-bootstrap` and `mem-flush` (auto-run via hooks now), plus the four `/mem-workspace *` subcommand stubs (`-create`, `-archive`, `-list`, `-map`) collapsed into one `/mem-workspace [<verb>]` parent. Net of the new `/mem-recall` and `mem-dream` docs: 33 - 6 + 1 = 28. (v4.8 went further: 16 commands, 6 skills — see `/mem-ops`.)
 
 ### What's still in v3.3
 
@@ -261,38 +261,27 @@ Set `GOWTH_MEM_DEBUG=1` to write hook diagnostics to `~/.gowth-mem/logs/hooks.lo
 
 ## Settings
 
-`~/.gowth-mem/settings.json` controls auto-sync, active workspace behavior, topic routing, recall limits, embedding provider, and conflict resolution mode. v3.0 adds `layout_version: 3`, `topic_layout.mode: folder`, `topic_layout.reserved_subdirs` (including `research`), `recall.layer_scores` for per-tier tuning, and `migration.v3_backup_keep: 2`. v3.3 adds four new sections:
+`~/.gowth-mem/settings.json` holds only keys the code reads (v4.8 removed 51 documented-but-unread
+keys; `tests/test_settings_example.py` pins both directions). Booleans accept `true`/`false` or the
+strings `"true"`/`"false"`; a malformed value falls back to its default without resetting its section.
 
 ```jsonc
 {
-  "retrieval": {
-    "use_budget_planner": false,    // opt-in: bootstrap-load uses _budget instead of stable prefix
-    "fts5_top_k": 12,
-    "jaccard_min_score": 0.15,
-    "jaccard_top_k": 10,
-    "jaccard_n": 3
-  },
-  "context_budget": {
-    "enabled": false,
-    "budget_chars": 15000,
-    "head_chars_per_file": 4000,
-    "recency_half_life_days": 14,
-    "tier_weights": { "working": 1.0, "episodic": 0.7, "semantic": 0.8, "procedural": 0.6 }
-  },
-  "compression": {
-    "enabled": false,               // when true, /mem-save and journal writers pipe through _compress
-    "min_repeat": 3,
-    "max_per_group": 5
-  },
-  "contradictions": {
-    "enabled": true,
-    "min_entity_overlap": 3,
-    "scan_types": ["ref", "decision", "tool"]
-  }
+  "native":   { "enabled": true },                 // MEMORY.md (auto memory) carries the working set
+  "recall":   { "on_prompt_enabled": true,         // per-prompt BM25 recall on UserPromptSubmit
+                "on_prompt_max_entries": 3, "on_prompt_max_chars": 2000,
+                "on_prompt_min_terms": 2, "on_prompt_score_threshold": -4.0,
+                "on_prompt_prompt_cap": 2000 },
+  "memfile":  { "max_lines": 130, "max_chars": 12000 },   // budget of the managed block
+  "auto_journal": { "journal_every": 10, "auto_journal_enabled": true },
+  "reflection": { "enabled": true, "turn_interval": 15, "min_review_turns": 10 },
+  "journal":  { "raw_ttl_days": 7, "auto_forget_enabled": true },
+  "gate":     { "enabled": true, "strict": true, "english_only": false },
+  "sync":     { "auto_sync_on_stop": true, "min_interval_minutes": 30 }
 }
 ```
 
-See `templates/dot-gowth-mem/settings.example.v3.json` for the full schema.
+See `templates/dot-gowth-mem/settings.example.v3.json` for every key with notes.
 
 ## What this is not
 

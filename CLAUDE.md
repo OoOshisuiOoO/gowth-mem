@@ -31,7 +31,7 @@ detection) were closed in v2.9–v3.2. See `.claude/research/product-architectur
 
 1. **Data safety** — Never lose user memory. Atomic writes, fcntl locks, conflict resolution over raw markers.
 2. **Recall quality** — Right memory at the right time. Hybrid BM25+vector, MMR diversity, SRS resurfacing.
-3. **Token efficiency** — Bootstrap ≤60k chars. Stable prefix (AGENTS/secrets/tools) for Anthropic prompt cache hits.
+3. **Token efficiency** — the working set travels through Claude Code's auto-memory `MEMORY.md` (managed block ≤130 lines / 12k chars, attached at start, resume and after every compaction); every hook emission stays under 9,000 chars (the host persists ≥10,000-char hook context to a file with a 2,000-char preview — v4.8 finding); per-prompt recall ≤2,000 chars and silent by default.
 4. **Simplicity** — Pure stdlib Python 3.9+ in hooks. SQLite for indexing. No pip deps in runtime path.
 5. **Cross-machine sync** — Git-based, conflict-aware, token-secure via HTTP header (never in URL).
 
@@ -48,7 +48,8 @@ detection) were closed in v2.9–v3.2. See `.claude/research/product-architectur
 │   ├── docs/{handoff,exp,ref,tools,files}.md
 │   ├── journal/<date>.md
 │   ├── skills/<slug>.md
-│   ├── research/<topic>/           deep-research scratch (raw/ + distilled.md)
+│   ├── research/<topic>/           deep-research scratch (raw/ + distilled.md; excluded from default recall)
+│   ├── memory/MEMORY.md            v4.8 managed block + Claude's own auto-memory notes (autoMemoryDirectory → here)
 │   └── <slug>/                     v3 topic folder
 │       ├── 00-README.md            MOC (auto-rebuilt)
 │       ├── YYYY-MM-DD-<aspect>.md  dated aspect (route() writes here)
@@ -67,11 +68,11 @@ detection) were closed in v2.9–v3.2. See `.claude/research/product-architectur
 |---|---|
 | Topic-based over folder-based | Users think in topics ("EMA strategy"), not directories |
 | `shared/` + `workspaces/<ws>/` split | Cross-project knowledge (secrets, tools) vs project-specific (handoff, topics) |
-| Hybrid recall (BM25 + vector + grep) | 3-tier graceful degradation; no hard dep on embedding API |
+| Bootstrap through auto-memory `MEMORY.md` (v4.8) | 200 lines / 25 KB, attached at start/resume/after compaction, exempt from the host's 10,000-char hook persist rule; `autoMemoryDirectory` → `<ws>/memory/` per project (`/mem-setup native`), so Claude's own notes sync too |
+| Deterministic BM25 recall (FTS5), per prompt + on demand | No LLM/embedding in the read path. Per-prompt gate: ≥2 query terms in the chunk, bm25 threshold, once per session, ≤3 entries — wrongly selected memory scores below no memory (SWE-ContextBench 2026) |
 | mem0 ADD/UPDATE/DELETE ops | Prevents dedup bloat vs blind append (mem0, Generative Agents pattern) |
 | 9-type schema prefixes | `[decision]`, `[exp]`, `[ref]`, `[tool]`, `[reflection]`, `[skill-ref]`, `[secret-ref]`, `[goal]`, `[hypothesis]` |
 | Token via HTTP header per-command | `git -c http.<url>.extraHeader=AUTHORIZATION: basic <b64>` — never in remote URL |
-| SM-2-lite SRS resurfacing | ~25% prob/prompt for files unseen ≥7 days; prevents knowledge rot |
 | fcntl + atomic write | Multi-session safety; SQLite WAL for concurrent index access |
 | Conflict → SYNC-CONFLICT.md | Raw `<<<<<<<` markers break FTS5 indexing; AI-mediated resolution instead |
 
@@ -100,8 +101,10 @@ The repo is both a standalone Claude Code plugin and a single-plugin marketplace
 hooks/hooks.json          event → script wiring (see below)
 hooks/scripts/_*.py       importable library modules (underscore prefix = shared lib, unit-tested)
 hooks/scripts/*.{py,sh}   hook entrypoints (no underscore): read JSON event on stdin, ALWAYS exit 0
-commands/mem-*.md         39 slash commands (YAML frontmatter + instructions; frontmatter `description:` must not contain a bare `: `)
-skills/<name>/SKILL.md    13 auto-trigger skills (subset of commands that also fire on description match)
+commands/mem-*.md         16 slash commands: 15 user-facing + `/mem-ops <sub>` (v4.8: the listing cost 9,153 chars/session at 39);
+                          descriptions ≤80 chars, no bare `: `, no ` #` (tests/test_command_surface.py)
+templates/ops/<sub>.md    bodies of the 24 rarely-typed operations reached via /mem-ops, /mem-research, /mem-sync resolve
+skills/<name>/SKILL.md    6 auto-trigger skills (save, sync, install, distill, sync-resolve, recall)
 templates/                vault-file scaffolds + externalized hook instruction blocks (auto-journal, self-review)
 bin/                      operational shell: release.sh, doctor.sh, test-install.sh, migrate-v3.sh/rollback-v3.sh
                           (every bin/*.sh must be referenced outside bin/ — tests/test_version_drift.py
@@ -114,9 +117,9 @@ Hook wiring (`hooks/hooks.json`):
 
 | Event | Script | Role |
 |---|---|---|
-| `SessionStart` | `session-start.sh` | vault bootstrap context injection (branches on `source` field) + detached `bin/doctor.sh` registry self-heal (v4.7.2) |
-| `UserPromptSubmit` | `conflict-detect.sh` | pure-bash pre-check; Python only runs if `SYNC-CONFLICT.md` exists |
-| `Stop` | `auto-journal.py` | journal cadence, session capture, prune/consolidate/forget, 15-turn self-review — counts REAL user turns (skips `stop_hook_active` + machine re-invocations) and emits directives on the non-error Stop channel (v4.7.3) |
+| `SessionStart` | `session-start.sh` → `bootstrap-load.py` | startup/clear/compact: native header ≤600 chars when the project loads `MEMORY.md` from the vault, else the ≤8,500-char fallback bootstrap; refreshes `MEMORY.md`, spawns a detached incremental reindex + `bin/doctor.sh` self-heal (v4.8) |
+| `UserPromptSubmit` | `conflict-detect.sh` → `recall-on-prompt.sh` | bash pre-checks; conflict notice only with `SYNC-CONFLICT.md`; gated BM25 recall ≤2,000 chars (v4.8), silent by default |
+| `Stop` | `auto-journal.py` | journal cadence, session capture, prune/consolidate/forget, 15-turn self-review — counts REAL user turns (skips `stop_hook_active` + machine re-invocations) and emits directives on the non-error Stop channel (v4.7.3); v4.8: verbatim judge prompt, `MEMORY.md` block refresh, `memory/*.md` sanitize, incremental reindex, one settings parse per Stop |
 | `PreCompact` | `precompact.sh` | deterministic transcript raw-dump — must NEVER block `/compact` |
 | `PostCompact` | `auto-sync.py --pull-rebase-push` | git sync after compaction |
 
@@ -125,7 +128,10 @@ Shell wrappers exist to dodge Python startup cost on hot paths: keep cheap pre-c
 ## Research Lineage
 
 Full research archive: `RESEARCH.md` (12 systems, retrieval algorithms, token techniques, PKM patterns).
-Distilled insights in `.claude/research/`:
+The v4.8 audits that reshaped the read path are in `docs/audits/2026-09-28-{audit-flow,holistic-review}.md`
+and the design in `docs/superpowers/specs/2026-09-28-native-memory-design.md`.
+Distilled insights in `.claude/research/` (NOTE: `.claude/` is gitignored — these notes exist only on
+the author's machine and never shipped; treat the list as local reading, not repo contents):
 - `openclaw-vision.md` — OpenClaw dream, dreaming 3-phase consolidation, memory-wiki, what gowth-mem can learn
 - `product-architecture.md` — OpenClaw vs gowth-mem architecture comparison, gaps worth closing
 - `architecture-decisions.md` — 10 ADRs with rationale and trade-offs
@@ -155,6 +161,8 @@ Distilled insights in `.claude/research/`:
 - Topic routing goes through `_topic.py` — never write directly to topic files.
 - New entries must pass `_gate.py` (content) and `_validate.py` (file structure) — the gate/validator are the enforcement layer; docs alone proved insufficient.
 - Before claiming done: full suite + compile check (see Commands); `bin/test-install.sh` for anything touching hooks, install, or migration.
+- Every hook emission goes through `_home.clamp_context` (`HOOK_CONTEXT_MAX = 9000`). Claude Code (measured on 2.1.283) persists any hook additionalContext / SessionStart stdout of ≥ 10,000 chars to a tool-results file and shows the model a 2,000-char preview — the 15,589-char bootstrap did this in 193 sessions before v4.8 and nobody noticed. Anything that must reliably reach the model at session start belongs in `MEMORY.md` (`_memfile.py`), not in hook output.
+- Any `claude -p` run in a test, probe or E2E passes `--setting-sources project` and exports a scratch `GOWTH_MEM_HOME` (and `CLAUDE_CONFIG_DIR` when it reads settings). Without `--setting-sources project` the user's real plugins run — three test sessions leaked session logs into the live vault on 2026-09-28.
 - `_privacy.py`, `_capture.py`, or any regex on the Stop-hook path — or on a write/index path (`_tags`, `_dedup`, `_index`: v4.7.6 found four quadratic `_tags` identifier regexes, 52 s on one 40k run) — ships only with (v4.7.3–v4.7.5: every release was returned by review for defects in its own new code that its own tests missed):
   1. >=1 test through the REAL write entry point (`capture_turn`, `safe_write`, the hook `main`) with the real hostile input — a `sanitize()`-only test does not count (v4.7.5: keys leaked through `capture_turn` while `sanitize()` tests were green).
   2. A repeated-write test: 3 passes over the same file, byte-identical after pass 1. No deletion may key on a marker a current rule also emits (v4.7.5: the residue rule ate hash lines on every write).
@@ -188,6 +196,8 @@ Distilled insights in `.claude/research/`:
   count: session 1c16482b ran 4.7.2 hooks for 2h20m after this rule was written, lost 3 turns from
   its session log, and kept showing the "Stop hook error" it had fixed.
 - Taking a topic's identity from a file's frontmatter `slug:` — a dated aspect's is `<topic>-<aspect>` (`fix_aspect`), and trusting it minted 31 README-only junk folders. Identity is WHERE the file lives (`slug_for_path`); `_topic._pick_topic()` is the one selector; a matched folder gets its README only via `_ensure_landing()` (it refuses domains and folders that resolve outside the workspace), and every NEW or promoted topic name passes `_avoid_domain()` — a README on a domain hides its topics. Writes DECIDE (pure `_plan`), CHECK (dedup + gate), then CREATE (`_materialise`) — creating before the check left junk for every refused entry. Same for anything persisted from a `set`: `sorted(words, key=len)` keeps hash order among ties — always add a total tie-break.
+- Emitting more than 9,000 chars from any hook (see Development Rules) — it silently becomes a 2,000-char preview. Reading a documented "loaded 5/5 files" summary as proof the model saw them: the v4.3 repair counted what the hook emitted, never what arrived.
+- Treating `.claude/research/` notes as shipped documentation — the directory is gitignored.
 - Assuming the transcript is complete at Stop time — the FINAL assistant record is flushed AFTER Stop hooks run (proven by a snapshot taken inside a real Stop hook). For the current turn use the Stop input (`prompt_id`, `last_assistant_message`). Offline replays of finished transcripts cannot catch this; only a real-binary E2E (`claude -p --setting-sources project` + scratch `GOWTH_MEM_HOME`) can.
 
 ## Shipped Features

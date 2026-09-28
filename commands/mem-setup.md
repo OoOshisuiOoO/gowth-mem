@@ -38,3 +38,29 @@ What gets captured:
 4. Export the env vars listed in `RESTORE.md` §3 (values live in your secret store, never in the vault).
 
 After a backup, run `/mem-sync` (or let auto-sync push) so the new machine can pull it.
+
+## `/mem-setup native` — load memory through Claude Code's auto memory (v4.8)
+
+Claude Code attaches `MEMORY.md` from the project's `autoMemoryDirectory` at session start,
+on resume and after every compaction (200 lines / 25 KB), and — unlike hook output — never
+truncates it to a preview. gowth-mem keeps the vault's working set there.
+
+1. Dry-run: list the projects (every `config.json` `workspace_map` glob present on this
+   machine, plus the current one) and what would be written:
+   ```bash
+   python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_native.py" wire --dry-run
+   ```
+2. Show the list to the user and wait for an explicit go-ahead — this writes
+   `<project>/.claude/settings.local.json` (merged; a different existing value is reported as
+   `conflict` and needs `--force`; a git-tracked file is never touched).
+   ```bash
+   python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_native.py" wire
+   ```
+3. Optional import of the machine-local auto memory Claude Code wrote before wiring
+   (`~/.claude/projects/<slug>/memory/*.md` → `<ws>/memory/`, privacy-sanitized; a name clash
+   keeps the vault copy and stores the incoming file as `<name>.from-<host>.md`):
+   ```bash
+   python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_native.py" import          # dry-run
+   python3 "$CLAUDE_PLUGIN_ROOT/hooks/scripts/_native.py" import --apply  # after the user agrees
+   ```
+4. New sessions in the wired projects load the block; verify with `/mem-cost` (`mode=native`).

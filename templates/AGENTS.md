@@ -15,18 +15,28 @@ Không hỏi lại thứ đã có trong docs.
 First match wins: env `GOWTH_WORKSPACE` → `config.json.workspace_map` glob →
 `config.json.active_workspace` → `"default"`. Switch: `/mem-workspace <name>`.
 
-## 3. Bootstrap (SessionStart)
+## 3. Bootstrap (SessionStart) — v4.8
 
-1. **Global**: `shared/AGENTS.md` → `shared/{files,secrets,tools}.md`.
-   `shared/research/data-quality-2026.md` is gated (loaded on first write, not
-   on bootstrap — token economy).
-2. **Workspace**: `workspaces/<ws>/AGENTS.md` (override) → `<ws>/_MAP.md` →
-   `<ws>/docs/handoff.md` → `<ws>/docs/{exp,ref,tools,files}.md` → top-3 topic
-   `00-README.md` (by `frontmatter.last_touched`) → `<ws>/journal/{today,yesterday}.md`
-   → `<ws>/skills/_index`.
+What actually reaches the model:
 
-v3 nudge: if `settings.layout_version < 3`, SessionStart prepends an upgrade
-hint pointing at `/mem-ops migrate-v3`.
+1. **`workspaces/<ws>/memory/MEMORY.md`** — attached by Claude Code's auto memory
+   (first 200 lines / 25 KB, re-attached after every compaction and on resume).
+   gowth-mem keeps the block between `<!-- gowth-mem:begin -->` / `end`: rules
+   digest, handoff (newest first), topic index, recent decisions, secret POINTERS,
+   how to recall. Your own auto-memory notes go BELOW the end marker. Wire a
+   project once per machine with `/mem-setup native`.
+2. **SessionStart hook header** (≤ 600 chars): version, workspace, drift nudge.
+   Not wired → the same sections as a ≤ 8,500-char fallback (the host persists any
+   hook context ≥ 10,000 chars to a file the model does not read).
+3. **Per prompt** (UserPromptSubmit): ≤ 3 related curated entries (≤ 2,000 chars)
+   when the BM25 gate passes; nothing otherwise. `/mem-recall <query>` for more.
+
+NOT loaded automatically: this file (the block carries its digest),
+`docs/{exp,ref,tools,files}.md`, topic bodies, journals, skills. Read
+`<ws>/<slug>/00-README.md` before working on a topic listed in the block.
+
+v3 nudge: if `settings.layout_version < 3`, the fallback bootstrap adds an
+upgrade hint pointing at `/mem-ops migrate-v3`.
 
 Output: **workspace=<ws> / đang làm gì / step kế / blocker**.
 
@@ -242,8 +252,8 @@ NOOP   duplicate, no new info → skip
 
 - `status`: `draft → active → distilled → archived`.
 - Topic folder > 800 lines aggregate → `/mem-ops promote` split.
-- **Aspects older than 90 days are auto-archived** (`_forget.py --aspects`,
-  Stop-hook via `topic_layout.auto_archive_enabled`): curated `- [type]`
+- **Aspects older than 90 days are archived when `topic_layout.auto_archive_enabled`
+  is true** (default false; `/mem-ops forget --aspects` runs it by hand): curated `- [type]`
   blocks are salvaged into the topic's `lessons.md` (in English) FIRST, then
   the raw aspect is gzip-archived to `.archive/topics/` (+ git history —
   recoverable). Every topic always keeps its newest 3 aspects regardless of
@@ -257,8 +267,10 @@ NOOP   duplicate, no new info → skip
 - Default `recall.cross_workspace=false`: search active ws + `shared/`.
 - Wikilink follow: 1 hop default.
 - Skip lines `(superseded)` / expired `valid_until:`.
-- Recall score (deterministic, no LLM):
-  `R = 0.30·BM25 + 0.30·layer + 0.15·recency + 0.15·diversity + 0.10·log(1+recall_count)`
+- Ranking (deterministic, no LLM): column-weighted FTS5 BM25 — tag 5 / heading 4 /
+  keywords 3 / content 1; `workspaces/<ws>/research/` scratch and
+  `docs/handoff-archive.md` are excluded unless `--include-research`. The same query
+  and gate power the automatic per-prompt recall.
 
 ## 11. Workflow
 

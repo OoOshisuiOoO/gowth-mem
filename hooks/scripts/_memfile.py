@@ -370,7 +370,10 @@ def write(ws: str) -> bool:
             old = p.read_text(errors="ignore") if p.is_file() else ""
             old_block, free = split(old)
             free_lines = free.count("\n") + (1 if free and not free.endswith("\n") else 0)
-            new_block = render(ws, free_zone_lines=free_lines)
+            new_block = render(ws,
+                               max_lines=setting("memfile.max_lines", int, MAX_LINES),
+                               max_chars=setting("memfile.max_chars", int, MAX_CHARS),
+                               free_zone_lines=free_lines)
             if old_block and hashlib.sha1(old_block.encode()).hexdigest() == \
                     hashlib.sha1(new_block.encode()).hexdigest():
                 return False

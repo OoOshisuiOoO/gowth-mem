@@ -1,7 +1,5 @@
 {
-  "version": "3.0",
   "layout_version": 3,
-  "language": "vi+en",
   "auto_journal": {
     "journal_every": 10,
     "auto_journal_enabled": true
@@ -12,18 +10,6 @@
     "salvage": true,
     "auto_forget_enabled": true
   },
-  "gate": {
-    "enabled": true,
-    "strict": true
-  },
-  "doctor": {
-    "auto_heal": true
-  },
-  "tags": {
-    "enabled": true,
-    "max_per_entry": 7,
-    "max_frontmatter": 15
-  },
   "reflection": {
     "enabled": true,
     "turn_interval": 15,
@@ -32,158 +18,69 @@
     "max_prompt_chars": 2000,
     "max_thinking_chars": 1500
   },
-  "workspace": {
-    "default": "default",
-    "auto_detect_from_cwd": true,
-    "create_if_missing": false
+  "gate": {
+    "enabled": true,
+    "strict": true,
+    "english_only": false
   },
-  "topic_layout": {
-    "mode": "folder",
-    "readme_filename": "00-README.md",
-    "aspect_filename_pattern": "YYYY-MM-DD-<aspect>.md",
-    "lessons_filename": "lessons.md",
-    "reserved_aspect_names": [
-      "readme",
-      "lessons",
-      "00-readme"
-    ],
-    "reserved_subdirs": [
-      "docs",
-      "journal",
-      "skills",
-      "research"
-    ],
-    "promote_lines": 800,
-    "lazy_nest_threshold": 5,
-    "max_depth": 3,
-    "archive_threshold_days": 180,
-    "live_state_window_days": 14
+  "tags": {
+    "enabled": true,
+    "max_per_entry": 7,
+    "max_frontmatter": 15
   },
   "topic_routing": {
     "min_keyword_overlap": 3,
-    "auto_create_threshold": 5,
-    "default_topic": "misc",
-    "default_aspect": "note"
+    "default_topic": "misc"
   },
-  "slug": {
-    "regex": "^[a-z0-9][a-z0-9-]{0,59}$",
-    "aspect_regex": "^[a-z0-9][a-z0-9-]{0,59}$",
-    "unique_scope": "workspace",
-    "index": true
+  "topic_layout": {
+    "archive_threshold_days": 90,
+    "auto_archive_enabled": false
   },
-  "moc": {
-    "auto_rebuild": true,
-    "workspace_sections": [
-      "topics",
-      "docs",
-      "journal"
-    ],
-    "topic_readme_sections": [
-      "TL;DR",
-      "Aspects (auto)",
-      "Cross-links (manual)"
-    ],
-    "preserve_manual": "## Cross-links (manual)"
-  },
-  "embedding": {
-    "_disabled_in_v33": true,
-    "_opt_in_env": "GOWTH_MEM_USE_LLM_EMBED",
-    "provider": "openai",
-    "model": "text-embedding-3-small"
+  "workspace": {
+    "default": "default",
+    "auto_detect_from_cwd": true
   },
   "retrieval": {
-    "use_budget_planner": false,
-    "fts5_top_k": 12,
-    "jaccard_min_score": 0.15,
-    "jaccard_top_k": 10,
-    "jaccard_n": 3,
     "index_archive": true
-  },
-  "context_budget": {
-    "enabled": false,
-    "budget_chars": 15000,
-    "head_chars_per_file": 4000,
-    "recency_half_life_days": 14,
-    "tier_weights": {
-      "working": 1.0,
-      "episodic": 0.7,
-      "semantic": 0.8,
-      "procedural": 0.6
-    }
-  },
-  "compression": {
-    "enabled": false,
-    "min_repeat": 3,
-    "max_per_group": 5,
-    "modes": [
-      "journal",
-      "aspect",
-      "log"
-    ]
-  },
-  "contradictions": {
-    "enabled": true,
-    "min_entity_overlap": 3,
-    "scan_types": [
-      "ref",
-      "decision",
-      "tool",
-      "hypothesis"
-    ]
-  },
-  "recall": {
-    "max_chars_per_file": 15000,
-    "max_total_chars": 60000,
-    "top_k": 8,
-    "mmr_lambda": 0.7,
-    "srs_resurface_days": 7,
-    "srs_resurface_prob": 4,
-    "wikilink_follow": true,
-    "wikilink_hop_depth": 1,
-    "cross_workspace": false,
-    "layer_scores": {
-      "shared_skills": 40,
-      "shared_other": 60,
-      "docs": 60,
-      "skills": 40,
-      "research": 65,
-      "journal_today": 100,
-      "journal_yesterday": 70,
-      "journal_older": 30,
-      "topic_readme": 80,
-      "topic_lessons": 75,
-      "topic_aspect_today": 90,
-      "topic_aspect_older": 70,
-      "topic_v24_landing": 80,
-      "topic_else": 60
-    }
-  },
-  "migration": {
-    "v3_backup_keep": 2,
-    "v3_backup_demote_after_hours": 24
-  },
-  "conflict_resolution": {
-    "mode": "ai-mediated"
-  },
-  "_notes": {
-    "version": "schema 3.0 = topic-FOLDER + dated-aspect layout (replaces v2.4 single-file-per-topic)",
-    "layout_version": "Integer schema version. v3 is current. Read-path stays permissive across v3/v2.4/v2.3; write-path is strict v3.",
-    "journal": "v3.6 active-forgetting (canon §3). Journals = ephemeral hippocampal buffer. raw_ttl_days: archive raw journals older than N days. max_bytes: also archive a >1-day-old journal over this size. salvage: lift curated `- [type]` entries into journal/_salvage.md before archiving. auto_forget_enabled: run _forget.py on the Stop hook. Archives go to .archive/ (gitignored) + stay in memory-repo git history.",
-    "topic_layout.mode": "folder (v3 only). Each topic = workspaces/<ws>/<slug>/{00-README.md, YYYY-MM-DD-<aspect>.md, lessons.md}.",
-    "topic_layout.reserved_aspect_names": "Blocked aspect slugs (would collide with structural files).",
-    "topic_layout.reserved_subdirs": "Cannot be used as topic slugs at workspace root.",
-    "topic_routing.default_aspect": "Aspect slug when keyword extraction yields nothing (fallback to 'note').",
-    "slug.aspect_regex": "Same regex as topic slug. Applied to <aspect> portion of YYYY-MM-DD-<aspect>.md.",
-    "moc.topic_readme_sections": "Sections inside 00-README.md. Cross-links manual NEVER overwritten.",
-    "migration.v3_backup_keep": "Rolling-2 window: keep newest 2 v3 backups in shared/backup-v3/.",
-    "migration.v3_backup_demote_after_hours": "Demote oldest backup beyond keep window if older than this many hours.",
-    "recall.layer_scores": "Per-file-type recall score (higher = surfaces first). Topic README + today's aspect rank highest.",
-    "tags": "v4.0 deterministic auto-tagging. Write path appends inline #tags to each entry (stdlib keyword extraction, no LLM) + unions them into aspect frontmatter tags:. Indexed as a weighted FTS5 column; /mem-recall --keyword filters on it. Dedup hashes are computed on tag-stripped content so tags never break dedup.",
-    "reflection": "v4.0 session self-review loop, v4.7 delegation-first. Per-turn capture into <ws>/journal/sessions/<date>-<sid>.md (TTL-managed like journals) is gated by capture_enabled, which DEFAULTS to `enabled` — so enabled:false still opts out of raw-turn capture (session logs sync to the git remote); journal-only users set capture_enabled:true to give the delegated journal teammate a turn source. capture_enabled is deliberately ABSENT from this example: an explicit true here would defeat the enabled:false privacy opt-out on every vault scaffolded from it (v4.7.1). `enabled` gates the review cadence: every turn_interval REAL user turns (v4.7.3: Stop-hook continuations and background-agent notification relays also fire Stop but are not turns) the Stop hook directs the MAIN session to dispatch a fresh-context background subagent judge (templates/self-review-instructions.md) — honest 3-dimension scoring with verbatim-quote evidence, [reflection] entries routed to topics, score trend in <ws>/journal/_scores.md. The review defers (counter kept) until the session log holds min_review_turns `## turn` blocks (default 10, matching the rubric floor — a judge is never dispatched at a log it would immediately floor-skip).",
-    "doctor": "v4.7.2 plugin-version drift. Claude Code can leave installed_plugins.json pinned at an old cache dir after an upgrade (autoUpdate is off by default for non-Anthropic marketplaces), so the OLD plugin version keeps running against the shared vault — a live machine sat on v3.9.0 for months after v4.7.1 shipped, writing entries without v4.0 tags or v4.1 aspect frontmatter. auto_heal (default true) lets the SessionStart hook run bin/doctor.sh detached (no network) to repair the registry; the repair takes effect on the NEXT start, and the bootstrap header carries the running version plus a restart nudge so the drift is visible either way. Set false (or export GOWTH_MEM_NO_AUTOHEAL=1) to keep the registry read-only."
   },
   "sync": {
     "auto_sync_on_stop": true,
     "min_interval_minutes": 30
+  },
+  "doctor": {
+    "auto_heal": true
+  },
+  "native": {
+    "enabled": true
+  },
+  "recall": {
+    "on_prompt_enabled": true,
+    "on_prompt_max_entries": 3,
+    "on_prompt_max_chars": 2000,
+    "on_prompt_min_terms": 2,
+    "on_prompt_score_threshold": -4.0,
+    "on_prompt_prompt_cap": 2000
+  },
+  "memfile": {
+    "max_lines": 130,
+    "max_chars": 12000
+  },
+  "_notes": {
+    "schema": "v4.8: every key here is read by hooks/scripts (tests/test_settings_example.py pins both directions). Booleans accept true/false or the strings \"true\"/\"false\"; a malformed value falls back to its default without resetting its section.",
+    "layout_version": "Integer schema version. v3 is current (topic-FOLDER + dated-aspect layout).",
+    "auto_journal": "Stop-hook journal cadence: every journal_every REAL user turns the main session dispatches a background memory teammate (templates/auto-journal-instructions.md).",
+    "journal": "v3.6 active forgetting. raw_ttl_days: archive raw journals older than N days; max_bytes: also archive a >1-day-old journal over this size; salvage: lift curated `- [type]` entries into journal/_salvage.md first; auto_forget_enabled: run _forget.py from the Stop hook (once per day).",
+    "reflection": "v4.0 self-review loop. `enabled` gates the review cadence (every turn_interval real turns a fresh-context judge is dispatched; deferred until the session log holds min_review_turns blocks). Per-turn capture into journal/sessions/ is gated by capture_enabled, which DEFAULTS to `enabled` — deliberately absent here so enabled:false stays a privacy opt-out (session logs sync to the git remote). max_prompt_chars is clamped to 8192.",
+    "gate": "v3.6 write-time quality gate (deterministic). strict: reject hedged claims without evidence; english_only: curated entries must be English (journal stays bilingual).",
+    "tags": "v4.0 deterministic auto-tagging on the write path (inline #tags + frontmatter tags:, indexed as a weighted FTS5 column).",
+    "topic_routing": "min_keyword_overlap: keyword overlap a topic needs to receive a routed entry; default_topic: where an entry goes when nothing matches.",
+    "topic_layout": "v4.1 aspect retention: when auto_archive_enabled is true the Stop hook archives aspects older than archive_threshold_days (newest 3 per topic always kept). Default off; run /mem-ops forget --aspects by hand.",
+    "workspace": "default: workspace when nothing else resolves; auto_detect_from_cwd: match config.json workspace_map globs against the session cwd.",
+    "retrieval": "index_archive: also index .archive/**.gz so forgotten material stays searchable with /mem-recall --archive.",
+    "sync": "auto_sync_on_stop: debounced detached commit+pull+push from the Stop hook; min_interval_minutes: the debounce (floor 5).",
+    "doctor": "auto_heal: let SessionStart run bin/doctor.sh detached to repair a stale plugin registration (no network). Also GOWTH_MEM_NO_AUTOHEAL=1.",
+    "native": "v4.8: keep <ws>/memory/MEMORY.md (Claude Code auto memory, 200 lines / 25 KB, re-attached after compaction) as the bootstrap carrier. Wire a project with /mem-setup native. enabled:false → the SessionStart hook prints the ≤8,500-char fallback bootstrap instead.",
+    "recall": "v4.8 per-prompt recall (UserPromptSubmit, BM25, no LLM). on_prompt_enabled: master switch; on_prompt_max_entries / on_prompt_max_chars: injection caps; on_prompt_min_terms: distinct query terms a chunk must contain; on_prompt_score_threshold: bm25 (negative, lower is better) a chunk must reach — calibrated on the live vault, see docs/SHIPPED-FEATURES.md v4.8.0; on_prompt_prompt_cap: chars of the prompt that are profiled.",
+    "memfile": "v4.8 budget of the managed block in MEMORY.md (the host reads 200 lines / 25 KB; Claude's own notes share the file)."
   }
 }
