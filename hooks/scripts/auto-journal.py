@@ -100,6 +100,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -108,7 +109,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 import _capture  # type: ignore
 from _atomic import atomic_write  # type: ignore
 from _debug import log_debug  # type: ignore
-from _home import active_workspace, gowth_home, journal_dir, list_workspaces, read_settings, state_path  # type: ignore
+from _home import (  # type: ignore
+    active_workspace,
+    clamp_context,
+    gowth_home,
+    journal_dir,
+    list_workspaces,
+    read_settings,
+    setting,
+    state_path,
+    workspace_dir,
+)
 from _lock import file_lock  # type: ignore
 from _version import supports_stop_context  # type: ignore
 
@@ -148,6 +159,9 @@ def _stop_output(reason: str) -> dict:
     Host version unknown or older → `decision: block`, the one shape every
     version acts on (a silently dropped directive is worse than a mislabeled one).
     """
+    # v4.8: the host persists any hook context >= 10,000 chars to a file with
+    # a 2,000-char preview — a directive must never grow into that.
+    reason = clamp_context(reason)
     if supports_stop_context():
         return {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": reason}}
     return {"decision": "block", "reason": reason}
@@ -186,10 +200,11 @@ def _save_state(state: dict) -> None:
         log_debug("auto-journal", f"save_state failed: {e}")
 
 
-def _read_journal_settings() -> tuple[int, bool]:
-    """Return (journal_every, auto_journal_enabled) from settings.json."""
+def _read_journal_settings(settings: dict | None = None) -> tuple[int, bool]:
+    """Return (journal_every, auto_journal_enabled) from settings.json (or the
+    per-Stop snapshot — v4.8 parses settings.json once per Stop)."""
     try:
-        settings = read_settings()
+        settings = read_settings() if settings is None else settings
         aj = settings.get("auto_journal", {}) if isinstance(settings, dict) else {}
         every = int(aj.get("journal_every", settings.get("journal_every", AUTO_DISTILL_EVERY)))
         enabled = _coerce_bool(aj.get("auto_journal_enabled",
@@ -199,7 +214,7 @@ def _read_journal_settings() -> tuple[int, bool]:
         return AUTO_DISTILL_EVERY, True
 
 
-def _auto_forget_enabled() -> bool:
+def _auto_forget_enabled(settings: dict | None = None) -> bool:
     """v3.6: whether the Stop hook archives journal raw past its TTL.
 
     Settings `journal.auto_forget_enabled` (default True). The canon (§3) treats
@@ -207,7 +222,7 @@ def _auto_forget_enabled() -> bool:
     forgetting step that keeps the active recall surface lean.
     """
     try:
-        s = read_settings()
+        s = read_settings() if settings is None else settings
         j = s.get("journal", {}) if isinstance(s, dict) else {}
         return _coerce_bool(j.get("auto_forget_enabled"), True)
     except Exception:
@@ -297,7 +312,7 @@ def _build_reason(ws: str, journal_every: int, session_log: Path,
     )
 
 
-def _capture_enabled(refl_enabled: bool) -> bool:
+def _capture_enabled(refl_enabled: bool, settings: dict | None = None) -> bool:
     """v4.7.1: whether per-turn capture (session logs) runs.
 
     `reflection.capture_enabled` — defaults to `reflection.enabled`, so the
@@ -307,7 +322,7 @@ def _capture_enabled(refl_enabled: bool) -> bool:
     delegation teammate a session-log turn source. Parsed via _coerce_bool:
     the string "false" disables, an explicit null means "use the default"."""
     try:
-        s = read_settings()
+        s = read_settings() if settings is None else settings
         r = s.get("reflection", {}) if isinstance(s, dict) else {}
         if not isinstance(r, dict):
             r = {}
@@ -316,7 +331,7 @@ def _capture_enabled(refl_enabled: bool) -> bool:
         return refl_enabled
 
 
-def _read_reflection_settings() -> tuple[bool, int, int]:
+def _read_reflection_settings(settings: dict | None = None) -> tuple[bool, int, int]:
     """Return (reflection_enabled, turn_interval, min_review_turns).
 
     Defaults: enabled True, turn_interval 15, min_review_turns 10 (the rubric
@@ -324,7 +339,7 @@ def _read_reflection_settings() -> tuple[bool, int, int]:
     Independent of auto_journal.
     """
     try:
-        s = read_settings()
+        s = read_settings() if settings is None else settings
         r = s.get("reflection", {}) if isinstance(s, dict) else {}
         if not isinstance(r, dict):
             r = {}
@@ -368,17 +383,27 @@ def _build_review_reason(ws: str, review_count: int, session_log: Path,
         log_ref = f"the session log {prev_log}"
     else:
         log_ref = f"the session log {session_log}"
+    # v4.8 (holistic review H1): the directive dictates the judge prompt
+    # VERBATIM, like the journal directive does for the teammate. Without it
+    # the main session loaded the user's review skill, composed a 2k-char
+    # prompt and relayed a 12.5k-char report — ~32k main-context chars per
+    # fire against a 4.5k contract. The full report goes into the session log
+    # (`_capture.py --append-review`); the main context gets 3 lines.
+    capture_path = Path(__file__).parent / "_capture.py"
     reason = (
         f"[gowth-mem:self-review ws={ws}] {review_count} turns logged. "
-        f"DISPATCH a fresh-context background subagent as the judge (do NOT review in the "
-        f"main context): pass it {instructions_path} + {log_ref}; "
-        f"scores go to {scores_path}. Relay its 3-line summary when it completes. "
-        f"Be honest — chân thật, thẳng thắn."
+        f"DISPATCH a fresh-context background subagent as the judge (NOT a fork; do NOT load "
+        f"review skills in the main context) whose prompt is: \"You are the dispatched gowth-mem "
+        f"judge — never dispatch further subagents. Read {instructions_path} and judge {log_ref}; "
+        f"scores go to {scores_path}. Write the full report with python3 {capture_path} "
+        f"--append-review (use the session-insights format there if that skill is available to "
+        f"you). Your FINAL message is exactly 3 lines: scores / top friction / one rule.\" "
+        f"Relay those 3 lines and nothing more. Be honest — chân thật, thẳng thắn."
     )
     return reason + _backlog_stat()
 
 
-def _run_maintenance() -> None:
+def _run_maintenance(settings: dict | None = None) -> None:
     """Best-effort prune + consolidate + forget subprocesses (journal cadence).
 
     Output is intentionally not embedded in the reason — the agent reads the
@@ -409,16 +434,16 @@ def _run_maintenance() -> None:
         except Exception as e:
             log_debug("auto-journal", f"consolidate subprocess failed: {e}")
 
-    _run_forget()
+    _run_forget(settings)
 
 
-def _run_forget() -> None:
+def _run_forget(settings: dict | None = None) -> None:
     """v3.6 active forgetting — archive journal raw older than journal.raw_ttl_days
     (canon §3). Near-noop when nothing is past TTL; gated by auto_forget_enabled.
     Archived files stay recoverable (gz under .archive/ + memory-repo git history).
     """
     forget_script = Path(__file__).parent / "_forget.py"
-    if forget_script.is_file() and _auto_forget_enabled():
+    if forget_script.is_file() and _auto_forget_enabled(settings):
         try:
             subprocess.run(
                 ["python3", str(forget_script), "--all-workspaces", "--quiet"],
@@ -430,7 +455,121 @@ def _run_forget() -> None:
             log_debug("auto-journal", f"forget subprocess failed: {e}")
 
 
-def _run_forget_daily() -> None:
+def _daily_full_reindex() -> None:
+    """v4.8: one detached full index rebuild per calendar day (state.json
+    `index_last_full`). The per-Stop incremental pass keeps the index fresh;
+    the daily rebuild catches anything it cannot (schema migrations, archive
+    rows, rows of files edited without an mtime change)."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        if _load_state().get("index_last_full") == today:
+            return
+        with file_lock("state", timeout=5.0):
+            state = _load_state()
+            if state.get("index_last_full") == today:
+                return
+            state["index_last_full"] = today
+            _save_state(state)
+    except Exception as e:
+        log_debug("auto-journal", f"daily reindex gate failed: {e}")
+        return
+    script = Path(__file__).parent / "_index.py"
+    if not script.is_file():
+        return
+    try:
+        subprocess.Popen([sys.executable, str(script), "--full"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    except Exception as e:
+        log_debug("auto-journal", f"daily reindex spawn failed: {e}")
+
+
+def _run_incremental_index(force: bool = False) -> None:
+    """v4.8: refresh the index for changed files (<= 200 per run, 8 s budget),
+    at most every 10 minutes unless `force` (the memfile's sources changed)."""
+    now = time.time()
+    try:
+        last = float(_load_state().get("index_last_incremental") or 0.0)
+    except Exception:
+        last = 0.0
+    if not force and now - last < 600:
+        return
+    script = Path(__file__).parent / "_index.py"
+    if not script.is_file():
+        return
+    try:
+        subprocess.run([sys.executable, str(script), "--incremental"],
+                       capture_output=True, text=True, timeout=8)
+    except subprocess.TimeoutExpired as e:
+        log_debug("auto-journal", f"incremental index timeout after 8s: {e}")
+    except Exception as e:
+        log_debug("auto-journal", f"incremental index failed: {e}")
+    try:
+        with file_lock("state", timeout=2.0):
+            state = _load_state()
+            state["index_last_incremental"] = now
+            _save_state(state)
+    except Exception as e:
+        log_debug("auto-journal", f"index stamp skipped: {e}")
+
+
+def _sanitize_memory_dir(ws: str) -> None:
+    """v4.8: Claude Code's auto memory writes <ws>/memory/*.md directly (no
+    gate, no safe_write). Sanitize every file newer than the last pass before
+    the vault can sync it (state.json `memory_sanitized_at`)."""
+    mdir = workspace_dir(ws) / "memory"
+    if not mdir.is_dir():
+        return
+    try:
+        since = float(_load_state().get("memory_sanitized_at") or 0.0)
+    except Exception:
+        since = 0.0
+    touched = False
+    for p in sorted(mdir.glob("*.md")):
+        try:
+            if p.stat().st_mtime <= since:
+                continue
+        except OSError:
+            continue
+        touched = True
+        try:
+            from _atomic import atomic_write  # type: ignore
+            from _privacy import sanitize  # type: ignore
+            text = p.read_text(errors="ignore")
+            cleaned, n = sanitize(text)
+            if n > 0 and isinstance(cleaned, str) and cleaned != text:
+                atomic_write(p, cleaned)
+                log_debug("auto-journal", f"sanitized {n} secret(s) in {p}")
+        except Exception as e:
+            log_debug("auto-journal", f"memory sanitize failed for {p}: {e}")
+    if touched:
+        try:
+            with file_lock("state", timeout=2.0):
+                state = _load_state()
+                state["memory_sanitized_at"] = time.time()
+                _save_state(state)
+        except Exception as e:
+            log_debug("auto-journal", f"sanitize stamp skipped: {e}")
+
+
+def _post_turn(ws: str, settings: dict) -> None:
+    """v4.8: after a real turn — regenerate the MEMORY.md block when its sources
+    changed (hash-gated), sanitize Claude-written memory files, refresh the
+    index. Every step is best-effort; the hook's envelope never depends on it."""
+    changed = False
+    if setting("native.enabled", bool, True, settings=settings):
+        try:
+            from _memfile import sources_changed, write  # type: ignore
+            if sources_changed(ws):
+                changed = True
+                write(ws)
+        except Exception as e:
+            log_debug("auto-journal", f"memfile refresh failed: {e}")
+    _sanitize_memory_dir(ws)
+    _run_incremental_index(force=changed)
+
+
+def _run_forget_daily(settings: dict | None = None) -> None:
     """v4.7.1: cadence-INDEPENDENT TTL archival, at most once per calendar day
     per machine (state.json `forget_last_run`).
 
@@ -440,8 +579,10 @@ def _run_forget_daily() -> None:
     both cadences off — while /mem-journal and precompact-flush.py keep
     writing journal/<date>.md regardless of any cadence. The journal cadence's
     _run_maintenance still calls _run_forget directly (unchanged behavior).
+    v4.8: also the daily full reindex slot (independent of the forget knob).
     """
-    if not _auto_forget_enabled():
+    _daily_full_reindex()
+    if not _auto_forget_enabled(settings):
         return
     today = datetime.now().strftime("%Y-%m-%d")
     try:
@@ -459,7 +600,7 @@ def _run_forget_daily() -> None:
     except Exception as e:
         log_debug("auto-journal", f"forget_daily gate failed: {e}")
         return
-    _run_forget()
+    _run_forget(settings)
 
 
 def _reset_counters(session_id: str, names: list[str]) -> None:
@@ -522,15 +663,17 @@ def main() -> int:
         return 0
 
     # v3.4: respect auto_journal_enabled toggle. v4.0: reflection is independent.
-    journal_every, journal_enabled = _read_journal_settings()
-    refl_enabled, turn_interval, min_review_turns = _read_reflection_settings()
-    capture_on = _capture_enabled(refl_enabled)
+    # v4.8: one settings snapshot per Stop (was parsed 5x per event).
+    settings = read_settings()
+    journal_every, journal_enabled = _read_journal_settings(settings)
+    refl_enabled, turn_interval, min_review_turns = _read_reflection_settings(settings)
+    capture_on = _capture_enabled(refl_enabled, settings)
 
     # v4.7.1: TTL archival is cadence-independent — /mem-journal and
     # precompact-flush.py keep writing journal/<date>.md with both cadences
     # off, and capture-only configs grow journal/sessions/ forever. At most
     # once per calendar day; near-noop when nothing is past TTL.
-    _run_forget_daily()
+    _run_forget_daily(settings)
 
     # v4.7.1: `reflection.capture_enabled: true` must work even with BOTH
     # cadences disabled (/mem-review-only users) — the early return checks it.
@@ -657,7 +800,7 @@ def main() -> int:
             # v4.7.4: the final answer is written to the transcript only after
             # this hook — the Stop input carries it (Claude Code >= 2.1.47).
             last_msg = data.get("last_assistant_message")
-            _capture.capture_turn(transcript_path, ws, session_id, total_turns, read_settings(),
+            _capture.capture_turn(transcript_path, ws, session_id, total_turns, settings,
                                   records=records or None, prompt_rec=prompt_rec,
                                   final_text=last_msg if isinstance(last_msg, str) else None)
         except Exception as e:
@@ -669,6 +812,9 @@ def main() -> int:
     # Debounced (default 30 min) + spawned detached, so a turn never waits on network.
     _autosync()
 
+    # v4.8: MEMORY.md block, memory/*.md sanitizer, incremental index.
+    _post_turn(ws, settings)
+
     reasons: list[str] = []
     journal_fired = False
     review_fired = False
@@ -676,7 +822,7 @@ def main() -> int:
     # Journal cadence.
     if journal_enabled and turn >= journal_every:
         _reset_counters(session_id, ["turn_count"])
-        _run_maintenance()
+        _run_maintenance(settings)
         reasons.append(_build_reason(ws, journal_every, session_log, prev_log))
         journal_fired = True
 

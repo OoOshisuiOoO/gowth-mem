@@ -1,5 +1,10 @@
 [gowth-mem:self-review ws={ws}] {review_count} turns logged.
 
+**Contract (v4.8):** the judge's FINAL message is exactly 3 lines (scores / top
+friction / one rule); the full report goes into the session log via
+`_capture.py --append-review`. The main session dispatches the verbatim prompt
+below and relays only those 3 lines — it must NOT load other review skills.
+
 This is an HONEST session self-review — not a status update, not praise. The whole
 point is to find what was weak so both the user's prompting and Claude's reasoning
 improve over time. A review with no concrete, quoted criticism is a FAILED review —
@@ -22,11 +27,17 @@ review tool calls, and a judge grading its own work in its own context is the
 self-preference bias this rubric exists to kill. The main session's whole job:
 
 1. **Dispatch ONE fresh-context background subagent** (Task/Agent tool — NOT a
-   context-inheriting fork; the judge must be independent) with: the ABSOLUTE
-   session-log path(s) you were given (hook reason, or resolved by
-   `/mem-review`) + this rubric file + the ABSOLUTE `_scores.md` path from the
-   hook reason. A fresh judge has no other context — never make it guess a
-   path (see 0c Anchors). It executes steps 0b-6 below.
+   context-inheriting fork; the judge must be independent) whose prompt mirrors
+   the hook reason verbatim — same sentinel, same ABSOLUTE paths (a fresh judge
+   has no other context — never make it guess a path, see 0c Anchors):
+   "You are the dispatched gowth-mem judge — never dispatch further subagents.
+   Read <absolute path of this file> and judge <the absolute session-log
+   path(s) from the hook reason, or resolved by `/mem-review`>; scores go to
+   <the absolute `_scores.md` path>. Write the full report with `python3
+   <plugin-scripts>/_capture.py --append-review` (use the session-insights
+   format there if that skill is available to you). Your FINAL message is
+   exactly 3 lines: scores / top friction / one rule." It executes steps 0b-6
+   below.
 2. **Continue your work.** When the judge completes, relay its 3-line summary
    (step 6) to the user verbatim — nothing longer.
 
@@ -170,7 +181,9 @@ gate is what keeps the reflection ledger high-signal instead of platitudes.
 End with a **3-line** summary in the USER'S language (Vietnamese if the session is in
 Vietnamese): line 1 = the three N/5 scores, line 2 = the single biggest weakness this
 block (quoted), line 3 = the one thing to change next block. Nothing longer — the detail
-lives in the review block, not the chat. If you are the dispatched judge, these 3 lines
-are your entire final report; the main session passes them to the user unchanged.
+lives in the review block, not the chat. If you are the dispatched judge, your FINAL
+message is exactly 3 lines — these 3 lines are your entire final report (the full
+report already went into the session log via `--append-review`); the main session
+passes them to the user unchanged.
 
 This is automation, not a conversation step. Be honest — chân thật, thẳng thắn.
