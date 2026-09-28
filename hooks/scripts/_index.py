@@ -678,7 +678,16 @@ def main() -> int:
                          "searchable copy)")
     ap.add_argument("--no-archive", action="store_true",
                     help="skip indexing .archive/**.gz")
+    ap.add_argument("--incremental", action="store_true",
+                    help="v4.8: re-index only files whose mtime changed or that have no "
+                         "rows, drop rows of deleted files (<= 200 files per run); "
+                         "never creates index.db")
     args = ap.parse_args()
+
+    if args.incremental:
+        rep = incremental()
+        print(f"incremental: {rep['files']} files, {rep['dropped']} dropped")
+        return 0
 
     if args.sweep:
         s = sweep_orphans(apply=args.apply, force=args.force)
@@ -860,6 +869,82 @@ def _index_one(
                 embedded += 1
         written += 1
     return written, embedded
+
+
+def incremental(max_files: int = 200) -> dict:
+    """v4.8: sweep every source and refresh what changed. Returns
+    {"files": indexed, "dropped": rows-of-deleted-files-removed}.
+
+    Audit (2026-09-28): only routed writes reindexed, so 275 live files were
+    newer than their rows and 161 had none. This runs from the Stop hook
+    (synchronous, 8 s budget) and detached at SessionStart: ~2,000 stats, then
+    at most `max_files` files re-indexed per run. Never raises, never creates
+    index.db, serialised under file_lock("index-write") like reindex_paths.
+    """
+    rep = {"files": 0, "dropped": 0}
+    try:
+        gh = gowth_home()
+        db_path = index_db()
+        if not db_path.is_file():
+            return rep
+        sources = _collect_sources()
+        try:
+            lock_cm = file_lock("index-write", timeout=5.0)
+        except Exception:
+            lock_cm = None
+
+        def _work() -> None:
+            db = sqlite3.connect(str(db_path))
+            try:
+                db.execute("PRAGMA busy_timeout=5000")
+                known: dict = {}
+                for path, mt in db.execute(
+                        "SELECT path, MAX(mtime) FROM chunks WHERE path NOT LIKE '.archive/%' "
+                        "GROUP BY path"):
+                    known[path] = mt
+                on_disk: set = set()
+                todo: list = []
+                for _ws, f in sources:
+                    try:
+                        rel = str(f.relative_to(gh))
+                        mt = f.stat().st_mtime
+                    except (ValueError, OSError):
+                        continue
+                    on_disk.add(rel)
+                    old = known.get(rel)
+                    if old is None or abs(old - mt) > 1e-6:
+                        todo.append((rel, f, mt))
+                for rel in known:
+                    if rel in on_disk:
+                        continue
+                    if rep["dropped"] >= max_files:
+                        break
+                    _drop_path_rows(db, rel, False)
+                    rep["dropped"] += 1
+                for rel, f, mt in todo:
+                    if rep["files"] >= max_files:
+                        break
+                    text = read_source_text(f)
+                    if not text.strip():
+                        continue
+                    n, _emb = _index_one(db, rel, text, mt, False)
+                    # a heading-only file (e.g. a bare 00-README.md) yields no
+                    # chunk and therefore no row; it is re-read each run but is
+                    # not an indexed file
+                    if n:
+                        rep["files"] += 1
+                db.commit()
+            finally:
+                db.close()
+
+        if lock_cm is not None:
+            with lock_cm:
+                _work()
+        else:
+            _work()
+    except Exception as exc:
+        log_debug("index", f"incremental failed: {exc}")
+    return rep
 
 
 def reindex_paths(paths) -> int:

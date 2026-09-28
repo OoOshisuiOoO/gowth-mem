@@ -79,6 +79,23 @@ def _ws_predicate(ws: str, params: list, archive: bool = False) -> str:
     return " AND c.path LIKE ?"
 
 
+# v4.8: layers that pollute default recall (audit probe on the live vault:
+# workspace research/ scratch took 9 of 30 top-3 slots and outranked the
+# curated source in 4 of 5 misses; docs/handoff-archive.md was the fifth). Both
+# stay indexed; `include_research=True` / `--include-research` brings them
+# back. `shared/research/` (the canonical research notes) is NOT excluded.
+# An exclude containing '%' is a raw LIKE pattern; a plain prefix matches
+# `%/<prefix>%`.
+DEFAULT_EXCLUDES = ("workspaces/%/research/%", "workspaces/%/docs/handoff-archive.md")
+
+
+def _exclude_pattern(prefix: str) -> str:
+    prefix = prefix.strip()
+    if "%" in prefix:
+        return prefix
+    return f"%/{prefix.lstrip('/')}%"
+
+
 def query_ex(
     ws: str,
     tag: str,
@@ -90,6 +107,8 @@ def query_ex(
     days: int = 0,
     collapse: bool = True,
     include_archive: bool = False,
+    exclude: tuple = (),
+    include_research: bool = False,
 ) -> dict:
     """Like `query_by_type` but reports WHY a result set is empty.
 
@@ -118,7 +137,8 @@ def query_ex(
     try:
         hits = _run_query(db_path, ws, tag, match_expr, limit,
                           keyword=keyword, topic=topic, days=days, collapse=collapse,
-                          include_archive=include_archive)
+                          include_archive=include_archive, exclude=tuple(exclude or ()),
+                          include_research=include_research)
     except sqlite3.Error as e:
         return {"hits": [], "error": f"sqlite/FTS5 error: {e}"}
     except Exception as e:  # pragma: no cover - defensive, hooks must never raise
@@ -137,6 +157,8 @@ def query_by_type(
     days: int = 0,
     collapse: bool = True,
     include_archive: bool = False,
+    exclude: tuple = (),
+    include_research: bool = False,
 ) -> list[dict]:
     """Return chunks filtered by tag/keyword/topic/date, optionally ranked by BM25.
 
@@ -187,7 +209,8 @@ def query_by_type(
     """
     return query_ex(ws, tag, query, limit, keyword=keyword, topic=topic,
                     days=days, collapse=collapse,
-                    include_archive=include_archive)["hits"]
+                    include_archive=include_archive, exclude=exclude,
+                    include_research=include_research)["hits"]
 
 
 def _collapse_per_path(rows: list[dict], limit: int) -> list[dict]:
@@ -227,6 +250,8 @@ def _run_query(
     days: int = 0,
     collapse: bool = True,
     include_archive: bool = False,
+    exclude: tuple = (),
+    include_research: bool = False,
 ) -> list[dict]:
     """Execute the query. Raises on SQL/FTS5 errors so `query_ex` can report them.
 
@@ -270,6 +295,13 @@ def _run_query(
             if mtime_cutoff is not None:
                 sql += " AND c.mtime >= ?"
                 params.append(mtime_cutoff)
+            # v4.8: path-prefix excludes (defaults unless include_research)
+            prefixes = list(exclude) + ([] if include_research else list(DEFAULT_EXCLUDES))
+            for prefix in prefixes:
+                if not prefix or not prefix.strip():
+                    continue
+                sql += " AND c.path NOT LIKE ?"
+                params.append(_exclude_pattern(prefix))
             return sql
 
         kw_sel = "c.keywords" if has_keywords else "'' AS keywords"
@@ -287,7 +319,7 @@ def _run_query(
             # `[type] Title` outranks a hit buried in prose.
             score_expr = _score_expr(_fts_cols(db))
             sql = (
-                f"SELECT c.path, c.heading, c.content, c.tag, {kw_sel}, "
+                f"SELECT c.id, c.path, c.heading, c.content, c.tag, {kw_sel}, "
                 f"{score_expr} AS score "
                 "FROM chunks_fts JOIN chunks c ON chunks_fts.rowid = c.id "
                 "WHERE chunks_fts MATCH ?"
@@ -295,21 +327,21 @@ def _run_query(
                 + " ORDER BY score LIMIT ?"
             )
             params.append(fetch)
-            for path, heading, content, chunk_tag, kw, score in db.execute(sql, params):
-                results.append({"path": path, "heading": heading or "", "line_no": 0,
+            for cid, path, heading, content, chunk_tag, kw, score in db.execute(sql, params):
+                results.append({"id": cid, "path": path, "heading": heading or "", "line_no": 0,
                                 "content": content, "tag": chunk_tag,
                                 "keywords": kw, "bm25_score": score})
         else:
             params = []
             sql = (
-                f"SELECT c.path, c.heading, c.content, c.tag, {kw_sel} "
+                f"SELECT c.id, c.path, c.heading, c.content, c.tag, {kw_sel} "
                 "FROM chunks c WHERE 1=1"
                 + _extra_where(params)
                 + " ORDER BY c.id DESC LIMIT ?"
             )
             params.append(fetch)
-            for path, heading, content, chunk_tag, kw in db.execute(sql, params):
-                results.append({"path": path, "heading": heading or "", "line_no": 0,
+            for cid, path, heading, content, chunk_tag, kw in db.execute(sql, params):
+                results.append({"id": cid, "path": path, "heading": heading or "", "line_no": 0,
                                 "content": content, "tag": chunk_tag,
                                 "keywords": kw, "bm25_score": 0.0})
         if collapse:
@@ -359,13 +391,16 @@ if __name__ == "__main__":
     ap.add_argument("--archive", action="store_true",
                     help="search archived (forgotten) memory under .archive/ instead "
                          "of live content")
+    ap.add_argument("--include-research", action="store_true",
+                    help="also rank research/ scratch notes and docs/handoff-archive.md "
+                         "(excluded from recall by default since v4.8)")
     ap.add_argument("query_pos", nargs="*", help="Query terms (joined; same as --query)")
     args = ap.parse_args()
 
     query = args.query or " ".join(args.query_pos)
     res = query_ex(ws=args.ws, tag=args.tag, query=query, limit=args.limit,
                    keyword=args.keyword, topic=args.topic, days=args.days,
-                   include_archive=args.archive)
+                   include_archive=args.archive, include_research=args.include_research)
     hits = res["hits"]
     if res["error"]:
         # v4.3: an invalid or unsearchable query is NOT "no results" — say so, or the

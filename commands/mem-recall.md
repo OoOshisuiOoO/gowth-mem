@@ -29,9 +29,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_query.py" --type hypothesis "ema c
 - `--keyword=<kw>` — (v4.0) filter to chunks whose auto-tag / frontmatter-tag `keywords` column contains `<kw>`. Substring, case-insensitive.
 - `--topic=<slug>` — (v4.0) filter to a topic folder (path contains `/<slug>/`).
 - `--days=<N>` — (v4.0) only chunks modified within the last N days.
-- `--ws=<name>` — workspace name. Default: active workspace.
+- `--ws=<name>` — workspace name. Default: **all workspaces** (pass the active one explicitly to scope).
 - `--query=<text>` — FTS5 query string (or pass query terms positionally).
 - `--limit=<N>` — top-N hits. Default 20.
+- `--include-research` — (v4.8) also rank `workspaces/<ws>/research/` scratch notes and `docs/handoff-archive.md`. Both are excluded from recall by default: on the live vault they took 9 of 30 top-3 slots and outranked the curated entry in 4 of 5 misses. `shared/research/` (canonical notes) is never excluded.
 
 ```bash
 # Keyword-filtered (the v4.0 auto-tag layer) — find decisions tagged "fts5"
@@ -55,11 +56,13 @@ Lines are deterministic — same query + index = same output. No LLM in the path
 ## Ranking (what is actually implemented)
 
 Non-empty queries are ranked by a **column-weighted FTS5 BM25**:
-`bm25(chunks_fts, 5.0, 3.0, 1.0)` over `(tag, keywords, content)` — so tag and
-keyword hits outrank plain body hits (lower BM25 = better). Empty queries return
-most-recent-first (`chunks.id DESC`). `--keyword` / `--topic` / `--days` are
-applied as SQL predicates before ranking. That is the whole formula — there is no
-multi-signal blend in this path.
+`bm25(chunks_fts, 5.0, 3.0, 4.0, 1.0)` over `(tag, keywords, heading, content)` — so a
+term in an entry's `[type] Title` or its tags outranks the same term buried in prose
+(lower BM25 = better). Empty queries return most-recent-first (`chunks.id DESC`).
+`--keyword` / `--topic` / `--days` and the v4.8 path excludes are applied as SQL
+predicates before ranking. That is the whole formula — there is no multi-signal
+blend in this path. The same query and gate power the automatic per-prompt recall
+(`recall-on-prompt.sh`, v4.8).
 
 The richer 4-tier weighted context plan (layer score × recency decay × Jaccard)
 lives in `_budget.py` (see `/mem-budget`), not here.
