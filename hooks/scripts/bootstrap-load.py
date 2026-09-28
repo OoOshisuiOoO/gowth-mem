@@ -219,6 +219,13 @@ def _report(ws: str, cwd: str, settings: dict) -> int:
                 chars += int(r.get("chars", 0) or 0)
         print(f"recall: {prompts} prompts got memory, {entries} entries, {chars} chars "
               f"(≈{chars // 4} tok) across sessions in state.json")
+        # review M13: every profiled prompt is counted per day, injecting or not
+        daily = st.get("recall_daily") if isinstance(st.get("recall_daily"), dict) else {}
+        seen = sum(int((d or {}).get("prompts", 0) or 0) for d in daily.values() if isinstance(d, dict))
+        got = sum(int((d or {}).get("injected", 0) or 0) for d in daily.values() if isinstance(d, dict))
+        if seen:
+            print(f"recall rate: {got}/{seen} prompts injected ({100 * got // seen}%) over "
+                  f"{len(daily)} day(s) of recall_daily")
     except Exception as exc:
         print(f"recall: (no telemetry: {exc})")
     if mode_ != "native":

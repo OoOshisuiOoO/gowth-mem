@@ -26,8 +26,12 @@ fi
 if printf '%s' "$INPUT" | grep -q '"agent_type"[[:space:]]*:[[:space:]]*"subagent"'; then exit 0; fi
 if printf '%s' "$INPUT" | grep -q '"in_loop"[[:space:]]*:[[:space:]]*true'; then exit 0; fi
 
-# the first bytes of the prompt (JSON-escaped; stops at the first quote)
-HEAD=$(printf '%s' "$INPUT" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]\{0,200\}\).*/\1/p' | head -n 1)
+# the prompt's JSON string (escaped quotes \" and other \x pairs stay inside it —
+# review M2: stopping at the first quote made every quoted prompt look < 40 bytes).
+# Pure BRE (BSD sed has no \| ): runs of non-quote/non-backslash chars, each
+# backslash consumed with the char it escapes. Then the first 200 chars.
+HEAD=$(printf '%s' "$INPUT" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"\\]*\(\\.[^"\\]*\)*\)".*/\1/p' | head -n 1)
+HEAD=${HEAD:0:200}
 [ -z "$HEAD" ] && exit 0
 case "$HEAD" in
     /*|!*) exit 0 ;;

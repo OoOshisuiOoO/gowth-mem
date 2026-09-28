@@ -107,6 +107,14 @@ class BashGateTest(_RecallCase):
         self.assertNotIn("journal/", ctx)
         self.assertNotIn("MEMORY.md", ctx)
 
+    def test_quote_in_prompt_head_still_reaches_python(self):
+        """Review M2: a double quote inside the first 40 chars made the sed head
+        extraction stop early, so the prompt looked < 40 bytes and recall was
+        skipped for every quoted prompt."""
+        r = self.run_sh(self.event('Why the "pelican-router" choice for the ingress gateway, and what was the rationale?'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("gowth-mem:recall", r.stdout)
+
     def test_slash_command_is_silent(self):
         r = self.run_sh(self.event("/mem-recall pelican-router ingress gateway rationale please"))
         self.assertEqual((r.returncode, r.stdout), (0, ""))
@@ -150,6 +158,38 @@ class SelectTest(_RecallCase):
         hits = self.rp.select("please summarize the pelican situation for me today in detail", self.ws,
                               self.settings({}), set())
         self.assertEqual(hits, [])
+
+    def test_low_coverage_prompt_is_silent(self):
+        """Review I1: a generic coding prompt that shares two words with an entry
+        must not get it — the chunk has to cover >= 50% of the prompt's content
+        terms (the shipped gate injected on 97% of real prompts)."""
+        s = self.settings({})
+        prompt = ("the ingress gateway build is failing with a type error, can you profile "
+                  "the parser module and fix the retry loop before the release")
+        self.assertEqual(self.rp.select(prompt, self.ws, s, set()), [])
+        # positive control: the same two words with high coverage do inject
+        hits = self.rp.select("ingress gateway pelican-router", self.ws, s, set())
+        self.assertTrue(hits)
+
+    def test_subject_term_must_be_in_the_chunk(self):
+        """Review I1: the profile's subject (first identifier, else the longest
+        content word) must appear in the chunk even when coverage is met."""
+        s = self.settings({})
+        self.assertEqual(self.rp.select("ingress gateway supercalifragilistic", self.ws, s, set()), [])
+        hits = self.rp.select("pelican-router ingress gateway", self.ws, s, set())
+        self.assertTrue(hits)
+        self.assertIn("2026-09-10-a.md", hits[0]["path"])
+
+    def test_min_coverage_is_a_knob(self):
+        s = self.settings({"on_prompt_min_coverage": 0.1})
+        prompt = ("the ingress gateway build is failing with a supercalifragilistic type error, can "
+                  "you profile the parser module and fix the retry loop before the release")
+        # coverage 2/13 passes at 0.1, but the subject (the longest content word,
+        # "supercalifragilistic") is still required → silent
+        self.assertEqual(self.rp.select(prompt, self.ws, s, set()), [])
+        s = self.settings({"on_prompt_min_coverage": 0.1})
+        hits = self.rp.select("ingress gateway pelican-router with some other unrelated words here", self.ws, s, set())
+        self.assertTrue(hits, "subject present + low coverage knob → injects")
 
     def test_already_injected_ids_are_skipped(self):
         s = self.settings({})
@@ -232,6 +272,21 @@ class TelemetryTest(_RecallCase):
         self.assertTrue(rec["ids"])
         r2 = self.run_py(self.event(GOOD))
         self.assertEqual((r2.returncode, r2.stdout), (0, ""))
+
+    def test_daily_counter_counts_every_profiled_prompt(self):
+        """Review M13: the injection RATE must be observable — a silent prompt
+        is counted too (per-day totals, not per-prompt rows)."""
+        from datetime import date
+        self.run_py(self.event(GOOD))
+        silent = ("the build is failing with a type error, can you take a look at the parser "
+                  "module and fix the retry loop for me please")
+        r = self.run_py(self.event(silent))
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        st = json.loads((self.vault / "state.json").read_text())
+        day = st["recall_daily"][date.today().isoformat()]
+        self.assertEqual(day["prompts"], 2)
+        self.assertEqual(day["injected"], 1)
+        self.assertGreaterEqual(day["entries"], 1)
 
 
 if __name__ == "__main__":

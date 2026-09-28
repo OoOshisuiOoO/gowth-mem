@@ -10,9 +10,17 @@ and injects at most `recall.on_prompt_max_entries` (3) entries / `on_prompt_max_
   * the prompt is capped at `on_prompt_prompt_cap` (2,000) chars before profiling
     (a pasted 40 KB log must not feed the regexes);
   * a chunk qualifies only when >= `on_prompt_min_terms` (2) distinct query terms
-    occur in its heading+content AND its bm25 score is <= `on_prompt_score_threshold`
-    (bm25 is negative; lower is better; calibrated on the live vault, Task 12);
+    occur in its heading+content, those cover >= `on_prompt_min_coverage` (0.5)
+    of the prompt's content terms, the prompt's SUBJECT (its first identifier,
+    else its longest content word — `_profile.profile`) is among them, AND its
+    bm25 score is <= `on_prompt_score_threshold` (bm25 is negative; lower is
+    better). Review I1 measured the 2-term + threshold gate alone on the live
+    vault copy: it injected on 97% of 300 real prompts and 14/20 realistic
+    generic ones; coverage + subject brings that to 0-3/20 generic per
+    workspace while 29/30 paraphrased real queries are still served;
   * a chunk is injected at most once per session (`state.json.session[<sid>].recall.ids`);
+    every profiled prompt is counted in `state.json.recall_daily[<date>]`
+    (prompts / injected / entries, 14 days) so the injection rate is observable;
   * journal/ and memory/MEMORY.md never qualify (MEMORY.md is already in context;
     raw journal is not memory); research/ and handoff-archive follow the
     default excludes of `_query`.
@@ -29,8 +37,10 @@ Always exits 0; empty stdout means "no memory to add".
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -47,6 +57,8 @@ from _home import (  # type: ignore
 DEFAULT_MAX_ENTRIES = 3
 DEFAULT_MAX_CHARS = 2_000
 DEFAULT_MIN_TERMS = 2
+DEFAULT_MIN_COVERAGE = 0.5
+DAILY_KEEP = 14
 # bm25 magnitudes scale with idf ≈ ln(N/df), so the cut-off that silences generic
 # prompts on a 15k-chunk vault would block everything on a small one. Measured
 # 2026-09-28 on the live copy (15,609 live chunks): generic prompts that pass the
@@ -89,6 +101,8 @@ def cfg(settings: dict) -> dict:
         "max_entries": max(0, setting("recall.on_prompt_max_entries", int, DEFAULT_MAX_ENTRIES, settings=settings)),
         "max_chars": max(200, setting("recall.on_prompt_max_chars", int, DEFAULT_MAX_CHARS, settings=settings)),
         "min_terms": max(1, setting("recall.on_prompt_min_terms", int, DEFAULT_MIN_TERMS, settings=settings)),
+        "min_coverage": min(1.0, max(0.0, setting("recall.on_prompt_min_coverage", float,
+                                                  DEFAULT_MIN_COVERAGE, settings=settings))),
         "score_threshold": _threshold_setting(settings),
         "prompt_cap": max(100, setting("recall.on_prompt_prompt_cap", int, DEFAULT_PROMPT_CAP, settings=settings)),
     }
@@ -133,14 +147,17 @@ def select(prompt: str, ws: str, settings: dict, injected: set) -> list:
         return []
     p = capped_prompt(prompt, settings)
     try:
-        from _profile import keywords_of  # type: ignore
+        from _profile import profile  # type: ignore
         from _query import query_ex  # type: ignore
     except Exception as exc:
         log_debug("recall-prompt", f"import failed: {exc}")
         return []
-    terms = {t.lower() for t in keywords_of(p) if t}
+    prof = profile(p)
+    terms = {t.lower() for t in (prof.get("keywords") or []) if t}
     if len(terms) < c["min_terms"]:
         return []
+    subject = (prof.get("subject") or "").lower()
+    need = max(c["min_terms"], math.ceil(c["min_coverage"] * len(terms)))
     res = query_ex(ws, "", p, limit=FETCH_LIMIT, exclude=EXCLUDES)
     if res.get("error"):
         return []
@@ -150,8 +167,10 @@ def select(prompt: str, ws: str, settings: dict, injected: set) -> list:
         if h.get("id") in injected:
             continue
         text = ((h.get("heading") or "") + " " + (h.get("content") or "")).lower()
-        matched = sum(1 for t in terms if t in text)
-        if matched < c["min_terms"]:
+        matched = {t for t in terms if t in text}
+        if len(matched) < need:
+            continue
+        if subject and subject not in matched:
             continue
         try:
             score = float(h.get("bm25_score") or 0.0)
@@ -219,25 +238,45 @@ def _injected_ids(state: dict, sid: str) -> set:
         return set()
 
 
+def _bump_daily(state: dict, hits: list) -> None:
+    """Per-day totals (review M13): every profiled prompt counts, injecting or
+    not, so the injection RATE can be read from /mem-cost. 14 days kept."""
+    daily = state.get("recall_daily")
+    if not isinstance(daily, dict):
+        daily = state["recall_daily"] = {}
+    today = date.today().isoformat()
+    day = daily.get(today) if isinstance(daily.get(today), dict) else {}
+    daily[today] = {
+        "prompts": int(day.get("prompts", 0) or 0) + 1,
+        "injected": int(day.get("injected", 0) or 0) + (1 if hits else 0),
+        "entries": int(day.get("entries", 0) or 0) + len(hits),
+    }
+    for k in sorted(daily)[:-DAILY_KEEP]:
+        daily.pop(k, None)
+
+
 def _record(sid: str, hits: list, chars: int) -> None:
-    """Best-effort telemetry under the shared state lock; skipped on timeout."""
+    """Best-effort telemetry under the shared state lock; skipped on timeout.
+    Called for EVERY profiled prompt; session ids/chars only when injecting."""
     try:
         from _lock import file_lock  # type: ignore
         with file_lock("state", timeout=2.0):
             state = _load_state()
-            sessions = state.setdefault("session", {})
-            if not isinstance(sessions, dict):
-                sessions = state["session"] = {}
-            sess = sessions.setdefault(sid, {"turn_count": 0})
-            rec = sess.get("recall") if isinstance(sess.get("recall"), dict) else {}
-            ids = [i for i in rec.get("ids", []) if isinstance(i, int)]
-            ids.extend(int(h["id"]) for h in hits if isinstance(h.get("id"), int))
-            sess["recall"] = {
-                "injected": int(rec.get("injected", 0) or 0) + 1,
-                "entries": int(rec.get("entries", 0) or 0) + len(hits),
-                "chars": int(rec.get("chars", 0) or 0) + chars,
-                "ids": ids[-IDS_KEEP:],
-            }
+            _bump_daily(state, hits)
+            if hits:
+                sessions = state.setdefault("session", {})
+                if not isinstance(sessions, dict):
+                    sessions = state["session"] = {}
+                sess = sessions.setdefault(sid, {"turn_count": 0})
+                rec = sess.get("recall") if isinstance(sess.get("recall"), dict) else {}
+                ids = [i for i in rec.get("ids", []) if isinstance(i, int)]
+                ids.extend(int(h["id"]) for h in hits if isinstance(h.get("id"), int))
+                sess["recall"] = {
+                    "injected": int(rec.get("injected", 0) or 0) + 1,
+                    "entries": int(rec.get("entries", 0) or 0) + len(hits),
+                    "chars": int(rec.get("chars", 0) or 0) + chars,
+                    "ids": ids[-IDS_KEEP:],
+                }
             atomic_write(state_path(), json.dumps(state, indent=1))
     except Exception as exc:
         log_debug("recall-prompt", f"telemetry skipped: {exc}")
@@ -267,9 +306,11 @@ def main() -> int:
         injected = _injected_ids(_load_state(), sid)
         hits = select(prompt, ws, settings, injected)
         if not hits:
+            _record(sid, [], 0)
             return 0
         block = clamp_context(format_block(ws, hits, cfg(settings)["max_chars"]))
         if not block.strip():
+            _record(sid, [], 0)
             return 0
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                                  "additionalContext": block}}))

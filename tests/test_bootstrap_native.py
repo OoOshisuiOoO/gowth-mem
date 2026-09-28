@@ -157,12 +157,15 @@ class FallbackModeTest(_BootCase):
         (self.vault / "state.json").write_text(json.dumps({"session": {
             "s1": {"turn_count": 3, "recall": {"injected": 2, "entries": 4, "chars": 1800, "ids": [1, 2, 3, 4]}},
             "s2": {"turn_count": 1, "recall": {"injected": 1, "entries": 1, "chars": 300, "ids": [9]}},
-        }}))
+        }, "recall_daily": {"2026-09-27": {"prompts": 40, "injected": 3, "entries": 5},
+                            "2026-09-28": {"prompts": 10, "injected": 1, "entries": 1}}}))
         out = self.run_bootstrap("startup", "--report")
         self.assertIn("recall:", out)
         self.assertIn("3 prompts", out)
         self.assertIn("5 entries", out)
         self.assertIn("2100 chars", out)
+        # review M13: the injection RATE over every profiled prompt (14-day totals)
+        self.assertIn("recall rate: 4/50 prompts injected (8%)", out)
 
 
 class SessionStartScriptTest(_BootCase):
