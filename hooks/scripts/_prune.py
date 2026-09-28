@@ -119,7 +119,11 @@ def prune_file(path: Path, dry_run: bool, today_iso: str,
 def collect_files(ws: str | None = None) -> list[Path]:
     out: list[Path] = []
     skip_names = {"_index.md", "_MAP.md", "lessons.md", "00-README.md"}
-    skip_subdirs = {"docs", "journal", "skills", "research"}
+    # v4.8 (review C2): every reserved subdir, INCLUDING memory/ — Claude Code's
+    # own auto-memory files (`- [Title](file.md)` index lines, `- [ ]` tasks)
+    # match ENTRY_RE and were being deleted as superseded/duplicates.
+    from _home import RESERVED_SUBDIRS  # type: ignore
+    skip_subdirs = set(RESERVED_SUBDIRS)
     td = topics_dir(ws)
     if td.is_dir():
         for p in td.rglob("*.md"):

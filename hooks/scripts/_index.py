@@ -180,6 +180,12 @@ def _collect_sources() -> list[tuple[str, Path]]:
             if rel.parts and rel.parts[0] == "journal":
                 # journal indexed as journal layer
                 continue
+            if rel.parts and rel.parts[0] == "memory":
+                # v4.8 (review C2/M12): Claude Code's auto-memory dir. MEMORY.md's
+                # managed block is a digest of files indexed here already (its
+                # [decision] lines would come back as decisions of their own), and
+                # Claude's notes are attached natively. Never topic content.
+                continue
             out.append((ws, p))
         # Reserved subdirs as separate layers (v3.0: docs/journal/skills/research)
         for sub in ("docs", "journal", "skills", "research"):
