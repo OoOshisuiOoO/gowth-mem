@@ -175,13 +175,13 @@ Restart Claude Code (or `/reload-plugins`) once after a heal so the new `install
 
 | Event | Hook | What it does |
 |---|---|---|
-| SessionStart | `bootstrap-load.py` | Inject shared rules, workspace rules, docs, recent topics, and journal snippets |
+| SessionStart | `bootstrap-load.py` | v4.8: refresh the `MEMORY.md` block and print a ≤600-char header when the project is wired (native), else a ≤8,500-char fallback bootstrap; `/clear` bootstraps again |
 | SessionStart | `auto-sync.py --pull-only --quiet` | Rebase remote into local without pushing |
-| PreCompact | `precompact-flush.py` | Hard-block with distill instructions before compact |
+| PreCompact | `precompact-flush.py` | Deterministic raw-dump of the recent human turns into today's journal; never blocks `/compact` (v3.5.1+) |
 | PreCompact | `auto-sync.py --commit-only --quiet` | Commit local memory changes without network |
 | PostCompact | `auto-sync.py --pull-rebase-push --quiet` | Pull, rebase, push; conflict writes `SYNC-CONFLICT.md` |
 | UserPromptSubmit | `conflict-detect.sh` → `recall-on-prompt.sh` | Conflict reminder when `SYNC-CONFLICT.md` exists; gated per-prompt BM25 recall (v4.8, ≤2,000 chars, silent by default) |
-| Stop | `auto-journal.py` | Periodic journal/distill reminder |
+| Stop | `auto-journal.py` | Real-turn counters; journal / self-review cadence directives on the non-error Stop channel (a background teammate / a fresh judge — v4.7); v4.8: `MEMORY.md` refresh, memory sanitizer, incremental reindex |
 
 ## Slash commands & shortcuts
 
@@ -234,7 +234,7 @@ PreCompact    → auto-sync.py --commit-only
 PostCompact   → auto-sync.py --pull-rebase-push
 ```
 
-If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files; conflicts on `<ws>/memory/MEMORY.md` merge themselves (both free zones unioned, block regenerated) at every stopped rebase step. The next prompt reminds you to run `/mem-sync resolve`.
+If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files; conflicts on `<ws>/memory/MEMORY.md` merge themselves (both free zones unioned, block regenerated) at every stopped rebase step, and a dirty `MEMORY.md` is set aside around the SessionStart pull instead of stashed (v4.8). The next prompt reminds you to run `/mem-sync resolve`. A stash-pop conflict on any other file is reported and blocks commits until you resolve it by hand.
 
 ## Recall
 
@@ -334,13 +334,13 @@ memx                    # build local index
 
 | Event | Hook | Làm gì |
 |---|---|---|
-| SessionStart | `bootstrap-load.py` | Inject shared+workspace rules, docs/handoff, top topic gần đây, journal hôm nay (cap 15k tổng) |
+| SessionStart | `bootstrap-load.py` | v4.8: làm mới block `MEMORY.md` + header ≤600 ký tự khi project đã wire (native), không thì fallback bootstrap ≤8.500 ký tự; `/clear` bootstrap lại |
 | SessionStart | `auto-sync.py --pull-only` | Rebase remote → local, không push |
-| PreCompact | `precompact-flush.py` | **HARD-BLOCK** distill journal → topics trước khi compact |
+| PreCompact | `precompact-flush.py` | Dump thô các lượt human gần nhất vào journal hôm nay; KHÔNG BAO GIỜ chặn `/compact` (v3.5.1+) |
 | PreCompact | `auto-sync.py --commit-only` | Commit local không network |
 | PostCompact | `auto-sync.py --pull-rebase-push` | Sync đầy đủ; conflict → `SYNC-CONFLICT.md` |
 | UserPromptSubmit | `conflict-detect.sh` → `recall-on-prompt.sh` | Nhắc `/mem-sync resolve` khi có conflict; recall BM25 theo prompt có cổng lọc (v4.8, ≤2,000 ký tự, mặc định im lặng) |
-| Stop | `auto-journal.py` | Mỗi 10 turn: BLOCK với hướng dẫn auto-distill + active prune |
+| Stop | `auto-journal.py` | Đếm lượt thật; mỗi N lượt phát directive journal / self-review qua kênh Stop không-lỗi (teammate nền / judge mới — v4.7); v4.8: làm mới `MEMORY.md`, sanitize memory, reindex incremental |
 
 ### Slash command & shortcut
 
