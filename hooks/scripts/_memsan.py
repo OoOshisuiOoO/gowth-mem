@@ -76,15 +76,45 @@ def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", "surrogateescape")).hexdigest()
 
 
+def _sanitize_one(p: Path, rel: str, known: dict, fresh: dict, report: dict, sanitize) -> "str | None":
+    """Sanitize one file in place. Returns the hash to record, or None when the
+    file must be looked at again next pass."""
+    text = p.read_text(errors="ignore")
+    h = _sha1(text)
+    if known.get(rel) == h:
+        return h
+    cleaned, n = sanitize(text)
+    if n > 0 and isinstance(cleaned, str) and cleaned != text:
+        atomic_write(p, cleaned)
+        report["sanitized"].append(rel)
+        report["secrets"] += int(n)
+        log_debug("memsan", f"sanitized {n} secret(s) in {rel}")
+        return _sha1(cleaned)
+    return h
+
+
+def _flag_skipped(p: Path, rel: str, report: dict, sanitize) -> None:
+    """The lock was held too long: report the file as skipped WHEN it holds a
+    secret, so the commit paths can keep it out of the commit (fail closed)."""
+    try:
+        _cleaned, n = sanitize(p.read_text(errors="ignore"))
+    except Exception:
+        n = 1
+    if n > 0:
+        report["skipped"].append(rel)
+        log_debug("memsan", f"skipped {rel}: memfile lock held; kept out of the next commit")
+
+
 def sanitize_memory_files(lock_timeout: float = 2.0) -> dict:
     """Sanitize every changed memory file in every workspace.
 
-    Returns {"scanned": n, "sanitized": [relpaths], "secrets": n}. A file
-    whose content hash matches the recorded one is skipped. MEMORY.md is
-    written under the workspace's memfile lock (`_memfile.write` holds it);
-    on timeout the file is left for the next pass (its hash is not recorded).
-    Never raises."""
-    report = {"scanned": 0, "sanitized": [], "secrets": 0}
+    Returns {"scanned": n, "sanitized": [relpaths], "secrets": n, "skipped":
+    [relpaths]}. A file whose content hash matches the recorded one is not
+    re-scanned. MEMORY.md is read and written under the workspace's memfile
+    lock (`_memfile.write` holds it); on timeout a file that holds a secret is
+    reported in `skipped` — the commit paths keep it out of the commit — and
+    is retried next pass (its hash is not recorded). Never raises."""
+    report = {"scanned": 0, "sanitized": [], "secrets": 0, "skipped": []}
     try:
         from _privacy import sanitize  # type: ignore
     except Exception as exc:
@@ -100,33 +130,22 @@ def sanitize_memory_files(lock_timeout: float = 2.0) -> dict:
             rel = str(p)
         report["scanned"] += 1
         try:
-            text = p.read_text(errors="ignore")
-        except OSError:
-            continue
-        h = _sha1(text)
-        if known.get(rel) == h:
-            fresh[rel] = h
-            continue
-        try:
-            cleaned, n = sanitize(text)
+            if p.name == MEMFILE_NAME:
+                # read AND write under the memfile lock (review m2): a concurrent
+                # _memfile.write must never be overwritten with stale text
+                try:
+                    with file_lock(f"memfile-{ws}", timeout=lock_timeout):
+                        h = _sanitize_one(p, rel, known, fresh, report, sanitize)
+                except TimeoutError:
+                    h = None
+                    _flag_skipped(p, rel, report, sanitize)
+            else:
+                h = _sanitize_one(p, rel, known, fresh, report, sanitize)
         except Exception as exc:
             log_debug("memsan", f"sanitize failed for {rel}: {exc}")
-            continue
-        if n > 0 and isinstance(cleaned, str) and cleaned != text:
-            try:
-                if p.name == MEMFILE_NAME:
-                    with file_lock(f"memfile-{ws}", timeout=lock_timeout):
-                        atomic_write(p, cleaned)
-                else:
-                    atomic_write(p, cleaned)
-            except Exception as exc:
-                log_debug("memsan", f"write skipped for {rel}: {exc}")
-                continue                     # not recorded → retried next pass
-            report["sanitized"].append(rel)
-            report["secrets"] += int(n)
-            log_debug("memsan", f"sanitized {n} secret(s) in {rel}")
-            h = _sha1(cleaned)
-        fresh[rel] = h
+            h = None
+        if h is not None:
+            fresh[rel] = h
     if fresh != known:
         _remember(fresh)
     return report

@@ -110,16 +110,28 @@ def write_default_gitignore(gh: Path) -> None:
     atomic_write(gi, f"{existing}{sep}{additions}")
 
 
-def _sanitize_memory_before_commit() -> None:
+def _sanitize_memory_before_commit() -> list:
     """v4.8 (review C3): Claude-written <ws>/memory/*.md go through the privacy
-    sanitizer before `git add -A` (manual /mem-sync and --init). Best-effort."""
+    sanitizer before `git add -A` (manual /mem-sync and --init). Returns the
+    files it could not write (lock held); the caller keeps them out of the
+    commit (review m2). Best-effort."""
     try:
         from _memsan import sanitize_memory_files  # type: ignore
         r = sanitize_memory_files()
         if r.get("sanitized"):
             print(f"sync: sanitized memory file(s) before commit: {', '.join(r['sanitized'])}")
+        return list(r.get("skipped") or [])
     except Exception as e:
         log_debug("sync", f"memory sanitize before commit failed: {e}")
+        return []
+
+
+def _unstage(gh: Path, rels: list) -> None:
+    for rel in rels:
+        run_git(gh, "restore", "--staged", "--", rel, check=False)
+    if rels:
+        print(f"sync: {len(rels)} memory file(s) left out of this commit (sanitizer could not write them): "
+              + ", ".join(rels[:3]), file=sys.stderr)
 
 
 def main() -> int:
@@ -174,8 +186,9 @@ def main() -> int:
                 except subprocess.CalledProcessError:
                     has_head = False
                 if not has_head:
-                    _sanitize_memory_before_commit()
+                    _skipped = _sanitize_memory_before_commit()
                     run_git(gh, "add", "-A")
+                    _unstage(gh, _skipped)
                     try:
                         from _commitmsg import build_message as _bm  # type: ignore
                         _msg = _bm(gh, host=host, context="initial")
@@ -228,8 +241,9 @@ def main() -> int:
                 pass
 
             if not args.pull_only:
-                _sanitize_memory_before_commit()
+                _skipped = _sanitize_memory_before_commit()
                 run_git(gh, "add", "-A", check=False)
+                _unstage(gh, _skipped)
                 status = run_git(gh, "status", "--porcelain", check=False).stdout
                 if status.strip():
                     try:

@@ -163,6 +163,46 @@ class CommitPathTest(_Vault):
         self._assert_redacted(pushed)
 
 
+class FailClosedTest(_Vault):
+    """Review m2: with the memfile lock held by another process during a commit,
+    the sanitizer skipped MEMORY.md and `git add -A` committed the raw secret.
+    A file the sanitizer could not write must never reach a commit."""
+
+    def setUp(self):
+        super().setUp()
+        self._git("init", "-q")
+        (self.tmp / ".gitignore").write_text("state.json\nindex.db\n.locks/\nconfig.json\n.archive/\n.backup/\n")
+        self.mf = self.tmp / "workspaces" / "trade" / "memory" / "MEMORY.md"
+        self.mf.write_text("<!-- gowth-mem:begin ws=trade -->\nx\n<!-- gowth-mem:end -->\n- clean note\n")
+        self.trade_note.write_text("# ci\n\nclean\n")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "base")
+        self.mf.write_text(self.mf.read_text() + f"- token {SECRET} — rotate quarterly\n")
+
+    def test_commit_only_never_commits_a_file_the_sanitizer_could_not_write(self):
+        from _lock import file_lock  # type: ignore
+        with file_lock("memfile-trade", timeout=1.0):        # another writer holds it
+            self._run("auto-sync.py", "--commit-only", "--quiet")
+        shown = self._git("show", "HEAD:workspaces/trade/memory/MEMORY.md", check=False).stdout
+        self.assertNotIn(SECRET, shown, "a file the sanitizer could not write was committed raw")
+        self.assertIn(SECRET, self.mf.read_text(), "the working tree keeps the unsanitized file for the next pass")
+        status = self._git("status", "--porcelain").stdout
+        self.assertIn("workspaces/trade/memory/MEMORY.md", status, "the skipped file must stay uncommitted")
+        # lock released: the next commit carries the sanitized file
+        self._run("auto-sync.py", "--commit-only", "--quiet")
+        shown = self._git("show", "HEAD:workspaces/trade/memory/MEMORY.md").stdout
+        self._assert_redacted(shown)
+        self.assertEqual(self._git("status", "--porcelain").stdout.strip(), "")
+
+    def test_skipped_files_are_reported(self):
+        import _memsan  # type: ignore
+        from _lock import file_lock  # type: ignore
+        with file_lock("memfile-trade", timeout=1.0):
+            r = _memsan.sanitize_memory_files(lock_timeout=0.2)
+        self.assertEqual(r["skipped"], ["workspaces/trade/memory/MEMORY.md"])
+        self.assertEqual(r["sanitized"], [])
+
+
 class SanitizerTest(_Vault):
     def test_three_passes_are_idempotent_and_hash_gated(self):
         import _memsan  # type: ignore

@@ -133,6 +133,83 @@ class MemfileSyncMergeTest(unittest.TestCase):
         ahead = git(self.b, "rev-list", "--count", "origin/main..HEAD").stdout.strip()
         self.assertEqual(ahead, "2")
 
+    def _two_local_commits(self, b1_line: str = "- note from B1\n", b2_line: str = "- note from B2\n") -> None:
+        self.mem_a.write_text(self.mem_a.read_text() + "- note from A\n")
+        git(self.a, "commit", "-q", "-am", "A note")
+        git(self.a, "push", "-q", "origin", "main")
+        self.mem_b.write_text(self.mem_b.read_text() + b1_line)
+        git(self.b, "commit", "-q", "-am", "B note 1")
+        self.mem_b.write_text(self.mem_b.read_text() + b2_line)
+        git(self.b, "commit", "-q", "-am", "B note 2")
+        r = git(self.b, "pull", "--rebase", "origin", "main", check=False)
+        self.assertIn("CONFLICT", r.stdout + r.stderr)
+        os.environ["GOWTH_MEM_HOME"] = str(self.b)
+
+    def test_replay_bound_exhausted_leaves_no_markers_and_names_memfile(self):
+        """Review m3(c): giving up after MAX_REPLAYS used to leave raw markers,
+        an unmerged MEMORY.md and a 0-file SYNC-CONFLICT.md."""
+        self._two_local_commits()
+        import _conflict  # type: ignore
+        saved = _conflict.MAX_REPLAYS
+        _conflict.MAX_REPLAYS = 1
+        try:
+            result = _conflict.package_conflict()
+        finally:
+            _conflict.MAX_REPLAYS = saved
+        self.assertIsNotNone(result)
+        body = (self.b / "SYNC-CONFLICT.md").read_text()
+        self.assertIn("MEMORY.md", body)
+        self.assertNotIn("on 0 file(s)", body)
+        self.assertNotIn("<<<<<<<", self.mem_b.read_text())
+        self.assertEqual(git(self.b, "diff", "--name-only", "--diff-filter=U").stdout.strip(), "",
+                         "the last stop must be merged/reset even when the bound is hit")
+
+    def test_concurrent_memfile_write_mid_rebase_is_restaged(self):
+        """Review m3(b): another session's Stop re-rendering MEMORY.md while the
+        rebase is stopped must not strand the rebase behind a 0-file conflict."""
+        self._two_local_commits()
+        import _conflict  # type: ignore
+        real = _conflict.merge_memfile
+
+        def racing(gh, rel):
+            ok = real(gh, rel)
+            f = gh / rel
+            f.write_text(f.read_text() + "- concurrent note\n")      # after the stage
+            return ok
+
+        _conflict.merge_memfile = racing
+        try:
+            result = _conflict.package_conflict()
+        finally:
+            _conflict.merge_memfile = real
+        self.assertIsNone(result, (self.b / "SYNC-CONFLICT.md").read_text() if (self.b / "SYNC-CONFLICT.md").exists() else "")
+        self.assertNotIn("<<<<<<<", self.mem_b.read_text())
+        self.assertIn("- concurrent note", self.mem_b.read_text())
+        self.assertFalse((self.b / ".git" / "rebase-merge").exists())
+
+    def test_dirty_other_file_mid_rebase_is_named_in_the_conflict(self):
+        self._two_local_commits()
+        import _conflict  # type: ignore
+        real = _conflict.merge_memfile
+        handoff = self.b / "workspaces" / "demo" / "docs" / "handoff.md"
+
+        def dirtying(gh, rel):
+            ok = real(gh, rel)
+            handoff.write_text(handoff.read_text() + "- host:mac 2026-09-14 [doing] concurrent edit\n")
+            return ok
+
+        _conflict.merge_memfile = dirtying
+        try:
+            result = _conflict.package_conflict()
+        finally:
+            _conflict.merge_memfile = real
+        self.assertNotIn("<<<<<<<", self.mem_b.read_text())
+        self.assertIn("concurrent edit", handoff.read_text(), "a concurrent edit is never discarded")
+        if result is not None:
+            body = (self.b / "SYNC-CONFLICT.md").read_text()
+            self.assertNotIn("on 0 file(s)", body)
+            self.assertIn("handoff.md", body)
+
     def test_other_conflicts_still_packaged(self):
         # A also edits handoff.md so B's handoff.md conflicts too
         (self.a / "workspaces" / "demo" / "docs" / "handoff.md").write_text("## A version\n")

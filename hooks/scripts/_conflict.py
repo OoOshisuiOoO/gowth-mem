@@ -57,20 +57,12 @@ def merge_memfile(gh: Path, rel: str) -> bool:
         return False
     ws = m.group(1)
     try:
-        from _memfile import render, split  # type: ignore
+        from _memfile import merge_texts  # type: ignore
         sides = []
         for stage in (":3", ":2"):           # :3 = local (rebase), :2 = incoming
             text = _show(gh, stage, rel)
             sides.append("" if text.startswith("(file missing") else text)
-        lines: list[str] = split(sides[0])[1].splitlines()
-        for ln in split(sides[1])[1].splitlines():
-            if ln.strip() and ln not in lines:
-                lines.append(ln)
-        while lines and not lines[-1].strip():
-            lines.pop()
-        block = render(ws, free_zone_lines=len(lines))
-        content = block + ("\n".join(lines) + "\n" if lines else "")
-        safe_write(gh / rel, content)
+        safe_write(gh / rel, merge_texts(ws, sides[0], sides[1]))
         rc, _, err = _git(gh, "add", "--", rel)
         if rc != 0:
             log_debug("conflict", f"git add failed for {rel}: {err.strip()[:200]}")
@@ -132,30 +124,46 @@ def package_conflict() -> "Path | None":
 
     sections: list[str] = []
     remaining: list[str] = []
+    exhausted = True
     for _ in range(MAX_REPLAYS):
         remaining = _resolve_stop(gh, conflict_files, sections)
         if remaining:
+            exhausted = False
             break
         rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
+        if rc != 0 and not _unmerged(gh):
+            # Review m3(b): another session's Stop wrote a tracked file (usually a
+            # MEMORY.md re-render) while the rebase was stopped; git refuses to
+            # continue over unstaged changes. Fold them into the replay — nothing
+            # is discarded — and retry once. (No text-based --skip: git >= 2.33
+            # drops an emptied replay itself, and a skip on a misread message
+            # would hard-reset a real commit.)
+            _git(gh, "add", "-u")
+            rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
         if rc == 0:
             return None
         conflict_files = _unmerged(gh)
         if conflict_files:
             continue                      # the next replayed commit stopped too
-        msg = (err + out).lower()
-        if "empty" in msg or "no changes" in msg or "nothing to commit" in msg:
-            rc, out, err = _git(gh, "rebase", "--skip")
-            if rc == 0:
-                return None
-            conflict_files = _unmerged(gh)
-            if conflict_files:
-                continue
+        exhausted = False
         log_debug("conflict", f"rebase --continue failed after memfile merge: {err.strip()[:200]}")
+        _rc, status, _ = _git(gh, "status", "--porcelain")
         sections.append("### (rebase --continue failed after merging MEMORY.md)\n")
         sections.append((err + out).strip()[:500] + "\n")
+        sections.append("Working tree at that moment (`git status --porcelain`):\n```\n"
+                        + status.strip()[:1500] + "\n```\n")
+        remaining = [ln[3:] for ln in status.splitlines() if ln[:2].strip()]
         break
-    else:
-        sections.append(f"### (gave up after {MAX_REPLAYS} replayed commits; run `git -C ~/.gowth-mem status`)\n")
+    if exhausted:
+        # Review m3(c): the bound was hit with a stop still open — resolve it so
+        # no marker is left in the tree, then hand over to the user.
+        remaining = _resolve_stop(gh, conflict_files, sections)
+        merged = [f for f in conflict_files if f not in remaining]
+        sections.append(f"### (gave up after {MAX_REPLAYS} replayed commits)\n")
+        if merged:
+            sections.append("Merged and staged, rebase left stopped: " + ", ".join(merged)
+                            + " — run `git -C ~/.gowth-mem rebase --continue` (or /mem-sync resolve).\n")
+        remaining = remaining or merged
 
     host = socket.gethostname()
     parts: list[str] = [

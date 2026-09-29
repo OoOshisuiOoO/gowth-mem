@@ -94,17 +94,29 @@ def _unmerged_paths(gh: Path) -> list[str]:
     return sorted({ln.split("\t")[-1] for ln in r.stdout.splitlines() if "\t" in ln})
 
 
-def _sanitize_memory_before_commit() -> None:
+def _sanitize_memory_before_commit() -> list:
     """v4.8 (review C3): Claude-written <ws>/memory/*.md go through the privacy
     sanitizer before `git add -A` on EVERY commit path (Stop autosync,
-    PreCompact --commit-only, PostCompact). Best-effort; never blocks the commit."""
+    PreCompact --commit-only, PostCompact). Returns the files the sanitizer
+    could NOT write (lock held) — the caller keeps them out of the commit
+    (review m2: fail closed). Never blocks the commit."""
     try:
         from _memsan import sanitize_memory_files  # type: ignore
         r = sanitize_memory_files()
         if r.get("sanitized"):
             log_debug("auto-sync", f"sanitized memory files before commit: {r['sanitized']}")
+        return list(r.get("skipped") or [])
     except Exception as e:
         log_debug("auto-sync", f"memory sanitize before commit failed: {e}")
+        return []
+
+
+def _unstage(gh: Path, rels: list, quiet: bool) -> None:
+    for rel in rels:
+        run_git(gh, "restore", "--staged", "--", rel, check=False)
+    if rels:
+        log(f"sync: {len(rels)} memory file(s) left out of this commit — sanitizer could not "
+            f"write them (memfile lock held): {', '.join(rels[:3])}", quiet=quiet, err=True)
 
 
 def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -> bool:
@@ -122,9 +134,10 @@ def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -
             f"git status", quiet=quiet, err=True)
         return False
 
-    _sanitize_memory_before_commit()
+    skipped = _sanitize_memory_before_commit()
     run_git(gh, "add", "-A", check=False)
-    status = run_git(gh, "status", "--porcelain", check=False).stdout
+    _unstage(gh, skipped, quiet)
+    status = run_git(gh, "diff", "--cached", "--name-only", check=False).stdout
     if not status.strip():
         return False
 
@@ -249,13 +262,88 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
     return True
 
 
+_MEMFILE_RE = re.compile(r"^workspaces/([^/]+)/memory/MEMORY\.md$")
+
+
+def _set_aside_memfiles(gh: Path, quiet: bool) -> list:
+    """Review N3: a dirty `<ws>/memory/MEMORY.md` (the Stop hook re-renders it
+    on most turns while the autosync commit is debounced) must never go
+    through the stash: its derived block conflicts with the peer's on a
+    stash pop even when the sources merge cleanly, and the pop then leaves
+    the file UU with raw markers and every later sync blocked. The free zone
+    (Claude's own notes) is kept in memory AND in a sidecar under .locks/
+    (gitignored, survives a crash); the tracked file is restored to HEAD, an
+    untracked one removed, so the pull sees a clean path. Returns
+    [(rel, ws, free_zone_text, sidecar)]."""
+    saved: list = []
+    status = run_git(gh, "status", "--porcelain", check=False).stdout
+    for line in status.splitlines():
+        if len(line) < 4:
+            continue
+        code, rel = line[:2], line[3:].strip()
+        if code == "??" and rel.endswith("/memory/") and (gh / rel / "MEMORY.md").is_file():
+            rel = rel + "MEMORY.md"          # git lists an untracked DIRECTORY, not its files
+        m = _MEMFILE_RE.match(rel)
+        if not m or code == "  ":
+            continue
+        path = gh / rel
+        try:
+            text = path.read_text(errors="ignore") if path.is_file() else ""
+            from _memfile import split  # type: ignore
+            free = split(text)[1]
+        except Exception as e:
+            log_debug("auto-sync", f"set-aside read failed for {rel}: {e}")
+            continue
+        ws = m.group(1)
+        sidecar = gh / ".locks" / f"pullsave-{ws}.md"
+        try:
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(free)
+        except OSError as e:
+            log_debug("auto-sync", f"sidecar write failed for {rel}: {e}")
+        if code == "??":
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        else:
+            run_git(gh, "checkout", "--", rel, check=False)
+        saved.append((rel, ws, free, sidecar))
+    if saved:
+        log(f"sync: set aside {len(saved)} MEMORY.md free zone(s) for the pull", quiet=quiet)
+    return saved
+
+
+def _restore_memfiles(gh: Path, saved: list, quiet: bool) -> None:
+    """After the pull (success or not): union the saved free zone with what the
+    pull brought, re-render the block from the merged vault, drop the sidecar."""
+    for rel, ws, free, sidecar in saved:
+        path = gh / rel
+        try:
+            from _atomic import safe_write  # type: ignore
+            from _memfile import merge_texts  # type: ignore
+            remote = path.read_text(errors="ignore") if path.is_file() else ""
+            # local first: `free` is a bare free zone, so wrap it as a file with no block
+            safe_write(path, merge_texts(ws, free, remote))
+            try:
+                sidecar.unlink()
+            except OSError:
+                pass
+        except Exception as e:
+            log(f"sync: could not restore {rel} after the pull — its notes are in {sidecar}",
+                quiet=quiet, err=True)
+            log_debug("auto-sync", f"restore memfile failed for {rel}: {e}")
+
+
 def pull_rebase(gh: Path, branch: str, quiet: bool,
                 remote: str, token: Optional[str]) -> int:
     """Pull --rebase; auto-stash dirty tree, restore after. Returns 0/2/1."""
     if not _clear_stale_rebase(gh, quiet):
         return 1
+    saved = _set_aside_memfiles(gh, quiet)
     stash_ref = _stash_if_dirty(gh, quiet)
     if stash_ref is False:
+        _restore_memfiles(gh, saved, quiet)
         return 1
 
     r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
@@ -287,6 +375,7 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
         # caller stops (and commit_local's marker guard refuses) instead of publishing.
         if not _restore_stash(gh, pull_ok=(rc == 0), quiet=quiet) and rc == 0:
             rc = 2
+    _restore_memfiles(gh, saved, quiet)
     return rc
 
 

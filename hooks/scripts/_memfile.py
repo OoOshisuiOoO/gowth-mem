@@ -420,6 +420,25 @@ def render_hook_bootstrap(ws: str, max_chars: int = HOOK_BOOTSTRAP_CHARS) -> str
                 order=_HOOK_ORDER, begin="", end="", header=_hook_header(ws))
 
 
+def union_free_zones(local_text: str, remote_text: str) -> list[str]:
+    """Union of two files' free zones: local lines first, then remote lines not
+    already present (exact-line dedupe, blank lines dropped)."""
+    lines: list[str] = [ln for ln in split(local_text)[1].splitlines() if ln.strip()]
+    for ln in split(remote_text)[1].splitlines():
+        if ln.strip() and ln not in lines:
+            lines.append(ln)
+    return lines
+
+
+def merge_texts(ws: str, local_text: str, remote_text: str) -> str:
+    """The merged MEMORY.md: both free zones unioned below a block re-rendered
+    from the (merged) vault. Used by the rebase merge (_conflict.merge_memfile)
+    and by the SessionStart pull (auto-sync set-aside/restore, review N3)."""
+    lines = union_free_zones(local_text, remote_text)
+    block = render(ws, free_zone_lines=len(lines))
+    return block + ("\n".join(lines) + "\n" if lines else "")
+
+
 # ─── file handling ───────────────────────────────────────────────────────
 
 def split(text: str) -> tuple[str, str]:
