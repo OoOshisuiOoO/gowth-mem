@@ -57,6 +57,20 @@ class _NativeCase(unittest.TestCase):
     def local(self) -> Path:
         return self.proj / ".claude" / "settings.local.json"
 
+    def _known(self, *projects: Path, with_cwd: bool = False) -> Path:
+        """A Claude config dir that knows these projects (a transcript dir per
+        slug; with_cwd: a transcript record naming the real cwd, as Claude Code
+        writes)."""
+        cd = self.tmp / "claude"
+        for pr in projects:
+            d = cd / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(pr.resolve()))
+            d.mkdir(parents=True, exist_ok=True)
+            if with_cwd:
+                (d / "abc.jsonl").write_text(json.dumps({"type": "user", "cwd": str(pr.resolve()),
+                                                          "message": {"content": "hi"}}) + "\n")
+        return cd
+
+
 
 class WireTest(_NativeCase):
     def test_wire_creates_settings_local_then_already(self):
@@ -187,13 +201,6 @@ class ProjectRootTest(_NativeCase):
         self.assertTrue(_native.is_wired(sub, "demo", self.env))
         self.assertTrue(_native.status(cwd=sub, env=self.env)["wired"])
 
-    def _known(self, *projects: Path) -> Path:
-        """A Claude config dir that knows these projects (a transcript dir per slug)."""
-        cd = self.tmp / "claude"
-        for pr in projects:
-            (cd / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(pr.resolve()))).mkdir(parents=True, exist_ok=True)
-        return cd
-
     def test_double_star_glob_wires_only_the_repos_claude_code_knows(self):
         """Review I5 + live check: the devops glob `/Volumes/Data/Git/fg/**` holds
         ~140 repositories (third-party clones included). Wiring every one would
@@ -215,6 +222,18 @@ class ProjectRootTest(_NativeCase):
                                         (base / "plain").resolve()]))
         self.assertNotIn((base / "r3").resolve(), paths, "a repo Claude Code never opened is not wired")
         self.assertNotIn(base.resolve(), paths, "an unknown non-repo glob base must not be wired")
+
+    def test_deep_known_project_is_wired_through_its_transcript_cwd(self):
+        """Review m6: a known project five levels under the glob base was
+        invisible to the depth-3 walk. Claude Code's transcripts carry the
+        real cwd, so a known project is located exactly, at any depth."""
+        base = self.tmp / "fg"
+        deep = base / "a" / "b" / "c" / "d" / "r5"
+        deep.mkdir(parents=True)
+        git(deep, "init", "-q")
+        cd = self._known(deep, with_cwd=True)
+        rows = _native.projects_for_workspaces({"workspace_map": {f"{base}/**": "devops"}}, claude_dir=cd)
+        self.assertEqual([p for p, _ in rows], [deep.resolve()])
 
     def test_double_star_glob_on_a_bare_leaf_dir_wires_the_dir(self):
         leaf = self.tmp / "leaf"
@@ -343,6 +362,42 @@ class ImportTest(_NativeCase):
         self.assertIn("nested.md", rep["imported"])
         self.assertTrue(any(sl.endswith("-fgx-r9") for sl in rep["skipped_unmapped"]), rep["skipped_unmapped"])
         self.assertFalse(any(sl.endswith("-fg-r1") for sl in rep["skipped_unmapped"]))
+
+    def test_import_maps_a_sibling_dir_the_way_sessions_resolve(self):
+        """Review m5: the slug of `bot/AI-trade-v2` starts with the slug prefix
+        of `bot/AI-trade/**`, so it imported into `trade` while its sessions
+        resolve (first glob match) to `devops`. Known projects map through
+        their transcript cwd and the workspace_map globs, in order."""
+        bot = self.tmp / "bot"
+        (bot / "AI-trade").mkdir(parents=True)
+        (bot / "AI-trade-v2").mkdir()
+        (self.vault / "config.json").write_text(json.dumps({"workspace_map": {
+            f"{(bot / 'AI-trade').resolve()}/**": "trade", f"{bot.resolve()}/**": "devops"}}))
+        self._known(bot / "AI-trade-v2", with_cwd=True)
+        self._native_memory(bot / "AI-trade-v2", {"MEMORY.md": "- v2\n", "v2.md": "v2 note\n"})
+        rep = _native.import_native(self.tmp / "claude", apply=False)
+        self.assertIn("devops", rep["workspaces"])
+        self.assertNotIn("trade", rep["workspaces"])
+        slug = re.sub(r"[^A-Za-z0-9]", "-", str((bot / "AI-trade-v2").resolve()))
+        self.assertEqual(rep["mapping"][slug], "devops", "the report must show slug → workspace")
+
+    def test_renamed_import_rewrites_its_index_lines(self):
+        """Review m4: after a clash rename the project's MEMORY.md index lines
+        still pointed at the OTHER project's file."""
+        projs = [self.tmp / "work" / n for n in ("alpha", "beta")]
+        for i, pr in enumerate(projs):
+            pr.mkdir(parents=True)
+            self._native_memory(pr, {"notes.md": f"rule from {pr.name}\n",
+                                     "MEMORY.md": f"- [Notes](notes.md) — {pr.name}'s notes\n"})
+        (self.vault / "config.json").write_text(json.dumps(
+            {"workspace_map": {f"{pr.resolve()}/**": "demo" for pr in projs}}))
+        rep = _native.import_native(self.tmp / "claude", apply=True)
+        self.assertEqual(len(rep["renamed"]), 1)
+        renamed = rep["renamed"][0]
+        free = _native.split((self.vault / "workspaces" / "demo" / "memory" / "MEMORY.md").read_text())[1]
+        self.assertIn("- [Notes](notes.md) — alpha's notes", free)
+        self.assertIn(f"- [Notes]({renamed}) — beta's notes", free)
+        self.assertNotIn("- [Notes](notes.md) — beta's notes", free)
 
     def test_clash_keeps_vault_copy_and_renames_incoming(self):
         mem = self.vault / "workspaces" / "demo" / "memory"

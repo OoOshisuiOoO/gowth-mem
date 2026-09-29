@@ -274,19 +274,74 @@ def _repos_under(base: Path, depth: int = REPO_SCAN_DEPTH) -> list:
     return [d for d in _dirs_under(base, depth) if _is_repo(d)]
 
 
-def _known_slugs(claude_dir: "Path | None") -> "set | None":
-    """Slugs of the projects Claude Code has been used in on this machine
-    (`<claude_dir>/projects/<slug>/` exists), or None when there is no
+def _known_projects(claude_dir: "Path | None") -> "dict | None":
+    """{slug: Path | None} for every project Claude Code has been used in on
+    this machine (`<claude_dir>/projects/<slug>/`). The Path is the `cwd`
+    named by the newest transcript record that carries one (Claude Code
+    writes it on every record), so a known project is located EXACTLY — any
+    depth, no slug-prefix ambiguity (review m5/m6). None when there is no
     projects dir to consult (fresh machine, tests)."""
     if claude_dir is None:
         return None
     d = Path(claude_dir) / "projects"
     if not d.is_dir():
         return None
+    out: dict = {}
     try:
-        return {c.name for c in os.scandir(d) if c.is_dir()}
+        entries = [c for c in os.scandir(d) if c.is_dir()]
     except OSError:
         return None
+    for c in entries:
+        cwd = None
+        try:
+            files = sorted(Path(c.path).glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)[:3]
+        except OSError:
+            files = []
+        for f in files:
+            try:
+                with open(f, errors="ignore") as fh:
+                    for i, line in enumerate(fh):
+                        if i > 50:
+                            break
+                        if '"cwd"' not in line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        v = rec.get("cwd") if isinstance(rec, dict) else None
+                        if isinstance(v, str) and v.strip():
+                            cwd = Path(v.strip())
+                            break
+            except OSError:
+                continue
+            if cwd is not None:
+                break
+        out[c.name] = cwd
+    return out
+
+
+def _under(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _ws_by_globs(path: Path, config: dict) -> "str | None":
+    """The workspace a SESSION in `path` resolves to: the first workspace_map
+    glob that matches, in order (exactly `_home.active_workspace`'s rule);
+    None when no glob matches."""
+    from _home import _match_glob  # type: ignore
+    try:
+        cwd_str = str(Path(path).resolve())
+    except OSError:
+        cwd_str = str(path)
+    for pattern, ws in ((config or {}).get("workspace_map") or {}).items():
+        if _match_glob(cwd_str, str(pattern)):
+            return str(ws)
+    return None
 
 
 def projects_for_workspaces(config: dict, cwd: "Path | None" = None,
@@ -302,7 +357,7 @@ def projects_for_workspaces(config: dict, cwd: "Path | None" = None,
     plus the cwd's own project root when given."""
     rows: list = []
     seen: set = set()
-    known = _known_slugs(claude_dir)
+    known = _known_projects(claude_dir)
 
     def _add(d: Path, ws: str) -> None:
         key = str(d.resolve())
@@ -318,10 +373,14 @@ def projects_for_workspaces(config: dict, cwd: "Path | None" = None,
         if recursive and not _is_repo(base):
             dirs = _dirs_under(base)
             if known is not None:
-                # the project dirs Claude Code has been used in (repo or not);
-                # a bare leaf directory with nothing known and no repo beneath
-                # is itself the project
-                targets = [d for d in [base] + dirs if project_slug(d) in known]
+                # the project dirs Claude Code has been used in (repo or not):
+                # located through their transcript cwd (any depth), else by
+                # slug against the bounded walk; a bare leaf directory with
+                # nothing known and no repo beneath is itself the project
+                targets = [kp for kp in known.values()
+                           if kp is not None and kp.is_dir() and _under(kp, base)]
+                unresolved = {slug for slug, kp in known.items() if kp is None}
+                targets += [d for d in [base] + dirs if project_slug(d) in unresolved]
                 if not targets and not any(_is_repo(d) for d in dirs):
                     targets = [base]
             else:
@@ -351,11 +410,15 @@ def _sanitized(text: str) -> str:
         return text
 
 
-def _ws_for_slug(slug: str, config: dict) -> "str | None":
-    """Workspace for a native project slug: exact match on a glob base, or the
-    LONGEST base whose recursive (`**`) glob covers it — Claude Code's slug is
-    the path with every non-alnum char as '-', so `<base-slug>-…` is 'under'
-    the base (review I5)."""
+def _ws_for_slug(slug: str, config: dict, known_path: "Path | None" = None) -> "str | None":
+    """Workspace for a native project slug. With the project's real path (its
+    transcript cwd) the workspace_map globs decide, in order, exactly as a
+    session there resolves (review m5). Without one: exact match on a glob
+    base, or the LONGEST base whose recursive (`**`) glob covers the slug —
+    Claude Code's slug is the path with every non-alnum char as '-', so
+    `<base-slug>-…` is 'under' the base (review I5)."""
+    if known_path is not None:
+        return _ws_by_globs(known_path, config)
     best = None
     for base, ws, recursive in _glob_entries(config):
         pre = project_slug(base)
@@ -375,12 +438,13 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
     workspace's memory/. Dry-run unless apply=True; the dry-run plans against
     the pending writes, so its report is exactly what apply does (review I4)."""
     report = {"imported": [], "renamed": [], "skipped_unmapped": [], "identical": [],
-              "index_lines_added": 0, "workspaces": []}
+              "index_lines_added": 0, "workspaces": [], "mapping": {}}
     config = read_config()
     host = socket.gethostname().split(".")[0] or "host"
     projects = Path(claude_dir) / "projects"
     if not projects.is_dir():
         return report
+    known = _known_projects(claude_dir) or {}
     pending: dict = {}                      # target path → content planned so far
 
     def _current(path: Path) -> "str | None":
@@ -401,14 +465,16 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
         if not mem.is_dir():
             continue
         slug = mem.parent.name
-        ws = _ws_for_slug(slug, config)
+        ws = _ws_for_slug(slug, config, known.get(slug))
         if ws is None:
             report["skipped_unmapped"].append(slug)
             continue
+        report["mapping"][slug] = ws
         if ws not in report["workspaces"]:
             report["workspaces"].append(ws)
         dest = memory_dir(ws)
         label = _project_label(slug)
+        renames: dict = {}                    # old file name → renamed file (review m4)
         for f in sorted(mem.glob("*.md")):
             if f.name == "MEMORY.md":
                 continue
@@ -432,10 +498,12 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
                 cur2 = _current(cand)
                 if cur2 is None:
                     report["renamed"].append(name)
+                    renames[f.name] = name
                     _plan(cand, incoming)
                     break
                 if cur2 == incoming:
                     report["identical"].append(name)
+                    renames[f.name] = name
                     break
         src_index = mem / "MEMORY.md"
         if src_index.is_file():
@@ -443,6 +511,8 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
                 lines = [ln for ln in src_index.read_text(errors="ignore").splitlines() if ln.strip()]
             except OSError:
                 lines = []
+            for old_name, new_name in renames.items():   # index lines follow the renamed file
+                lines = [ln.replace(f"]({old_name})", f"]({new_name})") for ln in lines]
             target = memfile_path(ws)
 
             def _merge_index() -> None:
