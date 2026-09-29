@@ -181,6 +181,29 @@ class RenderTest(_MemfileCase):
         self.assertFalse(any("old choice" in l for l in lines), lines)
         self.assertTrue(all(l.startswith(f"- {recent} [decision] ") for l in lines), lines)
 
+    def test_recent_decisions_growth_is_linear(self):
+        """Review N2 (CLAUDE.md regex rule 3): the first _DECISION_RE
+        (`\\s*(.+?)\\s*$`) was quadratic on whitespace runs — 40k spaces inside
+        one decision line cost 5 s per render, on the Stop, SessionStart and
+        rebase-merge paths. ~2x per doubling or it is not linear."""
+        import datetime as _d
+        recent = (_d.date.today() - _d.timedelta(days=1)).isoformat()
+        flood = self.wsd / "beta" / f"{recent}-flood.md"
+        times = []
+        for n in (10_000, 20_000, 40_000):
+            flood.write_text("---\nslug: beta-flood\n---\n"
+                             "## [decision] Use the router" + " " * n + "because it is fast\n"
+                             "- [decision] tabs too" + " \t" * (n // 2) + "end\n")
+            t = time.perf_counter()
+            lines = _memfile.recent_decisions(self.ws)
+            times.append(time.perf_counter() - t)
+            self.assertTrue(any("Use the router" in l for l in lines), lines)
+        self.assertLess(times[-1], 0.5, times)
+        self.assertLess(times[2], max(times[1], 0.01) * 3, times)
+        t = time.perf_counter()
+        _memfile.render(self.ws)
+        self.assertLess(time.perf_counter() - t, 1.0)
+
     def test_block_identical_with_and_without_index_db(self):
         self._seed_decisions()
         without = _memfile.render(self.ws)
@@ -280,6 +303,34 @@ class WriteTest(_MemfileCase):
         future = time.time() + 5
         os.utime(db, (future, future))
         self.assertFalse(_memfile.sources_changed(self.ws))
+
+    def test_block_rendered_by_older_code_is_refreshed(self):
+        """Review m1: after an upgrade the block on disk still carried the old
+        header (version + drift nudge); with plugin.json out of the sources
+        nothing reopened the gate until an unrelated file changed."""
+        p = _memfile.memfile_path(self.ws)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        old = ("<!-- gowth-mem:begin ws=demo -->\n[gowth-mem:bootstrap workspace=demo v4.7.6]\n"
+               "=== gowth-mem update not loaded in THIS session ===\n## Rules\nold\n## Using memory\nold\n"
+               "<!-- gowth-mem:end -->\n- my note\n")
+        p.write_text(old)
+        future = time.time() + 5
+        os.utime(p, (future, future))                    # newer than every source
+        self.assertTrue(_memfile.sources_changed(self.ws), "an older render must reopen the gate")
+        self.assertTrue(_memfile.write(self.ws))
+        text = p.read_text()
+        self.assertIn("\n[gowth-mem:bootstrap workspace=demo]\n", text)
+        self.assertNotIn("v4.7.6", text)
+        self.assertTrue(text.endswith("- my note\n"))
+        self.assertFalse(_memfile.sources_changed(self.ws))
+
+    def test_deleted_source_reopens_the_gate(self):
+        _memfile.write(self.ws)
+        self.assertFalse(_memfile.sources_changed(self.ws))
+        (self.wsd / "gamma" / "00-README.md").unlink()
+        self.assertTrue(_memfile.sources_changed(self.ws), "a deleted README must trigger a re-render")
+        self.assertTrue(_memfile.write(self.ws))
+        self.assertNotIn("- gamma —", _memfile.memfile_path(self.ws).read_text())
 
     def test_free_zone_lines_shrink_the_block(self):
         _memfile.write(self.ws)

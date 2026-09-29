@@ -127,7 +127,8 @@ def _rotate_stale_bullets(sections: list[str], cutoff: "_dt.date") -> tuple[list
     return out_sections, archived
 
 
-ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")   # any list bullet (digest ordering)
+ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+")     # a TOP-LEVEL list item (review N1)
+SORT_RE = re.compile(r"^[-*+]\s+")                   # only dash bullets ever move; numbered steps never
 
 
 def _newest_date_key(text: str):
@@ -141,62 +142,73 @@ def _newest_date_key(text: str):
 
 
 def _order_items(body: list[str]) -> list[str]:
-    """Item-level ordering of one section body (review I3).
+    """Item-level ordering of one section body (review I3, corrected by N1).
 
-    Items: a list bullet plus the non-blank, non-bullet, non-heading lines that
-    follow it without a blank line (its indented continuation); any other
-    non-blank line is a loose undated item. A `#`-heading line starts a new
-    group; groups keep file order, each led by its heading. Inside a group the
-    items whose FIRST line carries a date come first, newest date first (equal
-    dates keep file order, live [blocker]/[doing]/[next]/[thread] items before
-    the others), then the undated items in file order. A date inside a
-    continuation line never moves the item (the devops shape); a blockquoted or
-    prose preamble has no bullets and therefore keeps its file order (idol-ai).
+    Items: a TOP-LEVEL list line plus every indented line that follows it
+    (sub-bullets, `+` continuations, wrapped text) until a blank line or the
+    next top-level line; any other top-level line is a loose item. Nothing
+    inside an item ever moves, whatever dates it carries.
+
+    Only a contiguous RUN of top-level dash bullets whose FIRST line carries a
+    date is reordered: newest date first, equal dates keep file order with
+    live `[blocker]/[doing]/[next]/[thread]` items before the others. A blank
+    line, a heading, a loose line, an undated bullet or a numbered step ends
+    the run. Everything else keeps file order — the real handoffs (default,
+    personal, idol-ai) are already newest-first by construction.
     """
-    groups: list = [(None, [])]
+    items: list = []            # (kind, lines) kind: "item" | "loose" | "heading" | "blank"
     cur: "list[str] | None" = None
     for ln in body:
         if not ln.strip():
             cur = None
+            items.append(("blank", []))
             continue
-        if ln.lstrip().startswith("#"):
-            groups.append((ln, []))
-            cur = None
-            continue
-        if ITEM_RE.match(ln):
-            cur = [ln]
-            groups[-1][1].append(cur)
-            continue
-        if cur is not None:
-            cur.append(ln)
-            continue
-        groups[-1][1].append([ln])
-    out: list[str] = []
-    for heading, items in groups:
-        if heading:
-            out.append(heading)
-        dated: list = []
-        undated: list = []
-        for idx, it in enumerate(items):
-            m = DATE_RE.search(it[0]) if ITEM_RE.match(it[0]) else None
-            if m:
-                dated.append(((m.group(1), m.group(2), m.group(3), m.group(4) or ""), idx, it))
+        if ln[:1] in (" ", "\t"):
+            if cur is not None:
+                cur.append(ln)
             else:
-                undated.append(it)
-        dated.sort(key=lambda t: t[0], reverse=True)   # stable: equal dates keep file order
-        i = 0
-        while i < len(dated):
+                items.append(("loose", [ln]))
+            continue
+        cur = None
+        if ln.startswith("#"):
+            items.append(("heading", [ln]))
+        elif ITEM_RE.match(ln):
+            cur = [ln]
+            items.append(("item", cur))
+        else:
+            items.append(("loose", [ln]))
+
+    def _key(lines: list) -> "tuple | None":
+        if not SORT_RE.match(lines[0]):
+            return None
+        m = DATE_RE.search(lines[0])
+        return (m.group(1), m.group(2), m.group(3), m.group(4) or "") if m else None
+
+    out: list[str] = []
+    i = 0
+    while i < len(items):
+        kind, lines = items[i]
+        if kind == "item" and _key(lines) is not None:
             j = i
-            while j < len(dated) and dated[j][0] == dated[i][0]:
+            while j < len(items) and items[j][0] == "item" and _key(items[j][1]) is not None:
                 j += 1
-            group = dated[i:j]
-            live = [t for t in group if LIVE_STATUS_RE.search(t[2][0])]
-            rest = [t for t in group if not LIVE_STATUS_RE.search(t[2][0])]
-            for t in live + rest:
-                out.extend(t[2])
+            run = [(_key(l), idx, l) for idx, (_k, l) in enumerate(items[i:j])]
+            run.sort(key=lambda t: t[0], reverse=True)     # stable: equal dates keep file order
+            k = 0
+            while k < len(run):
+                m = k
+                while m < len(run) and run[m][0] == run[k][0]:
+                    m += 1
+                group = run[k:m]
+                live = [t for t in group if LIVE_STATUS_RE.search(t[2][0])]
+                rest = [t for t in group if not LIVE_STATUS_RE.search(t[2][0])]
+                for t in live + rest:
+                    out.extend(t[2])
+                k = m
             i = j
-        for it in undated:
-            out.extend(it)
+            continue
+        out.extend(lines)
+        i += 1
     return out
 
 

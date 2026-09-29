@@ -105,8 +105,27 @@ _USING = [
 
 _DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _ASPECT_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-.+\.md$")
-_DECISION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:-\s*)?\[decision\]\s*(.+?)\s*$")
+# Review N2: `\s*(.+?)\s*$` was quadratic on whitespace runs (40k spaces: 5 s per
+# render on the Stop/SessionStart/rebase paths). Greedy tail + strip is linear;
+# lines are capped at DECISION_LINE_CAP chars before matching.
+_DECISION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:-\s*)?\[decision\][ \t]*(.*)$")
+DECISION_LINE_CAP = 500
 SEEN_KEY = "memfile_seen"
+
+
+def _render_fingerprint() -> str:
+    """Identity of the renderer (this file + _handoff.py): a plugin upgrade
+    that changes the render must reopen the gate (review m1)."""
+    h = hashlib.sha1()
+    for name in ("_memfile.py", "_handoff.py"):
+        try:
+            h.update((Path(__file__).parent / name).read_bytes())
+        except OSError:
+            h.update(name.encode())
+    return h.hexdigest()[:12]
+
+
+RENDER_FP = _render_fingerprint()
 _ENV_RE = re.compile(r"`([A-Z][A-Z0-9_]{3,})`")
 
 
@@ -243,7 +262,7 @@ def recent_decisions(ws: str, days: int = 7, max_lines: int = DECISION_LINES) ->
             except OSError:
                 continue
             for ln in text.splitlines():
-                m = _DECISION_RE.match(ln)
+                m = _DECISION_RE.match(ln[:DECISION_LINE_CAP])
                 if m:
                     heading = re.sub(r"\s+", " ", m.group(1)).strip()
                     if len(heading) > 100:
@@ -425,18 +444,21 @@ def write(ws: str) -> bool:
             old = p.read_text(errors="ignore") if p.is_file() else ""
             old_block, free = split(old)
             free_lines = free.count("\n") + (1 if free and not free.endswith("\n") else 0)
+            # what this render accounts for — taken BEFORE rendering (review m7:
+            # a source edited during the render must reopen the gate)
+            started = _newest_source_mtime(ws)
+            src_id = _source_set_id(ws)
             new_block = render(ws,
                                max_lines=setting("memfile.max_lines", int, MAX_LINES),
                                max_chars=setting("memfile.max_chars", int, MAX_CHARS),
                                free_zone_lines=free_lines)
-            started = _newest_source_mtime(ws)    # what this render accounts for
             if old_block and hashlib.sha1(old_block.encode()).hexdigest() == \
                     hashlib.sha1(new_block.encode()).hexdigest():
-                _mark_seen(ws, started)           # review M3: close the gate on a no-op
+                _mark_seen(ws, started, src_id)   # review M3: close the gate on a no-op
                 return False
             p.parent.mkdir(parents=True, exist_ok=True)
             safe_write(p, new_block + free)
-            _mark_seen(ws, started)
+            _mark_seen(ws, started, src_id)
             return True
     except Exception as exc:
         log_debug("memfile", f"write failed for ws={ws}: {exc}")
@@ -463,6 +485,20 @@ def _newest_source_mtime(ws: str) -> float:
     return newest
 
 
+def _source_set_id(ws: str) -> str:
+    """Hash of the set of existing source paths: a deleted README or aspect
+    changes it (mtimes cannot see a deletion — review m1)."""
+    gh = gowth_home()
+    rels = []
+    for c in _sources(ws):
+        try:
+            if c.is_file():
+                rels.append(c.relative_to(gh).as_posix())
+        except (OSError, ValueError):
+            continue
+    return hashlib.sha1("\n".join(sorted(rels)).encode()).hexdigest()[:12]
+
+
 def _load_state() -> dict:
     sp = state_path()
     try:
@@ -472,15 +508,17 @@ def _load_state() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _mark_seen(ws: str, stamp: float) -> None:
-    """Remember the newest source mtime the last render of `ws` accounted for
-    (state.json `memfile_seen`), so an unchanged block does not keep
-    `sources_changed()` open forever (review M3)."""
+def _mark_seen(ws: str, stamp: float, src_id: str = "") -> None:
+    """Remember what the last render of `ws` accounted for (state.json
+    `memfile_seen[ws]` = {stamp, fp, src}): the newest source mtime, the
+    renderer fingerprint and the source-set id — so an unchanged block does not
+    keep `sources_changed()` open forever (review M3), while an upgrade or a
+    deleted source reopens it (review m1)."""
     try:
         with file_lock("state", timeout=2.0):
             state = _load_state()
             seen = state.get(SEEN_KEY) if isinstance(state.get(SEEN_KEY), dict) else {}
-            seen[ws] = stamp
+            seen[ws] = {"stamp": stamp, "fp": RENDER_FP, "src": src_id}
             state[SEEN_KEY] = seen
             from _atomic import atomic_write  # type: ignore
             atomic_write(state_path(), json.dumps(state, indent=1))
@@ -488,25 +526,31 @@ def _mark_seen(ws: str, stamp: float) -> None:
         log_debug("memfile", f"seen stamp skipped: {exc}")
 
 
-def _seen(ws: str) -> float:
+def _seen(ws: str) -> "dict | None":
+    """The recorded {stamp, fp, src} for `ws`, or None (never rendered by this
+    renderer — pre-m1 floats count as never)."""
     try:
         v = (_load_state().get(SEEN_KEY) or {}).get(ws)
-        return float(v) if v is not None else 0.0
+        return v if isinstance(v, dict) else None
     except Exception:
-        return 0.0
+        return None
 
 
 def sources_changed(ws: str) -> bool:
     """True when any input of the block is newer than the last render (the file
-    or the `memfile_seen` stamp, whichever is later), or when there is no file.
-    Inputs are the SYNCED files only — handoff, secrets, topic READMEs and
-    dated aspects; never index.db or the plugin tree (review I2/M3)."""
+    or the `memfile_seen` stamp, whichever is later), when the renderer changed
+    (plugin upgrade), when a source appeared or vanished, or when there is no
+    file. Inputs are the SYNCED files only — handoff, secrets, topic READMEs and
+    dated aspects; never index.db (review I2/M3/m1)."""
     p = memfile_path(ws)
     if not p.is_file():
         return True
+    seen = _seen(ws)
+    if seen is None or seen.get("fp") != RENDER_FP or seen.get("src") != _source_set_id(ws):
+        return True                      # older renderer, or a source appeared/vanished
     try:
-        ref = max(p.stat().st_mtime, _seen(ws))
-    except OSError:
+        ref = max(p.stat().st_mtime, float(seen.get("stamp") or 0.0))
+    except (OSError, TypeError, ValueError):
         return True
     for c in _sources(ws):
         try:

@@ -90,6 +90,34 @@ DEVOPS_SHAPE = """# handoff — devops
 """
 
 
+# The live default shape (review N1): NO `##` at all; blank-line-separated blocks
+# each led by a non-bullet `host:… (… <date> …)` line with TASK/FINDINGS/NEXT
+# lines and INDENTED sub-bullets (some carrying dates) plus `+` continuations;
+# two stray top-level dated bullets at the very end. Newest block first in file.
+DEFAULT_SHAPE = """# handoff — default
+
+host:claude-haiku-4-5 (mem-teammate 2026-09-28 15:46 — session abc)
+TASK: newest block task text
+FINDINGS:
+  - finding one from the newest block
+  - finding two 2026-09-27 with a date inside
+    + continuation of finding two
+NEXT:
+  - next step of the newest block
+
+host:Mac (2026-09-25 10:00 — session def)
+TASK: older block
+BLOCKER/BẪY MỚI:
+  - Key benchmark Test-1 not private: 2026-09-08 seen from 2 IPs
+    + edits after that date are suspect
+NEXT:
+  - older next
+
+- host:NDP 2026-09-12 [next] stray one
+- host:NDP 2026-09-23 [next] stray two
+"""
+
+
 class HandoffDigestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="gowth_digest_")
@@ -147,6 +175,44 @@ class HandoffDigestTest(unittest.TestCase):
         self.assertLess(i_next1, i_next2)
         self.assertLess(i_next2, i_sec)
         self.assertLess(i_sec, lines.index("## 2026-08-15 — FE live"))
+
+    def test_default_shape_keeps_blocks_and_sub_bullets_in_place(self):
+        """Review N1: the I3 fix treated INDENTED bullets as items and hoisted
+        every dated bullet above the undated lines — the default block opened
+        with two stray 09-23/09-12 bullets and an orphaned sub-bullet."""
+        self._write(DEFAULT_SHAPE)
+        lines = _handoff.digest("demo")
+        self.assertEqual(lines[0], "host:claude-haiku-4-5 (mem-teammate 2026-09-28 15:46 — session abc)")
+        i = lines.index("  - finding two 2026-09-27 with a date inside")
+        self.assertEqual(lines[i + 1], "    + continuation of finding two")
+        j = lines.index("BLOCKER/BẪY MỚI:")
+        self.assertEqual(lines[j + 1], "  - Key benchmark Test-1 not private: 2026-09-08 seen from 2 IPs")
+        self.assertEqual(lines[j + 2], "    + edits after that date are suspect")
+        # the stray top-level run sorts within itself and stays at the end
+        self.assertEqual(lines[-2:], ["- host:NDP 2026-09-23 [next] stray two",
+                                      "- host:NDP 2026-09-12 [next] stray one"])
+        self.assertLess(lines.index("host:Mac (2026-09-25 10:00 — session def)"), lines.index("- host:NDP 2026-09-23 [next] stray two"))
+
+    def test_nested_dated_sub_bullet_stays_under_its_parent(self):
+        self._write("## 2026-09-20 section\n- host:mac 2026-09-20 [doing] migrate the db\n"
+                    "  - 2026-09-27 dump taken\n- host:mac 2026-09-21 [done] other work\n")
+        lines = _handoff.digest("demo")
+        self.assertEqual(lines, ["## 2026-09-20 section",
+                                 "- host:mac 2026-09-21 [done] other work",
+                                 "- host:mac 2026-09-20 [doing] migrate the db",
+                                 "  - 2026-09-27 dump taken"])
+
+    def test_numbered_steps_keep_file_order(self):
+        self._write("## Runbook\n1. first 2026-09-01\n2. second 2026-09-05\n3. third 2026-09-03\n")
+        self.assertEqual(_handoff.digest("demo")[1:], ["1. first 2026-09-01", "2. second 2026-09-05", "3. third 2026-09-03"])
+
+    def test_sorting_is_confined_to_a_contiguous_run(self):
+        # a non-bullet line breaks the run: the later dated bullet never crosses it
+        self._write("## Entries\n- host:mac 2026-09-10 [done] a\n- host:mac 2026-09-12 [done] b\n"
+                    "Notes for the next person:\n- host:mac 2026-09-28 [next] c\n")
+        lines = _handoff.digest("demo")
+        self.assertEqual(lines[1:], ["- host:mac 2026-09-12 [done] b", "- host:mac 2026-09-10 [done] a",
+                                     "Notes for the next person:", "- host:mac 2026-09-28 [next] c"])
 
     def test_bullets_keep_their_continuation_lines_and_subheadings(self):
         """Review I3 (devops): a bullet and its indented continuation lines are
