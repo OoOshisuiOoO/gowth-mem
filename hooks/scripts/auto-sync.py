@@ -274,9 +274,11 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
 _MEMFILE_RE = re.compile(r"^workspaces/([^/]+)/memory/MEMORY\.md$")
 
 
-def _read_sidecar(sidecar: Path) -> "tuple[str, str]":
+def _read_sidecar(sidecar: Path) -> "tuple[str, str] | None":
     """(free, base) from a sidecar: JSON {free, base} (v4.8.0), or a legacy
-    bare free zone (base unknown → "")."""
+    bare free zone (base unknown → ""). None when the sidecar looks like JSON
+    but does not parse (torn by a kill mid-write — round-5 M-b): corrupt,
+    kept in place, never merged."""
     raw = sidecar.read_text(errors="ignore")
     try:
         d = json.loads(raw)
@@ -284,6 +286,8 @@ def _read_sidecar(sidecar: Path) -> "tuple[str, str]":
             return str(d.get("free") or ""), str(d.get("base") or "")
     except Exception:
         pass
+    if raw.lstrip().startswith("{"):
+        return None
     return raw, ""
 
 
@@ -304,7 +308,12 @@ def _recover_sidecars(gh: Path, quiet: bool, lock_timeout: float = 2.0) -> None:
             with file_lock(f"memfile-{ws}", timeout=lock_timeout):
                 from _atomic import safe_write  # type: ignore
                 from _memfile import merge_texts  # type: ignore
-                free, base = _read_sidecar(sidecar)
+                parsed = _read_sidecar(sidecar)
+                if parsed is None:
+                    log(f"sync: {sidecar.name} is corrupt (torn write) — kept for inspection, not merged",
+                        quiet=quiet, err=True)
+                    continue
+                free, base = parsed
                 current = path.read_text(errors="ignore") if path.is_file() else ""
                 merged = merge_texts(ws, free, current, base)
                 if merged != current:
@@ -375,8 +384,9 @@ def _set_aside_memfiles(gh: Path, quiet: bool, held: "list | None" = None,
             # the sidecar (free zone + merge base) must exist BEFORE anything
             # destructive; if it cannot be written the file takes the stash
             # path instead (round-4 review N4)
+            from _atomic import atomic_write  # type: ignore
             sidecar.parent.mkdir(parents=True, exist_ok=True)
-            sidecar.write_text(json.dumps({"free": free, "base": base}, ensure_ascii=False))
+            atomic_write(sidecar, json.dumps({"free": free, "base": base}, ensure_ascii=False))
         except Exception as e:
             log(f"sync: could not save {rel}'s notes ({e}) — it goes through the stash", quiet=quiet, err=True)
             if lock is not None:

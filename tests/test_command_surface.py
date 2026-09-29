@@ -7,6 +7,7 @@ Claude Code never lists); descriptions are short and YAML-safe.
 """
 from __future__ import annotations
 
+import os
 import re
 import unittest
 from pathlib import Path
@@ -96,9 +97,24 @@ class OpsDispatchTest(unittest.TestCase):
             text = p.read_text()
             if "templates/ops/" not in text:
                 continue
-            self.assertIn("CLAUDE_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'", text,
-                          f"{p.name}: dispatches to templates/ops/ without the env-prefix instruction")
+            self.assertIn("export CLAUDE_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'", text,
+                          f"{p.name}: dispatches to templates/ops/ without the export instruction")
+            self.assertNotIn("prefix `CLAUDE_PLUGIN_ROOT=", text,
+                             f"{p.name}: a prefix assignment does not apply to expansions in the same command (round-5 M-a)")
             self.assertIn("never inside the ops file", text, f"{p.name}: must explain the substitution gap")
+
+    def test_the_prescribed_shell_form_actually_expands(self):
+        """Round-5 M-a: `VAR=x cmd "${VAR}/y"` expands ${VAR} BEFORE the temporary
+        assignment, so the first instruction ran `python3 "/hooks/…"`. The
+        prescribed form is `export VAR=…; cmd "${VAR}/y"` in the same call."""
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"}
+        prefix = subprocess.run(["bash", "-c", "CLAUDE_PLUGIN_ROOT='/x' echo \"${CLAUDE_PLUGIN_ROOT}/y\""],
+                                capture_output=True, text=True, env=env).stdout.strip()
+        export = subprocess.run(["bash", "-c", "export CLAUDE_PLUGIN_ROOT='/x'; echo \"${CLAUDE_PLUGIN_ROOT}/y\""],
+                                capture_output=True, text=True, env=env).stdout.strip()
+        self.assertEqual(prefix, "/y", "sanity: the prefix form must NOT expand (that is the bug)")
+        self.assertEqual(export, "/x/y")
 
 
 if __name__ == "__main__":

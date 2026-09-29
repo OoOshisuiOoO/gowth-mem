@@ -10,7 +10,7 @@ instructions are a file Claude Code never lists.
 
 **Do this:** read `${CLAUDE_PLUGIN_ROOT}/templates/ops/<sub>.md` (the plugin's own folder —
 allow the read) and follow it, passing the remaining arguments through verbatim (flags such as
-`--fix`, `--all`, `--dry-run` keep their meaning from the file). The ops file's bash blocks are written against the plugin root as a dollar-brace shell expansion of CLAUDE_PLUGIN_ROOT. Claude Code substitutes that only in THIS command, never inside the ops file, and your shell does not export it — so run each of its commands with the prefix `CLAUDE_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'` (or write that literal path in place of the expansion).
+`--fix`, `--all`, `--dry-run` keep their meaning from the file). The ops file's bash blocks are written against the plugin root as a dollar-brace shell expansion of CLAUDE_PLUGIN_ROOT. Claude Code substitutes that only in THIS command, never inside the ops file, and your shell does not export it — so start every Bash call that runs one of its commands with `export CLAUDE_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'; ` on the same line — a bare `VAR=… cmd` prefix does NOT apply to expansions in that same command — or write that literal path in place of the expansion.
 No `<sub>`, or one not in the table: print the table and stop.
 
 | Sub | What |

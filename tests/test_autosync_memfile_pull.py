@@ -269,6 +269,19 @@ class MemfilePullTest(unittest.TestCase):
         self.assertFalse(sidecar.exists())
         self.assertEqual(self._memfile.split(self.mem_b.read_text())[1], "- L1\n- NEW from the crashed pull\n")
 
+    def test_torn_json_sidecar_is_kept_not_merged(self):
+        """Round-5 M-b: a sidecar cut mid-write parsed as a legacy free zone and
+        was appended as one garbage line. Unparsable `{…` text is corrupt:
+        kept in place, never merged."""
+        mod = self._autosync_module()
+        sidecar = self.b / ".locks" / "pullsave-demo.md"
+        sidecar.parent.mkdir(exist_ok=True)
+        sidecar.write_text('{"free": "- NOTE-1\\n- NOTE-2\\n", "base": "- NO')     # truncated JSON
+        before = self.mem_b.read_text()
+        mod._recover_sidecars(self.b, True)
+        self.assertEqual(self.mem_b.read_text(), before, "corrupt sidecar must not touch MEMORY.md")
+        self.assertTrue(sidecar.exists(), "corrupt sidecar is kept for the user")
+
     def test_unwritable_sidecar_skips_the_set_aside(self):
         """Round-4 N4: a failed sidecar write still went on to the destructive
         checkout, leaving the notes only in memory."""
