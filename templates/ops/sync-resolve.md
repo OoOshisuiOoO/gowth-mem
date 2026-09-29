@@ -25,7 +25,7 @@ Steps:
 3. **After all files** resolved (and not aborted):
    ```bash
    cd ~/.gowth-mem
-   git add -A
+   python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_memsan.py" && git add -A
    git rebase --continue   # may need --skip if a file was effectively unchanged
    ```
    This must run under `file_lock("sync")`. Use:

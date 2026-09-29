@@ -432,10 +432,20 @@ def merge_free_zones(base_text: str, local_text: str, remote_text: str) -> str:
       * when the remote free zone equals the base (nothing changed upstream)
         the local free zone is returned byte-for-byte.
     """
-    b_lines = split(base_text)[1].splitlines()
+    def _lines(text: str) -> list:
+        # "\n" only: str.splitlines() also breaks on U+2028/U+2029, \x0b, \x0c…
+        # (round-4 review N5) — a note holding one of them stays one line
+        if not text:
+            return []
+        parts = text.split("\n")
+        if parts and parts[-1] == "":
+            parts.pop()
+        return parts
+
+    b_lines = _lines(split(base_text)[1])
     l_text = split(local_text)[1]
-    l_lines = l_text.splitlines()
-    r_lines = split(remote_text)[1].splitlines()
+    l_lines = _lines(l_text)
+    r_lines = _lines(split(remote_text)[1])
     bset = {x for x in b_lines if x.strip()}
     rset = {x for x in r_lines if x.strip()}
     if rset == bset:

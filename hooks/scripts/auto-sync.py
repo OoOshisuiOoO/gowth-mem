@@ -17,6 +17,7 @@ than blocking the hook.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import socket
@@ -241,12 +242,20 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
     marker guard in `commit_local` has a chance to refuse.
     """
     if not pull_ok:
-        log(
-            f"sync: dirty changes preserved in stash '{_STASH_MSG}'. "
-            f"After resolving: cd {gh} && git stash list && git stash pop",
-            quiet=quiet, err=True,
-        )
-        return False
+        git_dir = gh / ".git"
+        mid_rebase = (git_dir / "rebase-merge").is_dir() or (git_dir / "rebase-apply").is_dir() \
+            or bool(_unmerged_paths(gh))
+        if mid_rebase:
+            log(
+                f"sync: dirty changes preserved in stash '{_STASH_MSG}'. "
+                f"After resolving: cd {gh} && git stash list && git stash pop",
+                quiet=quiet, err=True,
+            )
+            return False
+        # Round-4 review P1 (pre-existing since v2.9.1): a pull that failed
+        # WITHOUT starting a rebase (offline, bad token, DNS, timeout) left the
+        # stash forever — every uncommitted edit vanished from the working tree.
+        log("sync: pull failed before any rebase — restoring the stashed changes", quiet=quiet)
     r = run_git(gh, "stash", "pop", check=False)
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip()[:300]
@@ -265,11 +274,26 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
 _MEMFILE_RE = re.compile(r"^workspaces/([^/]+)/memory/MEMORY\.md$")
 
 
-def _recover_sidecars(gh: Path, quiet: bool) -> None:
-    """Review R3: a pull killed between the set-aside and the restore leaves
-    Claude's notes only in `.locks/pullsave-<ws>.md`. Fold every leftover
-    sidecar back into its MEMORY.md (local lines first, sidecar lines that are
-    not there appended) before anything else touches the file."""
+def _read_sidecar(sidecar: Path) -> "tuple[str, str]":
+    """(free, base) from a sidecar: JSON {free, base} (v4.8.0), or a legacy
+    bare free zone (base unknown → "")."""
+    raw = sidecar.read_text(errors="ignore")
+    try:
+        d = json.loads(raw)
+        if isinstance(d, dict):
+            return str(d.get("free") or ""), str(d.get("base") or "")
+    except Exception:
+        pass
+    return raw, ""
+
+
+def _recover_sidecars(gh: Path, quiet: bool, lock_timeout: float = 2.0) -> None:
+    """Review R3/N4: a pull killed between the set-aside and the restore leaves
+    Claude's notes only in `.locks/pullsave-<ws>.md`. Each leftover sidecar
+    is merged back three-way — base = HEAD at that set-aside, local = the
+    set-aside free zone, remote = the file as it is now (so a line Claude
+    deleted after the crash stays deleted) — under the memfile lock, then
+    removed. A lock held elsewhere leaves the sidecar for the next pull."""
     locks = gh / ".locks"
     if not locks.is_dir():
         return
@@ -277,19 +301,18 @@ def _recover_sidecars(gh: Path, quiet: bool) -> None:
         ws = sidecar.name[len("pullsave-"):-len(".md")]
         path = gh / "workspaces" / ws / "memory" / "MEMORY.md"
         try:
-            from _atomic import safe_write  # type: ignore
-            from _memfile import merge_texts, split  # type: ignore
-            stale = sidecar.read_text(errors="ignore")
-            current = path.read_text(errors="ignore") if path.is_file() else ""
-            cur_free = split(current)[1]
-            have = {ln for ln in cur_free.splitlines() if ln.strip()}
-            extra = [ln for ln in stale.splitlines() if ln.strip() and ln not in have]
-            if extra:
-                merged_free = cur_free + ("" if not cur_free or cur_free.endswith("\n") else "\n") \
-                    + "\n".join(extra) + "\n"
-                safe_write(path, merge_texts(ws, merged_free, "", ""))
-                log(f"sync: recovered {len(extra)} note line(s) for {ws} from a stranded pull sidecar", quiet=quiet)
-            sidecar.unlink()
+            with file_lock(f"memfile-{ws}", timeout=lock_timeout):
+                from _atomic import safe_write  # type: ignore
+                from _memfile import merge_texts  # type: ignore
+                free, base = _read_sidecar(sidecar)
+                current = path.read_text(errors="ignore") if path.is_file() else ""
+                merged = merge_texts(ws, free, current, base)
+                if merged != current:
+                    safe_write(path, merged)
+                    log(f"sync: recovered {ws}'s notes from a stranded pull sidecar", quiet=quiet)
+                sidecar.unlink()
+        except TimeoutError:
+            log_debug("auto-sync", f"sidecar recovery for {ws} skipped: memfile lock held")
         except Exception as e:
             log_debug("auto-sync", f"sidecar recovery failed for {sidecar.name}: {e}")
 
@@ -342,24 +365,31 @@ def _set_aside_memfiles(gh: Path, quiet: bool, held: "list | None" = None,
             if lock is not None:
                 lock.__exit__(None, None, None)
             continue
-        if held is not None and lock is not None:
-            held.append(lock)
         in_head = code[0] not in ("A", "?")
         base = ""
-        if in_head:
-            r = run_git(gh, "show", f"HEAD:{rel}", check=False)
-            base = r.stdout if r.returncode == 0 else ""
         sidecar = gh / ".locks" / f"pullsave-{ws}.md"
         try:
+            if in_head:
+                r = run_git(gh, "show", f"HEAD:{rel}", check=False)
+                base = r.stdout if r.returncode == 0 else ""
+            # the sidecar (free zone + merge base) must exist BEFORE anything
+            # destructive; if it cannot be written the file takes the stash
+            # path instead (round-4 review N4)
             sidecar.parent.mkdir(parents=True, exist_ok=True)
-            sidecar.write_text(free)
-        except OSError as e:
-            log_debug("auto-sync", f"sidecar write failed for {rel}: {e}")
+            sidecar.write_text(json.dumps({"free": free, "base": base}, ensure_ascii=False))
+        except Exception as e:
+            log(f"sync: could not save {rel}'s notes ({e}) — it goes through the stash", quiet=quiet, err=True)
+            if lock is not None:
+                lock.__exit__(None, None, None)
+            continue
+        if held is not None and lock is not None:
+            held.append(lock)
         if in_head:
             run_git(gh, "checkout", "HEAD", "--", rel, check=False)
         else:
             if code[0] == "A":
-                run_git(gh, "rm", "-q", "--cached", "--", rel, check=False)
+                # -f: an `AM` file (added, then modified) is refused without it (N2)
+                run_git(gh, "rm", "-q", "--cached", "-f", "--", rel, check=False)
             try:
                 path.unlink()
             except OSError:

@@ -343,6 +343,13 @@ class WriteTest(_MemfileCase):
         self.assertTrue(_memfile.write(self.ws))
         self.assertNotIn("- gamma —", _memfile.memfile_path(self.ws).read_text())
 
+    def test_merge_keeps_unicode_line_separators_inside_a_line(self):
+        """Round-4 N5: splitlines() breaks on U+2028/U+2029, so a note holding one
+        was split into two lines by a real merge."""
+        local = "- a\u2028b\n- keep\n"
+        merged = _memfile.merge_free_zones("", local, "- from remote\n")
+        self.assertEqual(merged, "- a\u2028b\n- keep\n- from remote\n")
+
     def test_free_zone_lines_shrink_the_block(self):
         _memfile.write(self.ws)
         p = _memfile.memfile_path(self.ws)

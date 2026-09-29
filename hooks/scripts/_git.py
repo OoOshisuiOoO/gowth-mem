@@ -39,9 +39,14 @@ def run_git(cwd: Path, *args: str, check: bool = True,
     """
     cmd = git_cmd(remote, token, "-C", str(cwd), *args)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # errors="replace": a non-UTF-8 byte in a tracked blob (`git show`) must
+        # not raise out of a hook (round-4 review N1)
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        r = subprocess.CompletedProcess(cmd, 124, e.stdout or "", f"git timed out after {timeout}s")
+        def _text(v):
+            return v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
+        r = subprocess.CompletedProcess(cmd, 124, _text(e.stdout),
+                                        _text(e.stderr) + f"git timed out after {timeout}s")
     if check and r.returncode != 0:
         raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
     return r

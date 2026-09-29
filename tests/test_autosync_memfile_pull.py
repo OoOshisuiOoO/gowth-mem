@@ -213,6 +213,73 @@ class MemfilePullTest(unittest.TestCase):
         with file_lock("memfile-demo", timeout=0.5):
             pass
 
+    def test_non_utf8_byte_in_head_memfile_does_not_crash_the_sync(self):
+        """Round-4 N1: a non-UTF-8 byte in HEAD's MEMORY.md made the strict
+        `git show` raise outside the try, crash-looping every SessionStart sync."""
+        block = self._memfile.split(self.mem_b.read_text())[0]
+        self.mem_b.write_bytes(block.encode() + b"- note with a bad byte \xff here\n")
+        git(self.b, "add", "-A")
+        git(self.b, "commit", "-q", "-m", "bad byte")
+        self.mem_b.write_bytes(self.mem_b.read_bytes() + b"- B's own note\n")
+        r = self._pull_only()
+        self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("- B's own note", self.mem_b.read_text(errors="replace"))
+        self.assertEqual(git(self.b, "stash", "list").stdout.strip(), "")
+
+    def test_added_then_modified_memfile_is_set_aside_too(self):
+        """Round-4 N2: an `AM` MEMORY.md (added, then modified) made
+        `git rm --cached` refuse without -f, so the file hit the stash and
+        the N3 add/add conflict recurred."""
+        git(self.b, "rm", "-q", "--cached", "workspaces/demo/memory/MEMORY.md")
+        git(self.b, "commit", "-q", "-m", "B drops the memfile from the index")
+        git(self.b, "add", "--", "workspaces/demo/memory/MEMORY.md")
+        self.mem_b.write_text(self.mem_b.read_text() + "- modified after staging\n")
+        self.assertTrue(git(self.b, "status", "--porcelain").stdout.startswith("AM"))
+        r = self._pull_only()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(git(self.b, "diff", "--name-only", "--diff-filter=U").stdout.strip(), "")
+        self.assertEqual(git(self.b, "stash", "list").stdout.strip(), "")
+        text = self.mem_b.read_text()
+        self.assertIn("- B's own note", text)
+        self.assertIn("- modified after staging", text)
+
+    def _autosync_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gowth_autosync_n4", SCRIPTS / "auto-sync.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_sidecar_recovery_is_three_way_and_locked(self):
+        """Round-4 N4: recovery appended every sidecar line (a line Claude deleted
+        after the crash came back) and wrote without the memfile lock."""
+        mod = self._autosync_module()
+        sidecar = self.b / ".locks" / "pullsave-demo.md"
+        sidecar.parent.mkdir(exist_ok=True)
+        sidecar.write_text(json.dumps({"free": "- L1\n- L2\n- NEW from the crashed pull\n", "base": "- L1\n- L2\n"}))
+        block = self._memfile.split(self.mem_b.read_text())[0]
+        self.mem_b.write_text(block + "- L1\n")                 # Claude deleted L2 after the crash
+        from _lock import file_lock  # type: ignore
+        with file_lock("memfile-demo", timeout=1.0):
+            mod._recover_sidecars(self.b, True, lock_timeout=0.2)
+        self.assertTrue(sidecar.exists(), "recovery must not run without the lock")
+        self.assertEqual(self._memfile.split(self.mem_b.read_text())[1], "- L1\n")
+        mod._recover_sidecars(self.b, True)
+        self.assertFalse(sidecar.exists())
+        self.assertEqual(self._memfile.split(self.mem_b.read_text())[1], "- L1\n- NEW from the crashed pull\n")
+
+    def test_unwritable_sidecar_skips_the_set_aside(self):
+        """Round-4 N4: a failed sidecar write still went on to the destructive
+        checkout, leaving the notes only in memory."""
+        mod = self._autosync_module()
+        (self.b / ".locks" / "pullsave-demo.md").mkdir(parents=True)   # a DIRECTORY: the write must fail
+        held: list = []
+        saved = mod._set_aside_memfiles(self.b, True, held)
+        self.assertEqual(saved, [])
+        self.assertEqual(held, [], "no lock may be left held for a skipped file")
+        self.assertIn("- B's own note", self.mem_b.read_text(), "the file must be left alone")
+
     def test_untracked_memfile_added_upstream_still_merges(self):
         # B never committed a MEMORY.md; the remote adds one → the pull used to refuse
         git(self.b, "rm", "-q", "--cached", "workspaces/demo/memory/MEMORY.md")
