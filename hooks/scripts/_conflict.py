@@ -59,10 +59,10 @@ def merge_memfile(gh: Path, rel: str) -> bool:
     try:
         from _memfile import merge_texts  # type: ignore
         sides = []
-        for stage in (":3", ":2"):           # :3 = local (rebase), :2 = incoming
+        for stage in (":3", ":2", ":1"):     # :3 = local (rebase), :2 = incoming, :1 = base
             text = _show(gh, stage, rel)
             sides.append("" if text.startswith("(file missing") else text)
-        safe_write(gh / rel, merge_texts(ws, sides[0], sides[1]))
+        safe_write(gh / rel, merge_texts(ws, sides[0], sides[1], sides[2]))
         rc, _, err = _git(gh, "add", "--", rel)
         if rc != 0:
             log_debug("conflict", f"git add failed for {rel}: {err.strip()[:200]}")
@@ -138,8 +138,19 @@ def package_conflict() -> "Path | None":
             # is discarded — and retry once. (No text-based --skip: git >= 2.33
             # drops an emptied replay itself, and a skip on a misread message
             # would hard-reset a real commit.)
-            _git(gh, "add", "-u")
-            rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
+            # review R5: the folded files may be memory files Claude just wrote —
+            # sanitize first; a file the sanitizer could not write is never folded
+            skipped: list = []
+            try:
+                from _memsan import sanitize_memory_files  # type: ignore
+                skipped = list(sanitize_memory_files().get("skipped") or [])
+            except Exception as exc:
+                log_debug("conflict", f"sanitize before fold failed: {exc}")
+            if not skipped:
+                _git(gh, "add", "-u")
+                rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
+            else:
+                err = (err or "") + f"\n(not folded: {', '.join(skipped)} could not be sanitized)"
         if rc == 0:
             return None
         conflict_files = _unmerged(gh)

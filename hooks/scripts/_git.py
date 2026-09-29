@@ -28,16 +28,20 @@ def git_cmd(remote: str, token: Optional[str], *args: str) -> list[str]:
 
 
 def run_git(cwd: Path, *args: str, check: bool = True,
-            remote: str = "", token: Optional[str] = None) -> subprocess.CompletedProcess:
+            remote: str = "", token: Optional[str] = None,
+            timeout: Optional[float] = None) -> subprocess.CompletedProcess:
     """Run a git subcommand in *cwd*.
 
     Always uses capture_output=True. Raises CalledProcessError when
-    check=True and returncode != 0.
+    check=True and returncode != 0. With `timeout` (seconds) a hung network
+    command ends as returncode 124 (v4.8 review R3: a hung pull held the
+    SessionStart hook until the host killed it mid-way).
     """
-    r = subprocess.run(
-        git_cmd(remote, token, "-C", str(cwd), *args),
-        capture_output=True, text=True,
-    )
+    cmd = git_cmd(remote, token, "-C", str(cwd), *args)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        r = subprocess.CompletedProcess(cmd, 124, e.stdout or "", f"git timed out after {timeout}s")
     if check and r.returncode != 0:
         raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
     return r

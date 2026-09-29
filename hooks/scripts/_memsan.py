@@ -144,6 +144,7 @@ def sanitize_memory_files(lock_timeout: float = 2.0) -> dict:
         except Exception as exc:
             log_debug("memsan", f"sanitize failed for {rel}: {exc}")
             h = None
+            _flag_skipped(p, rel, report, sanitize)   # review R6: any failure fails closed
         if h is not None:
             fresh[rel] = h
     if fresh != known:

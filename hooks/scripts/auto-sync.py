@@ -265,16 +265,52 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
 _MEMFILE_RE = re.compile(r"^workspaces/([^/]+)/memory/MEMORY\.md$")
 
 
-def _set_aside_memfiles(gh: Path, quiet: bool) -> list:
+def _recover_sidecars(gh: Path, quiet: bool) -> None:
+    """Review R3: a pull killed between the set-aside and the restore leaves
+    Claude's notes only in `.locks/pullsave-<ws>.md`. Fold every leftover
+    sidecar back into its MEMORY.md (local lines first, sidecar lines that are
+    not there appended) before anything else touches the file."""
+    locks = gh / ".locks"
+    if not locks.is_dir():
+        return
+    for sidecar in sorted(locks.glob("pullsave-*.md")):
+        ws = sidecar.name[len("pullsave-"):-len(".md")]
+        path = gh / "workspaces" / ws / "memory" / "MEMORY.md"
+        try:
+            from _atomic import safe_write  # type: ignore
+            from _memfile import merge_texts, split  # type: ignore
+            stale = sidecar.read_text(errors="ignore")
+            current = path.read_text(errors="ignore") if path.is_file() else ""
+            cur_free = split(current)[1]
+            have = {ln for ln in cur_free.splitlines() if ln.strip()}
+            extra = [ln for ln in stale.splitlines() if ln.strip() and ln not in have]
+            if extra:
+                merged_free = cur_free + ("" if not cur_free or cur_free.endswith("\n") else "\n") \
+                    + "\n".join(extra) + "\n"
+                safe_write(path, merge_texts(ws, merged_free, "", ""))
+                log(f"sync: recovered {len(extra)} note line(s) for {ws} from a stranded pull sidecar", quiet=quiet)
+            sidecar.unlink()
+        except Exception as e:
+            log_debug("auto-sync", f"sidecar recovery failed for {sidecar.name}: {e}")
+
+
+def _set_aside_memfiles(gh: Path, quiet: bool, held: "list | None" = None,
+                        lock_timeout: float = 10.0) -> list:
     """Review N3: a dirty `<ws>/memory/MEMORY.md` (the Stop hook re-renders it
     on most turns while the autosync commit is debounced) must never go
     through the stash: its derived block conflicts with the peer's on a
     stash pop even when the sources merge cleanly, and the pop then leaves
-    the file UU with raw markers and every later sync blocked. The free zone
-    (Claude's own notes) is kept in memory AND in a sidecar under .locks/
-    (gitignored, survives a crash); the tracked file is restored to HEAD, an
-    untracked one removed, so the pull sees a clean path. Returns
-    [(rel, ws, free_zone_text, sidecar)]."""
+    the file UU with raw markers and every later sync blocked.
+
+    For each such file: the workspace's memfile lock is taken and kept until
+    `_restore_memfiles` (review R4: a concurrent `_memfile.write` — the first
+    SessionStart after an upgrade — used to land between the set-aside and
+    the stash); the free zone (Claude's own notes) is kept in memory and in a
+    `.locks/pullsave-<ws>.md` sidecar (gitignored, survives a crash); HEAD's
+    content is captured as the merge BASE (review R1); the tracked file is
+    restored from HEAD (review R2: `checkout --` restored the INDEX, so a
+    staged file still hit the stash), an added or untracked one removed.
+    Returns [(rel, ws, free_zone_text, base_text, sidecar)]."""
     saved: list = []
     status = run_git(gh, "status", "--porcelain", check=False).stdout
     for line in status.splitlines():
@@ -286,53 +322,83 @@ def _set_aside_memfiles(gh: Path, quiet: bool) -> list:
         m = _MEMFILE_RE.match(rel)
         if not m or code == "  ":
             continue
+        ws = m.group(1)
         path = gh / rel
+        lock = None
+        if held is not None:
+            try:
+                lock = file_lock(f"memfile-{ws}", timeout=lock_timeout)
+                lock.__enter__()
+            except TimeoutError:
+                log(f"sync: memfile lock for {ws} held elsewhere — {rel} goes through the stash",
+                    quiet=quiet, err=True)
+                continue
         try:
             text = path.read_text(errors="ignore") if path.is_file() else ""
             from _memfile import split  # type: ignore
             free = split(text)[1]
         except Exception as e:
             log_debug("auto-sync", f"set-aside read failed for {rel}: {e}")
+            if lock is not None:
+                lock.__exit__(None, None, None)
             continue
-        ws = m.group(1)
+        if held is not None and lock is not None:
+            held.append(lock)
+        in_head = code[0] not in ("A", "?")
+        base = ""
+        if in_head:
+            r = run_git(gh, "show", f"HEAD:{rel}", check=False)
+            base = r.stdout if r.returncode == 0 else ""
         sidecar = gh / ".locks" / f"pullsave-{ws}.md"
         try:
             sidecar.parent.mkdir(parents=True, exist_ok=True)
             sidecar.write_text(free)
         except OSError as e:
             log_debug("auto-sync", f"sidecar write failed for {rel}: {e}")
-        if code == "??":
+        if in_head:
+            run_git(gh, "checkout", "HEAD", "--", rel, check=False)
+        else:
+            if code[0] == "A":
+                run_git(gh, "rm", "-q", "--cached", "--", rel, check=False)
             try:
                 path.unlink()
             except OSError:
                 pass
-        else:
-            run_git(gh, "checkout", "--", rel, check=False)
-        saved.append((rel, ws, free, sidecar))
+        saved.append((rel, ws, free, base, sidecar))
     if saved:
         log(f"sync: set aside {len(saved)} MEMORY.md free zone(s) for the pull", quiet=quiet)
     return saved
 
 
-def _restore_memfiles(gh: Path, saved: list, quiet: bool) -> None:
-    """After the pull (success or not): union the saved free zone with what the
-    pull brought, re-render the block from the merged vault, drop the sidecar."""
-    for rel, ws, free, sidecar in saved:
-        path = gh / rel
-        try:
-            from _atomic import safe_write  # type: ignore
-            from _memfile import merge_texts  # type: ignore
-            remote = path.read_text(errors="ignore") if path.is_file() else ""
-            # local first: `free` is a bare free zone, so wrap it as a file with no block
-            safe_write(path, merge_texts(ws, free, remote))
+def _restore_memfiles(gh: Path, saved: list, quiet: bool, held: "list | None" = None) -> None:
+    """After the pull (success or not): three-way merge the saved free zone
+    (local) with what the pull brought (remote) against HEAD-at-set-aside
+    (base), re-render the block from the merged vault, drop the sidecar,
+    release the memfile locks."""
+    try:
+        for rel, ws, free, base, sidecar in saved:
+            path = gh / rel
             try:
-                sidecar.unlink()
-            except OSError:
+                from _atomic import safe_write  # type: ignore
+                from _memfile import merge_texts  # type: ignore
+                remote = path.read_text(errors="ignore") if path.is_file() else ""
+                safe_write(path, merge_texts(ws, free, remote, base))
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass
+            except Exception as e:
+                log(f"sync: could not restore {rel} after the pull — its notes are in {sidecar}",
+                    quiet=quiet, err=True)
+                log_debug("auto-sync", f"restore memfile failed for {rel}: {e}")
+    finally:
+        for lock in (held or []):
+            try:
+                lock.__exit__(None, None, None)
+            except Exception:
                 pass
-        except Exception as e:
-            log(f"sync: could not restore {rel} after the pull — its notes are in {sidecar}",
-                quiet=quiet, err=True)
-            log_debug("auto-sync", f"restore memfile failed for {rel}: {e}")
+        if held is not None:
+            held.clear()
 
 
 def pull_rebase(gh: Path, branch: str, quiet: bool,
@@ -340,14 +406,26 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
     """Pull --rebase; auto-stash dirty tree, restore after. Returns 0/2/1."""
     if not _clear_stale_rebase(gh, quiet):
         return 1
-    saved = _set_aside_memfiles(gh, quiet)
+    _recover_sidecars(gh, quiet)
+    held: list = []
+    saved = _set_aside_memfiles(gh, quiet, held)
+    try:
+        return _pull_rebase_inner(gh, branch, quiet, remote, token, saved)
+    finally:
+        _restore_memfiles(gh, saved, quiet, held)
+
+
+PULL_TIMEOUT = 120.0
+
+
+def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
+                       token: Optional[str], saved: list) -> int:
     stash_ref = _stash_if_dirty(gh, quiet)
     if stash_ref is False:
-        _restore_memfiles(gh, saved, quiet)
         return 1
 
     r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
-                remote=remote, token=token)
+                remote=remote, token=token, timeout=PULL_TIMEOUT)
     if r.returncode == 0:
         log(f"sync: pulled origin/{branch}", quiet=quiet)
         rc = 0
@@ -375,7 +453,6 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
         # caller stops (and commit_local's marker guard refuses) instead of publishing.
         if not _restore_stash(gh, pull_ok=(rc == 0), quiet=quiet) and rc == 0:
             rc = 2
-    _restore_memfiles(gh, saved, quiet)
     return rc
 
 

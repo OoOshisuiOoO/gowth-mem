@@ -324,6 +324,17 @@ class WriteTest(_MemfileCase):
         self.assertTrue(text.endswith("- my note\n"))
         self.assertFalse(_memfile.sources_changed(self.ws))
 
+    def test_renderer_fingerprint_change_reopens_the_gate(self):
+        """Review R8: the upgrade test only covered a missing memfile_seen dict."""
+        self.assertTrue(_memfile.write(self.ws))
+        self.assertFalse(_memfile.sources_changed(self.ws))
+        saved = _memfile.RENDER_FP
+        _memfile.RENDER_FP = "0000deadbeef"
+        try:
+            self.assertTrue(_memfile.sources_changed(self.ws), "a changed renderer must reopen the gate")
+        finally:
+            _memfile.RENDER_FP = saved
+
     def test_deleted_source_reopens_the_gate(self):
         _memfile.write(self.ws)
         self.assertFalse(_memfile.sources_changed(self.ws))

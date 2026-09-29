@@ -381,6 +381,25 @@ class ImportTest(_NativeCase):
         slug = re.sub(r"[^A-Za-z0-9]", "-", str((bot / "AI-trade-v2").resolve()))
         self.assertEqual(rep["mapping"][slug], "devops", "the report must show slug → workspace")
 
+    def test_known_project_without_transcripts_maps_through_its_directory(self):
+        """Review R7: a known slug whose transcripts were pruned fell back to the
+        slug-prefix rule (AI-trade-old → trade while its sessions say devops).
+        The directory is located by slug under the glob bases and mapped
+        through the globs in order; a slug that matches no directory is unmapped."""
+        bot = self.tmp / "bot"
+        (bot / "AI-trade").mkdir(parents=True)
+        (bot / "AI-trade-old").mkdir()
+        (self.vault / "config.json").write_text(json.dumps({"workspace_map": {
+            f"{(bot / 'AI-trade').resolve()}/**": "trade", f"{bot.resolve()}/**": "devops"}}))
+        self._native_memory(bot / "AI-trade-old", {"MEMORY.md": "- old\n", "old.md": "old note\n"})
+        gone = self.tmp / "bot" / "AI-trade-gone"                      # slug known, directory deleted
+        self._native_memory(gone, {"MEMORY.md": "- gone\n"})
+        rep = _native.import_native(self.tmp / "claude", apply=False)
+        slug_old = re.sub(r"[^A-Za-z0-9]", "-", str((bot / "AI-trade-old").resolve()))
+        slug_gone = re.sub(r"[^A-Za-z0-9]", "-", str(gone.resolve()))
+        self.assertEqual(rep["mapping"].get(slug_old), "devops")
+        self.assertIn(slug_gone, rep["skipped_unmapped"])
+
     def test_renamed_import_rewrites_its_index_lines(self):
         """Review m4: after a clash rename the project's MEMORY.md index lines
         still pointed at the OTHER project's file."""

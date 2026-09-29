@@ -234,7 +234,7 @@ PreCompact    → auto-sync.py --commit-only
 PostCompact   → auto-sync.py --pull-rebase-push
 ```
 
-If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files; conflicts on `<ws>/memory/MEMORY.md` merge themselves (both free zones unioned, block regenerated) at every stopped rebase step, and a dirty `MEMORY.md` is set aside around the SessionStart pull instead of stashed (v4.8). The next prompt reminds you to run `/mem-sync resolve`. A stash-pop conflict on any other file is reported and blocks commits until you resolve it by hand.
+If a pull/rebase conflicts, `_conflict.py` writes `~/.gowth-mem/SYNC-CONFLICT.md` instead of leaving raw conflict markers in markdown files; conflicts on `<ws>/memory/MEMORY.md` merge themselves (free zones merged three-way against the last common commit — a line either side deleted stays deleted — block regenerated) at every stopped rebase step, and a dirty `MEMORY.md` is set aside around the SessionStart pull instead of stashed, merged the same way against HEAD (v4.8). The next prompt reminds you to run `/mem-sync resolve`. A stash-pop conflict on any other file is reported and blocks commits until you resolve it by hand.
 
 ## Recall
 

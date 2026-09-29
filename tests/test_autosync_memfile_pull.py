@@ -114,6 +114,105 @@ class MemfilePullTest(unittest.TestCase):
         self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
         self.assertEqual(git(self.b, "status", "--porcelain").stdout.strip(), "")
 
+    def _commit_b_free_zone(self, lines: list) -> None:
+        """Commit B's MEMORY.md with these free-zone lines (B's own baseline)."""
+        block = self._memfile.split(self.mem_b.read_text())[0]
+        self.mem_b.write_text(block + "".join(l + "\n" for l in lines))
+        git(self.b, "add", "-A")
+        git(self.b, "commit", "-q", "-m", "B baseline")
+
+    def test_local_deletions_and_edits_survive_the_pull(self):
+        """Review R1: the 2-way union brought back every free-zone line Claude
+        deleted or edited since the last commit (the peer's HEAD copy still
+        held them). The merge is 3-way against HEAD: a line the LOCAL side
+        removed stays removed; blank lines are kept."""
+        self._commit_b_free_zone(["- [Testing](testing.md) — run the suite before committing",
+                                  "", "- [Old deploy notes](deploy_old.md) — legacy", "- keep me"])
+        # Claude edits one index line and deletes another (nothing committed yet)
+        block = self._memfile.split(self.mem_b.read_text())[0]
+        self.mem_b.write_text(block + "- [Testing](testing.md) — run the INTEGRATION suite, Postgres 16\n\n- keep me\n")
+        r = self._pull_only()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = self.mem_b.read_text()
+        block, free = self._memfile.split(text)
+        self.assertEqual(free, "- [Testing](testing.md) — run the INTEGRATION suite, Postgres 16\n\n- keep me\n",
+                         "free zone must be byte-identical when the peer changed nothing in it")
+        self.assertNotIn("run the suite before committing", text)
+        self.assertNotIn("deploy_old.md", text)
+        self.assertIn("Use pelican-router at the edge", block)
+
+    def test_peer_additions_and_deletions_are_honoured(self):
+        # baseline shared by both: L1, L2; A deletes L2 and adds LA; B (dirty) adds LB
+        git(self.b, "checkout", "--", ".")                        # drop setUp's dirty render
+        (self.b / "workspaces" / "demo" / "ingress" / f"{self.today}-b-choice.md").unlink()
+        git(self.b, "pull", "-q", "--rebase", "origin", "main")   # B is behind A's decision
+        self._commit_b_free_zone(["- L1", "- L2"])
+        git(self.b, "push", "-q", "origin", "main")
+        git(self.a, "pull", "-q", "--rebase", "origin", "main")
+        mem_a = self.a / "workspaces" / "demo" / "memory" / "MEMORY.md"
+        block_a = self._memfile.split(mem_a.read_text())[0]
+        mem_a.write_text(block_a + "- L1\n- LA\n")
+        git(self.a, "commit", "-q", "-am", "A deletes L2, adds LA")
+        git(self.a, "push", "-q", "origin", "main")
+        block = self._memfile.split(self.mem_b.read_text())[0]
+        self.mem_b.write_text(block + "- L1\n- L2\n- LB\n")
+        r = self._pull_only()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        free = self._memfile.split(self.mem_b.read_text())[1]
+        self.assertEqual(free, "- L1\n- LB\n- LA\n")
+
+    def test_staged_memfile_is_set_aside_too(self):
+        """Review R2: `git checkout -- <rel>` restores from the INDEX, so a
+        staged MEMORY.md (commit_local refusing on a stray marker elsewhere
+        leaves it staged) still went through the stash and N3 recurred."""
+        git(self.b, "add", "--", "workspaces/demo/memory/MEMORY.md")
+        self.assertTrue(git(self.b, "status", "--porcelain").stdout.startswith("M "))
+        r = self._pull_only()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(git(self.b, "diff", "--name-only", "--diff-filter=U").stdout.strip(), "")
+        self.assertEqual(git(self.b, "stash", "list").stdout.strip(), "")
+        self.assertIn("- B's own note", self.mem_b.read_text())
+
+    def test_stranded_sidecar_from_a_killed_pull_is_recovered(self):
+        """Review R3: a pull killed between set-aside and restore left Claude's
+        notes only in .locks/pullsave-<ws>.md; nothing read it back and the
+        next set-aside overwrote it."""
+        sidecar = self.b / ".locks" / "pullsave-demo.md"
+        sidecar.parent.mkdir(exist_ok=True)
+        sidecar.write_text("- NOTE-1 rescued from a killed pull\n")
+        r = self._pull_only()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = self.mem_b.read_text()
+        self.assertIn("- NOTE-1 rescued from a killed pull", text)
+        self.assertIn("- B's own note", text)
+        self.assertFalse(sidecar.exists(), "the sidecar is consumed once its notes are back")
+
+    def test_set_aside_waits_for_the_memfile_lock(self):
+        """Review R4: prepare() can re-render MEMORY.md between the set-aside and
+        the stash (first start after an upgrade); the set-aside holds the
+        memfile lock, so a concurrent _memfile.write waits instead."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gowth_autosync_r4", SCRIPTS / "auto-sync.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        from _lock import file_lock  # type: ignore
+        held: list = []
+        with file_lock("memfile-demo", timeout=1.0):
+            saved = mod._set_aside_memfiles(self.b, True, held, lock_timeout=0.2)
+        self.assertEqual(saved, [], "with the lock held elsewhere the file is left alone (old path, loud)")
+        self.assertIn("- B's own note", self.mem_b.read_text())
+        saved = mod._set_aside_memfiles(self.b, True, held, lock_timeout=1.0)
+        try:
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(len(held), 1, "the memfile lock stays held until the restore")
+            with self.assertRaises(TimeoutError):
+                with file_lock("memfile-demo", timeout=0.2):
+                    pass
+        finally:
+            mod._restore_memfiles(self.b, saved, True, held)
+        with file_lock("memfile-demo", timeout=0.5):
+            pass
+
     def test_untracked_memfile_added_upstream_still_merges(self):
         # B never committed a MEMORY.md; the remote adds one → the pull used to refuse
         git(self.b, "rm", "-q", "--cached", "workspaces/demo/memory/MEMORY.md")

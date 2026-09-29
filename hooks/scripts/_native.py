@@ -410,22 +410,34 @@ def _sanitized(text: str) -> str:
         return text
 
 
-def _ws_for_slug(slug: str, config: dict, known_path: "Path | None" = None) -> "str | None":
-    """Workspace for a native project slug. With the project's real path (its
-    transcript cwd) the workspace_map globs decide, in order, exactly as a
-    session there resolves (review m5). Without one: exact match on a glob
-    base, or the LONGEST base whose recursive (`**`) glob covers the slug —
-    Claude Code's slug is the path with every non-alnum char as '-', so
-    `<base-slug>-…` is 'under' the base (review I5)."""
-    if known_path is not None:
-        return _ws_by_globs(known_path, config)
-    best = None
-    for base, ws, recursive in _glob_entries(config):
-        pre = project_slug(base)
-        if slug == pre or (recursive and slug.startswith(pre + "-")):
-            if best is None or len(pre) > len(best[0]):
-                best = (pre, ws)
-    return best[1] if best else None
+def _dir_index(config: dict) -> dict:
+    """{slug: path} for every glob base and every directory beneath a
+    recursive base (bounded walk) — how a known project WITHOUT transcripts
+    is located (review R7)."""
+    out: dict = {}
+    for base, _ws, recursive in _glob_entries(config):
+        if not base.is_dir():
+            continue
+        cands = [base] + (_dirs_under(base) if recursive else [])
+        for d in cands:
+            out.setdefault(project_slug(d), d)
+    return out
+
+
+def _ws_for_slug(slug: str, config: dict, known_path: "Path | None" = None,
+                 dir_index: "dict | None" = None) -> "str | None":
+    """Workspace for a native project slug: its real directory — the transcript
+    cwd (review m5), else the directory whose slug matches under a glob base
+    (review R7) — mapped through the workspace_map globs in order, exactly as
+    a session there resolves. A slug that matches no directory is unmapped;
+    there is no slug-prefix guess (`bot/AI-trade-old` is not under
+    `bot/AI-trade/`)."""
+    path = known_path
+    if path is None and dir_index is not None:
+        path = dir_index.get(slug)
+    if path is None:
+        return None
+    return _ws_by_globs(path, config)
 
 
 def _project_label(slug: str) -> str:
@@ -445,6 +457,7 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
     if not projects.is_dir():
         return report
     known = _known_projects(claude_dir) or {}
+    dir_index = _dir_index(config)
     pending: dict = {}                      # target path → content planned so far
 
     def _current(path: Path) -> "str | None":
@@ -465,7 +478,7 @@ def import_native(claude_dir: Path, *, apply: bool = False) -> dict:
         if not mem.is_dir():
             continue
         slug = mem.parent.name
-        ws = _ws_for_slug(slug, config, known.get(slug))
+        ws = _ws_for_slug(slug, config, known.get(slug), dir_index)
         if ws is None:
             report["skipped_unmapped"].append(slug)
             continue

@@ -194,6 +194,35 @@ class FailClosedTest(_Vault):
         self._assert_redacted(shown)
         self.assertEqual(self._git("status", "--porcelain").stdout.strip(), "")
 
+    def test_unwritable_memory_file_is_kept_out_of_the_commit(self):
+        """Review R6: memsan failed closed only on the lock timeout; a read-only
+        memory dir leaked the raw secret into HEAD."""
+        import stat
+        mdir = self.mf.parent
+        os.chmod(mdir, stat.S_IRUSR | stat.S_IXUSR)          # no write → atomic_write fails
+        try:
+            self._run("auto-sync.py", "--commit-only", "--quiet")
+            shown = self._git("show", "HEAD:workspaces/trade/memory/MEMORY.md", check=False).stdout
+            self.assertNotIn(SECRET, shown, "an unwritable file holding a secret was committed raw")
+            self.assertIn("workspaces/trade/memory/MEMORY.md", self._git("status", "--porcelain").stdout)
+        finally:
+            os.chmod(mdir, stat.S_IRWXU)
+
+    def test_mem_sync_keeps_a_skipped_file_out_of_the_commit(self):
+        """Review R8: the _sync.py unstage path had no test."""
+        from _lock import file_lock  # type: ignore
+        bare = self.tmp.parent / (self.tmp.name + "-remote2.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True, env=self.env)
+        self.addCleanup(shutil.rmtree, bare, True)
+        (self.tmp / "config.json").write_text(json.dumps({"active_workspace": "personal",
+                                                          "remote": str(bare), "branch": "main"}))
+        self._git("remote", "add", "origin", str(bare))
+        with file_lock("memfile-trade", timeout=1.0):
+            self._run("_sync.py", "--push-only")
+        shown = self._git("show", "HEAD:workspaces/trade/memory/MEMORY.md", check=False).stdout
+        self.assertNotIn(SECRET, shown)
+        self.assertIn("workspaces/trade/memory/MEMORY.md", self._git("status", "--porcelain").stdout)
+
     def test_skipped_files_are_reported(self):
         import _memsan  # type: ignore
         from _lock import file_lock  # type: ignore

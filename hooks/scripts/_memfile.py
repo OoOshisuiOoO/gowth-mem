@@ -420,23 +420,49 @@ def render_hook_bootstrap(ws: str, max_chars: int = HOOK_BOOTSTRAP_CHARS) -> str
                 order=_HOOK_ORDER, begin="", end="", header=_hook_header(ws))
 
 
-def union_free_zones(local_text: str, remote_text: str) -> list[str]:
-    """Union of two files' free zones: local lines first, then remote lines not
-    already present (exact-line dedupe, blank lines dropped)."""
-    lines: list[str] = [ln for ln in split(local_text)[1].splitlines() if ln.strip()]
-    for ln in split(remote_text)[1].splitlines():
-        if ln.strip() and ln not in lines:
-            lines.append(ln)
-    return lines
+def merge_free_zones(base_text: str, local_text: str, remote_text: str) -> str:
+    """Three-way merge of the free zones (Claude's own notes below the end
+    marker) — review R1: a 2-way union brought back every line the local
+    side had deleted or edited since the last commit.
+
+      * a local line is kept unless the REMOTE removed it (present in base,
+        absent from remote); blank lines and order come from the local side;
+      * remote lines that are new (absent from base) and not already local
+        are appended, in remote order;
+      * when the remote free zone equals the base (nothing changed upstream)
+        the local free zone is returned byte-for-byte.
+    """
+    b_lines = split(base_text)[1].splitlines()
+    l_text = split(local_text)[1]
+    l_lines = l_text.splitlines()
+    r_lines = split(remote_text)[1].splitlines()
+    bset = {x for x in b_lines if x.strip()}
+    rset = {x for x in r_lines if x.strip()}
+    if rset == bset:
+        return l_text
+    out: list[str] = []
+    for x in l_lines:
+        if x.strip() and x in bset and x not in rset:
+            continue                                   # removed upstream
+        out.append(x)
+    seen = {x for x in out if x.strip()}
+    for x in r_lines:
+        if x.strip() and x not in bset and x not in seen:
+            out.append(x)                              # added upstream
+            seen.add(x)
+    text = "\n".join(out)
+    return text + "\n" if text else ""
 
 
-def merge_texts(ws: str, local_text: str, remote_text: str) -> str:
-    """The merged MEMORY.md: both free zones unioned below a block re-rendered
-    from the (merged) vault. Used by the rebase merge (_conflict.merge_memfile)
-    and by the SessionStart pull (auto-sync set-aside/restore, review N3)."""
-    lines = union_free_zones(local_text, remote_text)
-    block = render(ws, free_zone_lines=len(lines))
-    return block + ("\n".join(lines) + "\n" if lines else "")
+def merge_texts(ws: str, local_text: str, remote_text: str, base_text: str = "") -> str:
+    """The merged MEMORY.md: the three-way merged free zone below a block
+    re-rendered from the (merged) vault. Used by the rebase merge
+    (_conflict.merge_memfile, base = stage :1) and by the SessionStart pull
+    (auto-sync set-aside/restore, base = HEAD at set-aside time)."""
+    free = merge_free_zones(base_text, local_text, remote_text)
+    n = free.count("\n") + (1 if free and not free.endswith("\n") else 0)
+    block = render(ws, free_zone_lines=n)
+    return block + free
 
 
 # ─── file handling ───────────────────────────────────────────────────────

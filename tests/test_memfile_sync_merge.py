@@ -210,6 +210,61 @@ class MemfileSyncMergeTest(unittest.TestCase):
             self.assertNotIn("on 0 file(s)", body)
             self.assertIn("handoff.md", body)
 
+    def test_committed_deletion_survives_the_rebase_merge(self):
+        """Review R1 (rebase path, pre-existing since Task 3b): the 2-way union
+        of :3 and :2 brought a line B had REMOVED (committed) back after a
+        conflict merge. Three-way against stage :1."""
+        # shared baseline: base note + a wrong rule
+        self.mem_a.write_text(self.mem_a.read_text() + "- Wrong rule — deploy on fridays\n")
+        git(self.a, "commit", "-q", "-am", "baseline with a wrong rule")
+        git(self.a, "push", "-q", "origin", "main")
+        git(self.b, "pull", "-q", "--rebase", "origin", "main")
+        # A appends a note (pushed); B commits the removal of the wrong rule
+        self.mem_a.write_text(self.mem_a.read_text() + "- note from A\n")
+        git(self.a, "commit", "-q", "-am", "A note")
+        git(self.a, "push", "-q", "origin", "main")
+        self.mem_b.write_text(self.mem_b.read_text().replace("- Wrong rule — deploy on fridays\n", ""))
+        git(self.b, "commit", "-q", "-am", "B removes the wrong rule")
+        r = git(self.b, "pull", "--rebase", "origin", "main", check=False)
+        self.assertIn("CONFLICT", r.stdout + r.stderr)
+        os.environ["GOWTH_MEM_HOME"] = str(self.b)
+        import _conflict  # type: ignore
+        self.assertIsNone(_conflict.package_conflict())
+        text = self.mem_b.read_text()
+        self.assertNotIn("Wrong rule", text, "a committed deletion must not come back")
+        self.assertIn("- note from A", text)
+        self.assertIn("- base note", text)
+        self.assertNotIn("<<<<<<<", text)
+
+    def test_fold_of_a_concurrent_write_is_sanitized_first(self):
+        """Review R5: the `git add -u` fold staged a concurrently written raw
+        secret in a tracked memory file, and pull_rebase pushed it."""
+        secret = "glpat-" + "A1b2C3d4E5f6G7h8I9j0"
+        note = self.b / "workspaces" / "demo" / "memory" / "note.md"
+        note.write_text("clean\n")
+        git(self.b, "add", "-A")
+        git(self.b, "commit", "-q", "-m", "B adds a note file")
+        self._two_local_commits()
+        import _conflict  # type: ignore
+        real = _conflict.merge_memfile
+
+        def racing(gh, rel):
+            ok = real(gh, rel)
+            note.write_text(f"token {secret} pasted mid-rebase\n")
+            return ok
+
+        _conflict.merge_memfile = racing
+        try:
+            result = _conflict.package_conflict()
+        finally:
+            _conflict.merge_memfile = real
+        self.assertIsNone(result)
+        for ref in ("HEAD", "HEAD~1"):
+            shown = git(self.b, "show", f"{ref}:workspaces/demo/memory/note.md", check=False).stdout
+            self.assertNotIn(secret, shown, f"{ref} carries the raw secret")
+        self.assertNotIn(secret, note.read_text())
+        self.assertIn("[REDACTED", note.read_text())
+
     def test_other_conflicts_still_packaged(self):
         # A also edits handoff.md so B's handoff.md conflicts too
         (self.a / "workspaces" / "demo" / "docs" / "handoff.md").write_text("## A version\n")
