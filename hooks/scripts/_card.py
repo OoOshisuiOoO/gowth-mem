@@ -787,10 +787,19 @@ def _apply_summary(readme: Path, summary: str) -> str:
 
 
 def _after_write(ws: str, readme: Path) -> None:
-    """Best-effort follow-ups of a README write: make it recallable now."""
+    """Best-effort follow-ups of a README write: make it recallable now, and
+    (v4.9 §6.1) rewrite the machine-local short-prompt gate file
+    `.curator/cards-terms-<ws>` so a short prompt naming this topic can reach
+    its card (`_recall_prompt.refresh_card_terms` ensures the `.curator/`
+    ignore line first)."""
     try:
         from _index import reindex_paths  # type: ignore
         reindex_paths([readme])
+    except Exception:
+        pass
+    try:
+        from _recall_prompt import refresh_card_terms  # type: ignore
+        refresh_card_terms(ws)
     except Exception:
         pass
 

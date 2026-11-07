@@ -13,7 +13,14 @@ words, and reports:
     folder as the source), injections on 22 generic prompts;
   * the recommended `recall.on_prompt_score_threshold`: the least negative
     value with 0 generic injections and precision >= 0.8.
-Never writes the vault.
+  * v4.9 card sweep (`--cards-only` skips the rest): for every carded topic of
+    every workspace, naming prompts (a long one per name, a short 8-39-byte
+    one per name) → hit / miss / wrong-topic counts from `select_card`, and
+    whether the short prompt passes the bash `grep -wiF` gate (emulated on the
+    names `refresh_card_terms` would write); card injections on the 22
+    generic prompts, the 20 realistic generic ones
+    (tests/fixtures/recall_prompts.json) and the paraphrased sample above.
+Never writes the vault (cards are set beforehand with `_card.py --set`).
 """
 from __future__ import annotations
 
@@ -78,11 +85,98 @@ def rank_of(hits: list, path: str) -> int:
     return 0
 
 
+def _grep_wi(term: str, text: str) -> bool:
+    """`grep -wiF` on one line: `term` occurs case-insensitively with no word
+    character ([A-Za-z0-9_], or any alphanumeric) on either side."""
+    t, low = term.lower(), text.lower()
+    i = low.find(t)
+    while i >= 0:
+        a = low[i - 1] if i > 0 else ""
+        b = low[i + len(t)] if i + len(t) < len(low) else ""
+        if not (a and (a.isalnum() or a == "_")) and not (b and (b.isalnum() or b == "_")):
+            return True
+        i = low.find(t, i + 1)
+    return False
+
+
+def card_sweep(sample: list, settings: dict) -> dict:
+    """Hit/miss counts of subject-keyed card injection (spec §6.1)."""
+    fixtures = json.loads((ROOT / "tests" / "fixtures" / "recall_prompts.json").read_text(encoding="utf-8"))
+    generic = list(fixtures["generic"]) + list(fixtures["realistic"])
+    out: dict = {"workspaces": {}}
+    tot = {"carded": 0, "names": 0, "long_hit": 0, "long_miss": 0, "long_wrong": 0,
+           "short_hit": 0, "short_miss": 0, "short_gate_blocked": 0, "generic_cards": 0,
+           "generic_prompts": 0, "sample_cards": 0, "sample_prompts": 0}
+    for ws in _home.list_workspaces():
+        cands = _recall_prompt.card_candidates(ws, settings)
+        if not cands:
+            continue
+        terms = _recall_prompt.card_terms_text(cands).splitlines()
+        row = {"carded": len(cands), "names": sum(len(c["names"]) for c in cands),
+               "long_hit": 0, "long_miss": 0, "long_wrong": 0, "short_hit": 0, "short_miss": 0,
+               "short_gate_blocked": 0, "generic_cards": 0, "misses": []}
+        for cand in cands:
+            for name in cand["names"]:
+                for kind, prompt in (("long", f"what is the current state of {name}, and what should I check first?"),
+                                     ("short", f"{name} status?")):
+                    if kind == "short" and not 8 <= len(prompt.encode()) < 40:
+                        continue
+                    if kind == "short" and not any(_grep_wi(t, prompt) for t in terms):
+                        row["short_gate_blocked"] += 1
+                    got = _recall_prompt.select_card(prompt, ws, settings, set(), cands)
+                    if got is None:
+                        row[f"{kind}_miss"] += 1
+                        row["misses"].append(f"{kind}:{cand['rel']}:{name}")
+                    elif got["rel"] == cand["rel"]:
+                        row[f"{kind}_hit"] += 1
+                    else:
+                        row["long_wrong" if kind == "long" else f"{kind}_miss"] += 1
+                        row["misses"].append(f"{kind}:{cand['rel']}:{name}->{got['rel']}")
+        for g in generic:
+            if _recall_prompt.select_card(g, ws, settings, set(), cands) is not None:
+                row["generic_cards"] += 1
+        tot["generic_prompts"] += len(generic)
+        for e in sample:
+            if e["ws"] != ws:
+                continue
+            tot["sample_prompts"] += 1
+            q = f"what did we decide or learn about {paraphrase(e['title'])} last time, and why?"
+            if _recall_prompt.select_card(q, ws, settings, set(), cands) is not None:
+                tot["sample_cards"] += 1
+        for k in ("carded", "names", "long_hit", "long_miss", "long_wrong", "short_hit", "short_miss",
+                  "short_gate_blocked", "generic_cards"):
+            tot[k] += row[k]
+        out["workspaces"][ws] = row
+    out["total"] = tot
+    return out
+
+
+def print_card_sweep(res: dict) -> None:
+    tot = res["total"]
+    print("\ncard sweep (v4.9 subject-keyed cards):")
+    if not tot["carded"]:
+        print("  no carded topics in any workspace — set some with _card.py --set first")
+        return
+    for ws, row in res["workspaces"].items():
+        print(f"  {ws:<10} carded {row['carded']:>3}  names {row['names']:>3}  long hit {row['long_hit']:>3} "
+              f"miss {row['long_miss']:>2} wrong {row['long_wrong']:>2}  short hit {row['short_hit']:>3} "
+              f"miss {row['short_miss']:>2} gate-blocked {row['short_gate_blocked']:>2}  "
+              f"generic cards {row['generic_cards']}")
+        for m in row["misses"][:5]:
+            print(f"      miss {m}")
+    print(f"  total: carded {tot['carded']}, names {tot['names']}; long {tot['long_hit']} hit / "
+          f"{tot['long_miss']} miss / {tot['long_wrong']} wrong; short {tot['short_hit']} hit / "
+          f"{tot['short_miss']} miss, {tot['short_gate_blocked']} blocked by the bash gate; generic prompts "
+          f"with a card {tot['generic_cards']} of {tot['generic_prompts']}; paraphrased sample with a card "
+          f"{tot['sample_cards']} of {tot['sample_prompts']}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed2", type=int, default=43)
     ap.add_argument("--n2", type=int, default=20)
     ap.add_argument("--json", default="")
+    ap.add_argument("--cards-only", action="store_true", help="only the v4.9 card sweep")
     args = ap.parse_args()
     gh = _home.gowth_home()
     pop = population(gh)
@@ -93,6 +187,12 @@ def main() -> int:
     s2 = random.sample(rest, min(args.n2, len(rest)))
     sample = s1 + s2
     settings = _home.read_settings()
+    if args.cards_only:
+        res = card_sweep(sample, settings)
+        print_card_sweep(res)
+        if args.json:
+            Path(args.json).write_text(json.dumps({"cards": res}, indent=1, ensure_ascii=False))
+        return 0
 
     # --- ranking ---
     ranks = []
@@ -152,9 +252,12 @@ def main() -> int:
         if generic == 0 and prec >= 0.8 and injected > 0 and best is None:
             best = thr
     print(f"\nrecommended on_prompt_score_threshold: {best if best is not None else 'none met the bar'}")
+    cards = card_sweep(sample, settings)
+    print_card_sweep(cards)
     if args.json:
         Path(args.json).write_text(json.dumps({"n": n, "hit1": hit1, "hit3": hit3, "mrr": mrr,
-                                               "sweep": results, "recommended": best, "rows": rows},
+                                               "sweep": results, "recommended": best, "rows": rows,
+                                               "cards": cards},
                                               indent=1, ensure_ascii=False))
     return 0
 

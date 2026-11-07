@@ -208,6 +208,8 @@ def query_by_type(
     entries that is the `[type] Title` marker, for session logs the
     `turn N — HH:MM` anchor; neither is reachable through the content column.
     line_no is always 0 (chunks table does not store per-line offsets).
+    v4.9: `correction` — the newest entry whose `Corrects:` names this hit's
+    path ({"date", "path", "id", "heading", "content", "tag"}), else None.
     Returns empty list on any error (fail-open). Use `query_ex` when you need to
     tell "no matches" apart from "invalid query".
     """
@@ -350,9 +352,51 @@ def _run_query(
                                 "keywords": kw, "bm25_score": 0.0})
         if collapse:
             results = _collapse_per_path(results, limit)
-        return results[:limit]
+        results = results[:limit]
+        _attach_corrections(db, results)
+        return results
     finally:
         db.close()
+
+
+def _attach_corrections(db, results: list) -> None:
+    """v4.9 (spec §6.2): `hit["correction"]` = the newest correction of the hit's
+    path — {"date", "path", "id", "heading", "content", "tag"} — or None. One
+    lookup per hit (a join: the correction's chunk comes with it); nothing when
+    the index predates the `corrections` table."""
+    for r in results:
+        r["correction"] = None
+    if not results:
+        return
+    try:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='corrections'"
+                      ).fetchone() is None:
+            return
+    except sqlite3.Error:
+        return
+    for r in results:
+        try:
+            row = db.execute(
+                "SELECT c.date, c.correction_path, ch.id, ch.heading, ch.content, ch.tag "
+                "FROM corrections c JOIN chunks ch ON ch.id = c.chunk_id "
+                "WHERE c.target = ? "
+                "ORDER BY c.date DESC, c.correction_path DESC, ch.id DESC LIMIT 1",
+                (r.get("path") or "",)).fetchone()
+        except sqlite3.Error:
+            return
+        if row:
+            r["correction"] = {"date": row[0] or "", "path": row[1], "id": row[2],
+                               "heading": row[3] or "", "content": row[4] or "",
+                               "tag": row[5] or ""}
+
+
+def correction_note(hit: dict) -> str:
+    """` (corrected <date>: <correction path>)` for a hit a newer entry
+    corrects (not for the correction chunk itself), else ""."""
+    corr = hit.get("correction")
+    if not isinstance(corr, dict) or not corr.get("path") or corr.get("id") == hit.get("id"):
+        return ""
+    return f" (corrected {corr.get('date') or 'undated'}: {corr['path']})"
 
 
 def _path_in_ws(rel_path: str, ws: str) -> bool:
@@ -423,7 +467,8 @@ if __name__ == "__main__":
         tag_str = f"[{hit['tag']}]" if hit["tag"] else "[untagged]"
         kw = hit.get("keywords") or ""
         kw_str = f"  kw={kw}" if kw else ""
-        print(f"{hit['path']}  {tag_str}{score_str}{kw_str}")
+        # v4.9: a hit a newer entry corrects says so, with the correction's path
+        print(f"{hit['path']}{correction_note(hit)}  {tag_str}{score_str}{kw_str}")
         # The heading carries the `[type] Title` marker (curated entries) or the
         # `turn N — HH:MM` anchor (session logs) — the most locating line available.
         heading = (hit.get("heading") or "").strip()
