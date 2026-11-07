@@ -78,6 +78,21 @@ def _has_private_block(text: str) -> bool:
         pass
     return last_close is not None
 
+
+def has_private_tag(text) -> bool:
+    """True when `text` holds a `<private>` or a `</private>` tag, in any
+    spelling sanitize() pairs (the same two patterns: IGNORECASE also matches
+    `<prıvate>` / `<prİvate>`, which a casefold() substring test misses).
+
+    A field with only ONE half passes sanitize() unchanged, but a writer that
+    re-renders a whole file (safe_write re-sanitizes it) pairs it with the other
+    half in a later line and deletes everything between them. Single-file
+    writers that store several user fields reject any field for which this is
+    True. Linear: two literal patterns, no nesting."""
+    if not isinstance(text, str) or not text:
+        return False
+    return bool(_PRIVATE_OPEN_RE.search(text) or _PRIVATE_CLOSE_RE.search(text))
+
 # PEM/OpenSSH/PGP private-key armor (`-----BEGIN <kind>PRIVATE KEY[ BLOCK]-----`).
 _PEM_KIND = r"(?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?"
 # A line break: real, or JSON-escaped (a service-account file's "private_key":

@@ -46,7 +46,9 @@ CLI (the status goes to stdout; rc 0; argparse usage errors rc 2):
            (`add research "<question>"` is the same as `add --kind research "<question>"`)
            -> "Q-xxxxxxxx\\tadded|duplicate|similar:Q-yyyyyyyy|rejected:<rule>"
   _gaps.py [--ws <ws>] list [--kind research|ask] [--closed] [--json]
-  _gaps.py [--ws <ws>] answer Q-xxxxxxxx "<answer>" --evidence "<path|url|commit|user>"
+           (a ledger that exists but cannot be read as UTF-8 is reported as such,
+           never as "no open questions")
+  _gaps.py [--ws <ws>] answer Q-xxxxxxxx "<answer>" --evidence "<[ref] entry path|url|commit|user>"
            -> "Q-xxxxxxxx\\tanswered|not_found|rejected:<rule>"
   _gaps.py [--ws <ws>] close Q-xxxxxxxx --evidence "<…>" --reason obsolete|duplicate|answered-elsewhere|escalated
            -> "Q-xxxxxxxx\\tclosed|not_found|rejected:<rule>"
@@ -56,31 +58,54 @@ CLI (the status goes to stdout; rc 0; argparse usage errors rc 2):
 
 Rules: question 12..300 chars after whitespace collapse (`too_short` /
 `too_long`); why / evidence / note <= 500, answer 1..1000 (`too_long` /
-`too_short`); `_privacy.sanitize` on every field — a secret is
-`secret_leak`; `[gowth-mem:` in any field is `control_token` (a quoted hook
-directive could re-trigger a dispatch); `gate.english_only` -> `not_english`;
-answer / close need `--evidence` (`no_evidence`); a `research` answer must
-cite a vault path, URL or commit (`weak_evidence` if only `user`);
+`too_short`); `_privacy.sanitize` on every field — a secret, a whole
+`<private>…</private>` block included, is `secret_leak`; `[gowth-mem:` in
+any field is `control_token` (a quoted hook directive could re-trigger a
+dispatch); `gate.english_only` -> `not_english`; then a LONE `<private>` or
+`</private>` tag in any field, in any spelling `_privacy` pairs (`<prıvate>`,
+`<prİvate>`), is `private_tag` — it passes sanitize alone, but the whole-file
+re-sanitize of the write would pair it with a tag in another line and delete
+every line between them (checked last, so an input refused for another reason
+keeps that status); answer / close need `--evidence` (`no_evidence`); a
+`research` answer must cite a vault path, URL or commit — the [ref] entry's
+path: a bare file name or file:line such as `settings.json` /
+`_gaps.py:425`, or only `user`, is `weak_evidence`;
 `similar:<id>` when the casefolded `\\w{4,}` token Jaccard against an OPEN
 question is >= 0.6, unless `--force`. Other refusals: `bad_ws`, `bad_kind`,
 `bad_from`, `bad_reason`, `no_note`, `already_closed`, `no_vault`,
-`no_workspace`, `symlink`, `not_a_file`, `outside_workspace`, `sanitize_failed`,
-`lock_timeout`.
+`no_workspace`, `symlink`, `not_a_file`, `docs_not_a_dir` (`<ws>/docs` is a
+regular file or a dangling link), `outside_workspace`, `sanitize_failed`,
+`unreadable` and `write_failed` (below), `lock_timeout`.
 
-Writes: lazy create; `file_lock(f"gaps-{ws}", 5)` from read to write (never
-nested with `entries-<ws>`); `_atomic.safe_write`; best-effort reindex.
+Writes fail closed. Lazy create — of a MISSING ledger only: one that exists
+but cannot be read as UTF-8 (permissions, I/O, a hand edit in another
+encoding), or whose path cannot even be inspected, is `unreadable` — never
+replaced by a fresh ledger and never written back with a lossy decode. The
+re-rendered file is sanitized BEFORE the write: if safe_write would change it
+(a secret or a `<private>`…`</private>` span already in the file — a hand
+edit, a union merge, or two lines the re-render brings together) nothing is
+written, the status is `secret_leak` (`sanitize_failed` when the filter
+itself failed) and stderr says the file needs a fix — `added`/`answered` is
+never printed for text that is not in the file. Any other OS error on the
+way is `write_failed` (the write is atomic: the ledger is unchanged).
+`file_lock(f"gaps-{ws}", 5)` from read to write (never nested with
+`entries-<ws>`); `_atomic.safe_write`; best-effort reindex.
 
 Library: parse(text) -> {"open": [Q], "closed": [Q]}; open_items(ws) -> [Q]
-(file order); add / answer / close / tried / list_items. Q = {"id", "kind",
-"opened", "closed", "question", "why", "source", "answer", "evidence",
-"reason", "tries", "last_tried"}.
+(file order; lenient — [] when the file cannot be read at all, and
+ledger_unreadable(ws) tells that apart from an empty ledger); add / answer /
+close / tried / list_items. Q = {"id", "kind", "opened", "closed",
+"question", "why", "source", "answer", "evidence", "reason", "tries",
+"last_tried"}.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from datetime import date
 from pathlib import Path
@@ -122,9 +147,10 @@ TITLE_PREFIX = "# Open questions"
 HEADER = (
     "> Gaps in this workspace's memory. `research` = an agent can find the answer "
     "(vault, then primary docs/code/web) and",
-    "> must save it as a [ref] with Source: before closing. `ask` = only the user knows. "
-    "Managed by `_gaps.py`",
-    "> (/mem-ops gap); answer with `/mem-ops gap answer <id> \"<answer>\" --evidence \"<source>\"`.",
+    "> must save it as a [ref] with Source: before closing. `ask` = only the user knows "
+    "(`--evidence user`). Managed by `_gaps.py`",
+    "> (/mem-ops gap); answer with `/mem-ops gap answer <id> \"<answer>\" "
+    "--evidence \"<vault path of that [ref] entry | URL | commit>\"`.",
 )
 OPEN_H = "## Open"
 CLOSED_H = "## Closed"
@@ -365,13 +391,60 @@ def questions_path(ws: str) -> Path:
     return workspace_dir(ws) / "docs" / FILE_NAME
 
 
+def _note(msg: str) -> None:
+    """One line to stderr for the operator; never raises."""
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def _read(path: Path) -> str:
+    """LENIENT read for the read-only views (`list`, `open_items`): '' on any
+    error, a replacement-character decode. Never used on the write path."""
     try:
         if path.is_symlink() or not path.is_file():
             return ""
         return path.read_text(errors="replace")
     except OSError:
         return ""
+
+
+def _read_strict(path: Path):
+    """The ledger text for a WRITE: '' when there is no ledger yet (lazy
+    create); None when one exists but cannot be read as UTF-8 (permissions,
+    I/O, an evicted cloud placeholder, a hand edit in another encoding). A
+    fresh ledger must never replace a real one, and a lossy decode must never
+    be stored back."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _unreadable(path: Path) -> bool:
+    """True when the ledger is a regular file that `_read_strict` refuses, or
+    its path cannot even be inspected (EACCES / EIO on a directory above it).
+    False when there is no ledger, or a link / non-file stands there (the
+    write path refuses those with their own status)."""
+    try:
+        st = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return False
+    return _read_strict(path) is None
+
+
+def ledger_unreadable(ws) -> bool:
+    """True when `ws`'s ledger exists but cannot be read as UTF-8: the read-only
+    views show what a lenient decode finds (maybe nothing) and every write is
+    `rejected:unreadable` until the file is fixed."""
+    return valid_ws(ws) and _unreadable(questions_path(ws))
 
 
 def list_items(ws: str, *, closed: bool = False, kind: str = "") -> list:
@@ -393,9 +466,14 @@ def open_items(ws: "str | None" = None) -> list:
 # ── validation ─────────────────────────────────────────────────────────────
 
 def _field_rule(fields: dict, settings: dict) -> str:
-    """'' or the first refusal: secret_leak (or sanitize_failed when the filter
-    itself failed — fail closed), control_token, not_english."""
-    from _privacy import sanitize  # type: ignore
+    """'' or the first refusal, in this order: secret_leak (a whole
+    `<private>…</private>` block counts; sanitize_failed when the filter itself
+    failed — fail closed), control_token, not_english, private_tag (a LONE
+    `<private>` / `</private>` tag in any spelling sanitize() pairs: it passes
+    sanitize() alone, but the whole-file re-sanitize of the write pairs it
+    with a tag in another line and deletes every line between). private_tag
+    comes last, so every input refused without it keeps its status."""
+    from _privacy import has_private_tag, sanitize  # type: ignore
     for value in fields.values():
         if value:
             _clean_text, n = sanitize(value)
@@ -411,6 +489,9 @@ def _field_rule(fields: dict, settings: dict) -> str:
         for value in fields.values():
             if value and len(VIETNAMESE_RE.findall(value)) > 2:
                 return "not_english"
+    for value in fields.values():
+        if value and has_private_tag(value):
+            return "private_tag"
     return ""
 
 
@@ -471,28 +552,61 @@ def _target(ws: str):
     if path.exists() and not path.is_file():
         return None, "not_a_file"
     docs = wsd / "docs"
-    if docs.exists():
+    if docs.exists() or docs.is_symlink():
         try:
             docs.resolve().relative_to(wsd.resolve())
-        except (ValueError, OSError):
+        except (ValueError, OSError, RuntimeError):     # 3.9 raises RuntimeError on a link loop
             return None, "outside_workspace"
+        if not docs.is_dir():
+            return None, "docs_not_a_dir"    # a regular file or a dangling link: mkdir would raise
     return path, ""
 
 
 def _mutate(ws: str, fn) -> str:
-    """Run fn(doc) -> (status, changed) under the ledger lock; write when changed."""
-    path, rule = _target(ws)
+    """Run fn(doc) -> (status, changed) under the ledger lock; write when changed.
+
+    Fails closed (module docstring "Writes"): `unreadable` for a ledger that
+    exists but cannot be read as UTF-8, or whose path cannot be inspected (an
+    OS error in the checks); `secret_leak` / `sanitize_failed` when safe_write
+    would change the re-rendered file — it re-sanitizes the WHOLE file, and a
+    `<private>` in one line pairs with a `</private>` in a later one;
+    `write_failed` for any other OS error. Nothing is written then."""
+    try:
+        path, rule = _target(ws)
+    except OSError as exc:        # e.g. 3.9-3.12's Path.is_symlink() raising EACCES under a 000 dir
+        log_debug("gaps", f"ledger checks for {ws} failed: {exc}")
+        return "rejected:unreadable"
     if path is None:
         return f"rejected:{rule}"
+    from _privacy import sanitize  # type: ignore
+    changed = False
     try:
         with file_lock(f"gaps-{ws}", timeout=LOCK_TIMEOUT):
-            existing = _read(path)
+            if path.is_symlink():
+                return "rejected:symlink"
+            existing = _read_strict(path)
+            if existing is None:
+                return "rejected:unreadable"
             doc = _load(existing)
             status, changed = fn(doc)
             if changed:
-                safe_write(path, doc.render(ws))
+                text = doc.render(ws)
+                redactions = sanitize(text)[1]
+                if redactions < 0:
+                    return "rejected:sanitize_failed"
+                if redactions > 0:
+                    _note(f"gaps: nothing written — the privacy filter would change {path} as "
+                          "re-rendered: it already holds a secret, or a <private> and a </private> "
+                          "tag on different lines (everything between them would be cut). Remove "
+                          "the secret or the stray tag text by hand (never the lines between), "
+                          "then retry.")
+                    return "rejected:secret_leak"
+                safe_write(path, text)
     except TimeoutError:
         return "rejected:lock_timeout"
+    except OSError as exc:
+        log_debug("gaps", f"write of {path} failed: {exc}")
+        return "rejected:write_failed"
     if changed:
         try:
             from _index import reindex_paths  # type: ignore
@@ -696,10 +810,17 @@ def _cli(argv=None) -> int:
 
     if args.cmd == "list":
         items = list_items(ws, closed=args.closed, kind=args.kind) if valid_ws(ws) else []
+        note = ""
+        if ledger_unreadable(ws):
+            note = (f"{questions_path(ws)} cannot be read as UTF-8 (permissions, I/O or encoding) — "
+                    "writes to it are refused until it is fixed")
+        if note and (args.json or items):
+            _note(f"warning: {note}")
         if args.json:
             print(json.dumps(items, ensure_ascii=False, indent=2))
         elif not items:
-            print(f"no {'closed' if args.closed else 'open'} questions in {ws}")
+            print(f"ledger unreadable: {note}" if note
+                  else f"no {'closed' if args.closed else 'open'} questions in {ws}")
         else:
             for q in items:
                 print(render_line(q)[2:])

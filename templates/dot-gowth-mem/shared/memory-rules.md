@@ -34,7 +34,9 @@ Never guess. Never say "could not verify" before you climbed rungs 1–4.
 - Not answerable now → `/mem-ops gap add research "<question>"` (or `ask`): one concrete question per gap, with
   `--why "<evidence on both sides>"`.
 - Closing a `research` question: first save the answer as `[ref] … Source: <url|path|commit>`, then
-  `/mem-ops gap answer <id> "<answer>" --evidence "<source>"`. An `ask` answer may cite the user.
+  `/mem-ops gap answer <id> "<answer>" --evidence "<vault path of that [ref] entry | URL | commit>"`. A bare file
+  name or file:line (`settings.json`, `_gaps.py:425`) is refused — cite the [ref] entry's path. An `ask` answer may
+  cite the user (`--evidence user`).
 - When the user's request touches an open `research` question, answer it first and close it.
 - The daily curator adds questions for contradictions and stale claims, researches a few `research` questions per
   run, and proposes handoff items that look done as `ask` questions — a human ticks them, never the curator.
@@ -48,10 +50,14 @@ Never guess. Never say "could not verify" before you climbed rungs 1–4.
 - "likely", "probably", "có thể" are not conclusions. A pattern or scanner hit is a lead, not a finding.
 - Retraction is public: when something you reported was wrong, start the next report with `Correction:` and the
   refuting evidence.
-- In memory, never edit or delete the old entry. Save a new dated entry of the SAME type that names its target:
+- In memory, never edit or delete the old entry. Save a new dated entry of the same type that names its target:
   `Correction: <old claim> → <new claim> (<date>; Corrects: <vault-relative path>; Source: …)`, and refresh the topic
-  card. Recall then shows the correction next to the old entry. Avoid the words "(superseded", "(deprecated" and
-  "(obsolete": maintenance deletes lines that contain them.
+  card. Recall then shows the correction next to the old entry. The type's required parts (§4) still apply to a
+  correction: a `[goal]` correction keeps `Status:` and `Done when:` (a goal's `Status:` line is the one field
+  `/mem-goal` updates in place), a `[tool]` correction names the version or quotes the exact syntax in backticks, and
+  a `[hypothesis]` that is still unverified keeps `Verify:`. A hypothesis that was since confirmed or refuted is
+  settled: record it as a `[ref]` correction with `Source:` (refuted = FALSE POSITIVE), not as a new `[hypothesis]`.
+  Avoid the words "(superseded", "(deprecated" and "(obsolete": maintenance deletes lines that contain them.
 
 ## 4. Writing rules
 
@@ -125,6 +131,7 @@ Entries:
 [tool] git 2.43: pass the token as `-c http.<url>.extraHeader=...` so it never lands in the remote URL
 [hypothesis] Stop-hook context of 10,000+ chars is persisted to a file like SessionStart's. Verify: real-binary E2E at 9,999 and 10,000 chars
 [decision] Correction: journal TTL 14 days → 7 days (2026-06-21; Corrects: workspaces/default/journal-policy/2026-05-18-ttl.md; Source: settings.json journal.raw_ttl_days)
+[goal] Correction: ship the gap ledger by October → by November (2026-11-07; Corrects: workspaces/default/gap-ledger/2026-10-01-ship.md; Source: user) Status: active. Done when: v4.9.0 is tagged with CI green
 ```
 
 Card (inside `## TL;DR`, written by `/mem-topic card`):
