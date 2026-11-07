@@ -95,29 +95,49 @@ def _unmerged_paths(gh: Path) -> list[str]:
     return sorted({ln.split("\t")[-1] for ln in r.stdout.splitlines() if "\t" in ln})
 
 
-def _sanitize_memory_before_commit() -> list:
+def _sanitize_before_commit() -> list:
     """v4.8 (review C3): Claude-written <ws>/memory/*.md go through the privacy
     sanitizer before `git add -A` on EVERY commit path (Stop autosync,
-    PreCompact --commit-only, PostCompact). Returns the files the sanitizer
-    could NOT write (lock held) — the caller keeps them out of the commit
-    (review m2: fail closed). Never blocks the commit."""
+    PreCompact --commit-only, PostCompact). v4.9 (review safety-sync#2): so
+    does every other changed synced markdown file under workspaces/ and
+    shared/ — docs/handoff.md and topic files are edited directly, and the
+    v4.9 prune no longer rewrites (and so redacts) clean files.
+
+    Returns the files that hold a secret the sanitizer could NOT rewrite
+    (lock held, write failure) — the caller keeps them out of the commit
+    (review m2: fail closed)."""
     try:
-        from _memsan import sanitize_memory_files  # type: ignore
-        r = sanitize_memory_files()
+        from _memsan import sanitize_before_commit  # type: ignore
+        r = sanitize_before_commit()
         if r.get("sanitized"):
-            log_debug("auto-sync", f"sanitized memory files before commit: {r['sanitized']}")
+            log_debug("auto-sync", f"sanitized before commit: {r['sanitized']}")
         return list(r.get("skipped") or [])
     except Exception as e:
-        log_debug("auto-sync", f"memory sanitize before commit failed: {e}")
+        log_debug("auto-sync", f"sanitize before commit failed: {e}")
         return []
 
 
-def _unstage(gh: Path, rels: list, quiet: bool) -> None:
-    for rel in rels:
-        run_git(gh, "restore", "--staged", "--", rel, check=False)
-    if rels:
-        log(f"sync: {len(rels)} memory file(s) left out of this commit — sanitizer could not "
-            f"write them (memfile lock held): {', '.join(rels[:3])}", quiet=quiet, err=True)
+def _unstage(gh: Path, rels: list, quiet: bool) -> bool:
+    """Keep `rels` (the files the sanitizer could not rewrite) out of this
+    commit. False when one of them is still staged afterwards — the caller
+    then commits nothing (an unborn branch used to keep them: `restore
+    --staged` needs a HEAD)."""
+    if not rels:
+        return True
+    try:
+        from _memsan import keep_out_of_commit  # type: ignore
+        left = keep_out_of_commit(gh, rels)
+    except Exception as e:
+        log_debug("auto-sync", f"unstage failed: {e}")
+        left = list(rels)
+    log(f"sync: {len(rels)} file(s) holding a secret left out of this commit — the sanitizer "
+        f"could not rewrite them (lock held or write failed): {', '.join(rels[:3])}",
+        quiet=quiet, err=True)
+    if left:
+        log(f"sync: REFUSING to commit — {len(left)} of them could not be unstaged: "
+            f"{', '.join(left[:3])}", quiet=quiet, err=True)
+        return False
+    return True
 
 
 def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -> bool:
@@ -135,9 +155,10 @@ def commit_local(gh: Path, host: str, quiet: bool, context: str = "auto-sync") -
             f"git status", quiet=quiet, err=True)
         return False
 
-    skipped = _sanitize_memory_before_commit()
+    skipped = _sanitize_before_commit()
     run_git(gh, "add", "-A", check=False)
-    _unstage(gh, skipped, quiet)
+    if not _unstage(gh, skipped, quiet):
+        return False
     status = run_git(gh, "diff", "--cached", "--name-only", check=False).stdout
     if not status.strip():
         return False

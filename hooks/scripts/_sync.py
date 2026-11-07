@@ -115,28 +115,45 @@ def write_default_gitignore(gh: Path) -> None:
     atomic_write(gi, f"{existing}{sep}{additions}")
 
 
-def _sanitize_memory_before_commit() -> list:
+def _sanitize_before_commit() -> list:
     """v4.8 (review C3): Claude-written <ws>/memory/*.md go through the privacy
-    sanitizer before `git add -A` (manual /mem-sync and --init). Returns the
-    files it could not write (lock held); the caller keeps them out of the
-    commit (review m2). Best-effort."""
+    sanitizer before `git add -A` (manual /mem-sync and --init); v4.9 (review
+    safety-sync#2): so does every other changed synced markdown file under
+    workspaces/ and shared/ (`_memsan.sanitize_before_commit`). Returns the
+    files that hold a secret it could not rewrite (lock held, write failure);
+    the caller keeps them out of the commit (review m2). Best-effort."""
     try:
-        from _memsan import sanitize_memory_files  # type: ignore
-        r = sanitize_memory_files()
+        from _memsan import sanitize_before_commit  # type: ignore
+        r = sanitize_before_commit()
         if r.get("sanitized"):
-            print(f"sync: sanitized memory file(s) before commit: {', '.join(r['sanitized'])}")
+            print(f"sync: redacted {r.get('secrets', 0)} secret(s) before commit in: "
+                  f"{', '.join(r['sanitized'])}")
         return list(r.get("skipped") or [])
     except Exception as e:
-        log_debug("sync", f"memory sanitize before commit failed: {e}")
+        log_debug("sync", f"sanitize before commit failed: {e}")
         return []
 
 
-def _unstage(gh: Path, rels: list) -> None:
-    for rel in rels:
-        run_git(gh, "restore", "--staged", "--", rel, check=False)
-    if rels:
-        print(f"sync: {len(rels)} memory file(s) left out of this commit (sanitizer could not write them): "
-              + ", ".join(rels[:3]), file=sys.stderr)
+def _unstage(gh: Path, rels: list) -> bool:
+    """Keep `rels` (the files the sanitizer could not rewrite) out of this
+    commit. False when one of them is still staged afterwards — the caller
+    then commits nothing (on an unborn branch `restore --staged` used to fail
+    silently and the --init commit carried them)."""
+    if not rels:
+        return True
+    try:
+        from _memsan import keep_out_of_commit  # type: ignore
+        left = keep_out_of_commit(gh, rels)
+    except Exception as e:
+        log_debug("sync", f"unstage failed: {e}")
+        left = list(rels)
+    print(f"sync: {len(rels)} file(s) holding a secret left out of this commit (the sanitizer could "
+          f"not rewrite them — lock held or write failed): " + ", ".join(rels[:3]), file=sys.stderr)
+    if left:
+        print(f"ERROR: refusing to commit — {len(left)} of them could not be unstaged: "
+              + ", ".join(left[:3]), file=sys.stderr)
+        return False
+    return True
 
 
 def main() -> int:
@@ -191,9 +208,10 @@ def main() -> int:
                 except subprocess.CalledProcessError:
                     has_head = False
                 if not has_head:
-                    _skipped = _sanitize_memory_before_commit()
+                    _skipped = _sanitize_before_commit()
                     run_git(gh, "add", "-A")
-                    _unstage(gh, _skipped)
+                    if not _unstage(gh, _skipped):
+                        return 1
                     try:
                         from _commitmsg import build_message as _bm  # type: ignore
                         _msg = _bm(gh, host=host, context="initial")
@@ -248,10 +266,13 @@ def main() -> int:
                 pass
 
             if not args.pull_only:
-                _skipped = _sanitize_memory_before_commit()
+                _skipped = _sanitize_before_commit()
                 run_git(gh, "add", "-A", check=False)
-                _unstage(gh, _skipped)
-                status = run_git(gh, "status", "--porcelain", check=False).stdout
+                if not _unstage(gh, _skipped):
+                    return 1
+                # what is STAGED, not `status`: a file kept out of the commit
+                # above is still dirty, and committing nothing printed a bogus WARN
+                status = run_git(gh, "diff", "--cached", "--name-only", check=False).stdout
                 if status.strip():
                     try:
                         from _commitmsg import build_message as _bm  # type: ignore

@@ -4,10 +4,23 @@ tree to the local side so files stay parseable (no <<<<<<< markers in topics).
 Called by auto-sync.py / _sync.py when `git pull --rebase` reports CONFLICT.
 The conflict is then resolved by the user via the /mem-sync resolve skill,
 which reads SYNC-CONFLICT.md and applies the chosen version through atomic_write.
+
+v4.9 (review safety-sync#4): the resolve flow finishes with
+`python3 _conflict.py --continue` — under the sync lock it runs the
+commit-boundary privacy pass (refusing while a file that holds a secret
+cannot be rewritten), stages the resolution and continues the rebase with
+the `gowth-mem@<host>` identity the commit paths use. A bare continue failed
+on a machine with no git identity, and the skill then looped on a
+SYNC-CONFLICT.md that nothing rewrote. Exit 0 = rebase finished, 2 = a later
+replayed commit stopped on a new conflict (SYNC-CONFLICT.md rewritten),
+1 = anything else (git's message is printed).
 """
 from __future__ import annotations
 
+import argparse
+import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -23,7 +36,7 @@ from _home import conflict_md, gowth_home  # type: ignore
 _MEMFILE_RE = re.compile(r"^workspaces/([^/]+)/memory/MEMORY\.md$")
 
 
-def _git(cwd: Path, *args: str, check: bool = False) -> tuple[int, str, str]:
+def _git(cwd: Path, *args: str, check: bool = False, env: "dict | None" = None) -> tuple[int, str, str]:
     # errors="replace": some conflicted blobs (binaries, mixed-encoding text)
     # are not valid UTF-8; lossy decode is acceptable for conflict packaging.
     r = subprocess.run(
@@ -31,6 +44,7 @@ def _git(cwd: Path, *args: str, check: bool = False) -> tuple[int, str, str]:
         capture_output=True,
         text=True,
         errors="replace",
+        env=env,
     )
     if check and r.returncode != 0:
         raise subprocess.CalledProcessError(r.returncode, r.args, r.stdout, r.stderr)
@@ -147,10 +161,11 @@ def package_conflict(host: "str | None" = None) -> "Path | None":
             # would hard-reset a real commit.)
             # review R5: the folded files may be memory files Claude just wrote —
             # sanitize first; a file the sanitizer could not write is never folded
+            # (v4.9 safety-sync#2: every changed synced markdown file, not only memory/)
             skipped: list = []
             try:
-                from _memsan import sanitize_memory_files  # type: ignore
-                skipped = list(sanitize_memory_files().get("skipped") or [])
+                from _memsan import sanitize_before_commit  # type: ignore
+                skipped = list(sanitize_before_commit().get("skipped") or [])
             except Exception as exc:
                 log_debug("conflict", f"sanitize before fold failed: {exc}")
             if not skipped:
@@ -180,7 +195,7 @@ def package_conflict(host: "str | None" = None) -> "Path | None":
         sections.append(f"### (gave up after {MAX_REPLAYS} replayed commits)\n")
         if merged:
             sections.append("Merged and staged, rebase left stopped: " + ", ".join(merged)
-                            + " — run `git -C ~/.gowth-mem rebase --continue` (or /mem-sync resolve).\n")
+                            + f" — finish with `{continue_command()}` (or /mem-sync resolve).\n")
         remaining = remaining or merged
 
     machine = socket.gethostname()
@@ -193,12 +208,17 @@ def package_conflict(host: "str | None" = None) -> "Path | None":
     ]
     parts.extend(sections)
 
+    # review safety-sync#4: the finish step carries the gowth-mem identity — a
+    # bare continue fails on a machine with no git identity
     parts.append(
         "\n## How to resolve\n\n"
         "Run `/mem-sync resolve` in Claude Code. The skill will walk each file,\n"
         "ask you which version to keep (or merge), apply via atomic_write,\n"
-        "then `git rebase --continue` and push.\n\n"
-        "To abort the rebase entirely: `git -C ~/.gowth-mem rebase --abort`.\n"
+        f"then finish the rebase with `{continue_command()}`\n"
+        "(it redacts secrets and continues as gowth-mem@<host>), delete this file and\n"
+        "push with `/mem-sync`.\n\n"
+        f"To abort the rebase entirely: `git -C {shlex.quote(str(gh))} rebase --abort`, then delete\n"
+        "this file — the next sync replays the same commits and can stop here again.\n"
     )
 
     body = "\n".join(parts) + "\n"
@@ -222,6 +242,139 @@ def _describe(gh: Path, f: str) -> str:
     return "\n".join(parts)
 
 
-if __name__ == "__main__":
+# ── `--continue`: finish the rebase after /mem-sync resolve (review safety-sync#4) ──
+
+CONTINUE_LOCK_TIMEOUT = 30.0      # the CLI waits like /mem-sync does
+
+
+def continue_command() -> str:
+    """The shell command that finishes a resolved rebase (this script, absolute
+    path — SYNC-CONFLICT.md is read as text, nothing would expand a variable)."""
+    return f"python3 {shlex.quote(str(Path(__file__).resolve()))} --continue"
+
+
+def _rebase_in_progress(gh: Path) -> bool:
+    git_dir = gh / ".git"
+    return (git_dir / "rebase-merge").is_dir() or (git_dir / "rebase-apply").is_dir()
+
+
+def continue_rebase(host: "str | None" = None, lock_timeout: float = CONTINUE_LOCK_TIMEOUT) -> int:
+    """Finish a stopped rebase once the user's choices are applied.
+
+    Under `file_lock("sync")`: refuses (exit 1) while paths are still
+    unmerged (a stop nobody packaged — `add -A` would commit its markers);
+    runs the commit-boundary privacy pass and refuses (exit 1) while a file
+    that holds a secret cannot be rewritten; `git add -A` (SYNC-CONFLICT.md
+    excluded); `git <identity> -c core.editor=true rebase --continue`
+    (GIT_EDITOR=true too: it outranks core.editor). A later replayed commit
+    that stops is handed to `package_conflict` ONLY when git left unmerged
+    paths: MEMORY.md-only stops merge themselves (exit 0), anything else
+    rewrites SYNC-CONFLICT.md (exit 2). Any other failure prints git's own
+    message (exit 1) — the old flow re-packaged a conflict that no longer
+    existed and looped. Nothing is deleted or pushed here: the resolve flow
+    removes SYNC-CONFLICT.md after exit 0 and pushes with `_sync.py`.
+    Never raises."""
+    gh = gowth_home()
+    if not (gh / ".git").is_dir():
+        print(f"continue: {gh} is not a git repository — nothing to continue", file=sys.stderr)
+        return 1
+    try:
+        from _git import identity_host  # type: ignore
+        from _lock import file_lock  # type: ignore
+        host = host or identity_host()
+        lock = file_lock("sync", timeout=lock_timeout)
+        try:
+            lock.__enter__()
+        except TimeoutError:
+            print("continue: another session holds the sync lock — run the same command again shortly",
+                  file=sys.stderr)
+            return 1
+        try:
+            return _continue_locked(gh, host)
+        finally:
+            lock.__exit__(None, None, None)
+    except Exception as exc:
+        log_debug("conflict", f"--continue failed: {exc!r}")
+        print(f"continue: failed ({exc}); `git -C {shlex.quote(str(gh))} status` shows where the rebase "
+              f"stands", file=sys.stderr)
+        return 1
+
+
+def _continue_locked(gh: Path, host: str) -> int:
+    unmerged = _unmerged(gh)
+    if not _rebase_in_progress(gh):
+        if unmerged:
+            print(f"continue: {len(unmerged)} unmerged path(s) but no rebase in progress "
+                  f"(e.g. {unmerged[0]}) — resolve them by hand: git -C {shlex.quote(str(gh))} status",
+                  file=sys.stderr)
+            return 1
+        print(f"continue: no rebase in progress — nothing left to continue. Delete {conflict_md()} "
+              f"if it is still there, then push with /mem-sync.")
+        return 0
+    if unmerged:
+        # package_conflict stages every stop it packages, so this stop was never
+        # packaged (a pull run by hand?) — `add -A` would commit its markers
+        print(f"continue: {len(unmerged)} path(s) are still unmerged (e.g. {unmerged[0]}) — nothing was "
+              f"committed. Remove their conflict markers and `git add` them, then run the same command.",
+              file=sys.stderr)
+        return 1
+    try:
+        from _memsan import sanitize_before_commit  # type: ignore
+        report = sanitize_before_commit()
+    except Exception as exc:
+        print(f"continue: the privacy pass failed ({exc}) — nothing was committed", file=sys.stderr)
+        return 1
+    skipped = list(report.get("skipped") or [])
+    if skipped:
+        print(f"continue: refusing — {len(skipped)} file(s) hold a secret the sanitizer could not "
+              f"rewrite (lock held or write failed): {', '.join(skipped[:5])}. Nothing was committed; "
+              f"run the same command again in a moment.", file=sys.stderr)
+        return 1
+    if report.get("sanitized"):
+        print(f"continue: redacted {report.get('secrets', 0)} secret(s) in: "
+              f"{', '.join(report['sanitized'][:5])}")
+    # SYNC-CONFLICT.md is never committed: the default .gitignore ignores it; an
+    # older vault's may not, so it is excluded there (an exclude that names an
+    # IGNORED file makes `git add` fail — hence the check)
+    ignored = _git(gh, "check-ignore", "-q", "--", "SYNC-CONFLICT.md")[0] == 0
+    add = ["add", "-A"] if ignored else ["add", "-A", "--", ".", ":(exclude)SYNC-CONFLICT.md"]
+    rc, _out, err = _git(gh, *add)
+    if rc != 0:
+        print(f"continue: git add failed — nothing was committed:\n{err.strip()[:1500]}", file=sys.stderr)
+        return 1
+    from _git import identity_args  # type: ignore
+    rc, out, err = _git(gh, *identity_args(host), "-c", "core.editor=true", "rebase", "--continue",
+                        env={**os.environ, "GIT_EDITOR": "true"})
+    if rc == 0:
+        print(f"continue: rebase finished (replayed as gowth-mem@{host}). Next: delete {conflict_md()}, "
+              f"then push with /mem-sync.")
+        return 0
+    if _unmerged(gh):
+        cm = package_conflict(host=host)
+        if cm is None:
+            print(f"continue: rebase finished (a later memory/MEMORY.md stop merged itself). Next: delete "
+                  f"{conflict_md()}, then push with /mem-sync.")
+            return 0
+        print(f"continue: a later replayed commit hit a NEW conflict — {cm} was rewritten; "
+              f"resolve it the same way.", file=sys.stderr)
+        return 2
+    detail = ((err or "") + (out or "")).strip()
+    print(f"continue: the rebase did not continue and nothing new conflicted. git said:\n{detail[:1500]}\n"
+          f"(If it names local changes, run the same command again.)", file=sys.stderr)
+    return 1
+
+
+def main(argv: "list | None" = None) -> int:
+    ap = argparse.ArgumentParser(description="Package a sync conflict, or finish a resolved rebase.")
+    ap.add_argument("--continue", dest="cont", action="store_true",
+                    help="finish the rebase after /mem-sync resolve applied the choices")
+    args = ap.parse_args(argv)
+    if args.cont:
+        return continue_rebase()
     p = package_conflict()
-    print(f"wrote {p}")
+    print(f"wrote {p}" if p is not None else "nothing left to package (MEMORY.md merged itself)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

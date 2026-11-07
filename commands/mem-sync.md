@@ -61,7 +61,9 @@ If `git pull --rebase` hits a conflict, `_sync.py` invokes `_conflict.py` which:
 2. Resets the working copy to the local side so files stay parseable (no raw `<<<<<<<` markers in topics).
 3. Exits with code 2.
 
-Then run `/mem-sync resolve` (shortcut: `memC`). The skill walks each file with you, applies your choice, and finishes the rebase + push under lock.
+Then run `/mem-sync resolve` (shortcut: `memC`). The skill walks each file with you, applies your choice, and finishes the rebase with `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_conflict.py" --continue` — under the sync lock it redacts secrets, stages the resolution and continues as `gowth-mem@<host>` (a bare git continue fails on a machine with no git identity) — then deletes `SYNC-CONFLICT.md` and pushes with `_sync.py`.
+
+Every commit path (this command, the hooks, `--continue`) first runs the privacy sanitizer over every changed markdown file under `workspaces/` and `shared/`; a file that holds a secret it cannot rewrite (lock held) is left out of that commit.
 
 ## After sync on a fresh machine
 
@@ -81,5 +83,6 @@ memx        (or /mem-ops reindex)
 
 When `~/.gowth-mem/SYNC-CONFLICT.md` exists, read `${CLAUDE_PLUGIN_ROOT}/templates/ops/sync-resolve.md`
 and follow it: walk each conflicted file, apply the user's choice (keep-local / keep-remote /
-merge / manual), `git rebase --continue`, then push. Conflicts on `workspaces/<ws>/memory/MEMORY.md`
+merge / manual), finish with `_conflict.py --continue` (exit 0 done · 2 new conflict · 1 see its message), delete
+`SYNC-CONFLICT.md`, then push. Conflicts on `workspaces/<ws>/memory/MEMORY.md`
 merge automatically since v4.8 (both free zones kept, block regenerated) and never appear there. The ops file's bash blocks are written against the plugin root as a dollar-brace shell expansion of CLAUDE_PLUGIN_ROOT. Claude Code substitutes that only in THIS command, never inside the ops file, and your shell does not export it — so start every Bash call that runs one of its commands with `export CLAUDE_PLUGIN_ROOT='${CLAUDE_PLUGIN_ROOT}'; ` on the same line — a bare `VAR=… cmd` prefix does NOT apply to expansions in that same command — or write that literal path in place of the expansion.

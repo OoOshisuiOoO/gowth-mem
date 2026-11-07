@@ -19,7 +19,8 @@ Rules (entry-level, in order):
   2. Entry with `(superseded|deprecated|obsolete)`     → DELETE
   3. Within-file Jaccard ≥ 0.85 duplicates             → DELETE shorter
 
-v4.9 (spec §3.3): a file is written only when an entry was deleted — the
+v4.9 (spec §3.3): a file is written only when an entry was deleted or it
+holds a secret `_privacy.sanitize` would redact (review safety-sync#2) — the
 rewrite used to drop the trailing newline, so every prune rewrote every clean
 file (new bytes, new mtime, a diff in the next sync). Each file is read,
 pruned and written under `file_lock(f"entries-{ws}", 5)`, the lock every
@@ -144,12 +145,26 @@ def _prune_file_locked(path: Path, dry_run: bool, today_iso: str,
             kept_lines.append(line)
             i += 1
 
-    if deleted and not dry_run:
+    if not dry_run and (deleted or _holds_secret(text)):
+        # review safety-sync#2 (second layer behind the commit-boundary pass in
+        # `_memsan`): a file the sanitizer would change is rewritten even with
+        # nothing deleted — `safe_write` redacts it. A clean file keeps its bytes
+        # and mtime (§3.3); with nothing deleted the join IS `text`.
         safe_write(path, "\n".join(kept_lines))
         if audit_rel:
             for reason, body in audit_entries:
                 log_prune_delete(audit_rel, reason, body)
     return (deleted, len(kept_entries))
+
+
+def _holds_secret(text: str) -> bool:
+    """True when `_privacy.sanitize` would redact something in `text`."""
+    try:
+        from _privacy import sanitize  # type: ignore
+        _cleaned, n = sanitize(text)
+    except Exception:
+        return False
+    return n > 0
 
 
 def collect_files(ws: str | None = None) -> list[Path]:
