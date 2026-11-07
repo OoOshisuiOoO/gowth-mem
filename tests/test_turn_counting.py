@@ -85,15 +85,20 @@ class Transcript:
         return rec
 
     def human(self, text: str, reply: str = "done", tool: str = "Edit",
-              flushed: bool = True) -> dict:
+              flushed: bool = True, prompt_source: str | None = None) -> dict:
         """flushed=False: the Stop-time reality for a tool-less answer — Claude
         Code writes the final assistant record AFTER the Stop hook ran
-        (verified with a transcript snapshot taken inside a real Stop hook)."""
+        (verified with a transcript snapshot taken inside a real Stop hook).
+        prompt_source: the 2.1.181+ `promptSource` stamp — `typed` on keyboard
+        input AND on a tmux paste (live mention-agent rounds)."""
         self.prompt_id = str(uuid.uuid4())
         self.chain_prompt_id = self.prompt_id
-        rec = self._append({"type": "user", "promptId": self.prompt_id,
-                            "origin": {"kind": "human"},
-                            "message": {"role": "user", "content": text}})
+        rec: dict = {"type": "user", "promptId": self.prompt_id,
+                     "origin": {"kind": "human"},
+                     "message": {"role": "user", "content": text}}
+        if prompt_source:
+            rec["promptSource"] = prompt_source
+        rec = self._append(rec)
         if flushed:
             self.assistant(reply, tool)
         return rec
@@ -828,7 +833,24 @@ DAILY = ("### DAILY KNOWLEDGE REFRESH + SELF-IMPROVE (incremental · token-lean)
          "STAGE=SELF-IMPROVE. Window: FROM 2026-10-26T03:25:49Z TO NOW.")
 SUMMARIZER = ("Below is a conversation log from a Claude Code coding session.\nCreate a summary to help the "
               "next session quickly understand the context.\n\n## Prioritize including\n- Design decisions")
-PIPELINE_SHAPES = (PASTED_TASK, SDK_VERIFY, SDK_REVERIFY, REFLECT, TEST_STAGE, DAILY, SUMMARIZER)
+
+
+def _wrapped(body: str, pid: str = "a75c") -> str:
+    """Review hooks#1: how Claude Code (2.1.278–2.1.301 transcripts, behind a
+    server-side flag) records a BRACKETED paste — tmux `paste-buffer -p`, the
+    way mention-agent sends its EXECUTE/REFLECT rounds (198 live rounds,
+    Sep–Nov 2026, origin.kind human, promptSource typed): two newlines, the
+    opener + newline, the body, a newline and the closer; the id is exactly 4
+    lowercase hex chars (the 2.1.301 binary's own id check)."""
+    return f'\n\n<pasted_content id="{pid}">\n{body}\n</pasted_content id="{pid}">\n'
+
+
+WRAPPED_TASK = _wrapped(PASTED_TASK, "a75c")      # the EXECUTE round: `### TASK … ###` + STAGE=EXECUTE
+WRAPPED_REFLECT = _wrapped(REFLECT, "1c90")
+WRAPPED_EXECUTE = _wrapped("STAGE=EXECUTE\nOperator APPROVED. Execute the PLAN from the VERIFY stage.", "2d41")
+WRAPPED_SUMMARIZER = _wrapped(SUMMARIZER, "09ef")
+WRAPPED_SHAPES = (WRAPPED_TASK, WRAPPED_REFLECT, WRAPPED_EXECUTE, WRAPPED_SUMMARIZER)
+PIPELINE_SHAPES = (PASTED_TASK, SDK_VERIFY, SDK_REVERIFY, REFLECT, TEST_STAGE, DAILY, SUMMARIZER) + WRAPPED_SHAPES
 HUMAN_LOOKALIKES = (
     "STAGE=PROD make deploy for the api service",          # an env assignment typed by a person
     "STAGE=prod\nrun the deploy",                            # lowercase name
@@ -842,6 +864,26 @@ HUMAN_LOOKALIKES = (
     "Below is a conversation log",                           # not the whole prefix
     "below is a conversation log from a Claude Code coding session",
     "x" * 600 + PASTED_TASK,                                 # never searched past the start
+)
+# Review hooks#1 — still human after the unwrap: every lookalike pasted, a
+# person's ordinary paste, words typed BEFORE a pasted round (a person quoting
+# it), ids Claude Code never writes, a second opener nested in the first, and a
+# marker that does not start the pasted body.
+JSON_LOG_LINE = ('{"level":"error","ts":"2026-11-07T09:14:03Z","msg":"STAGE=VERIFY step failed",'
+                 '"pod":"api-7f9c","detail":"### TASK 1 ### missing"}')
+WRAPPED_HUMAN = tuple(_wrapped(t, "b8c1") for t in HUMAN_LOOKALIKES) + (
+    _wrapped(JSON_LOG_LINE, "e3a0"),
+    "please look at why the bot sent this round:\n" + WRAPPED_TASK,
+    "check this" + WRAPPED_REFLECT,
+    _wrapped(PASTED_TASK, "zzzz"),                           # not hex
+    _wrapped(PASTED_TASK, "A75C"),                           # Claude Code writes lowercase hex only
+    _wrapped(PASTED_TASK, "a75c1"),                          # 5 chars
+    _wrapped(PASTED_TASK, "a75"),                            # 3 chars
+    '<pasted_content id="a75c" >\n' + PASTED_TASK,           # not the exact opener
+    "<pasted_content>\n" + PASTED_TASK,
+    _wrapped(WRAPPED_TASK, "b8c1"),                          # only ONE leading opener is skipped
+    '<pasted_content id="a75c">' + "x" * 600 + "\n" + PASTED_TASK,   # marker 600 chars into the body
+    _wrapped("x" * 600 + "\n" + REFLECT, "c4d2"),
 )
 
 
@@ -950,6 +992,108 @@ class TestPipelinePrompts(HookHarness):
         self.assertLess(time.perf_counter() - t, 5.0)
         self.assertIsNone(self.state().get("total_turns"))
 
+    # ─── review hooks#1: Claude Code wraps a bracketed (tmux) paste ─────────
+
+    def test_wrapped_rounds_are_not_counted_logged_or_nagged(self):
+        """The live shape of every mention-agent round since October 2026 — a
+        tmux paste recorded as `<pasted_content id=…>` + round, origin.kind
+        human, promptSource typed. Before the fix each one was a turn, landed
+        in the synced session log and fired both cadences at interval 1."""
+        self.settings(journal_every=1, turn_interval=1, min_review_turns=1)
+        for text in WRAPPED_SHAPES:
+            self.tx.human(text, reply="executing the plan", tool="Bash", prompt_source="typed")
+            d = self.stop()
+            self.assertEqual(_directive(d), "", "no cadence directive may interrupt a bot round: " + text[:40])
+            self.assertIsNone(self.state().get("total_turns"), text[:40])
+            self.assertEqual(self.log(), "", "a wrapped round is never captured")
+        # positive control: the session's next HUMAN turn counts, is logged and
+        # fires the cadences — the silence above is not the harness
+        self.tx.human("rotate the staging certificate", prompt_source="typed")
+        d = self.stop()
+        self.assertEqual(self.state().get("total_turns"), 1)
+        self.assertNotEqual(_directive(d), "", "cadences at 1 fire on the first real turn")
+        users = [l for l in self.log().splitlines() if l.startswith("**User:**")]
+        self.assertEqual(users, ["**User:** rotate the staging certificate"])
+        self.assertNotIn("pasted_content", self.log())
+
+    def test_wrapped_round_typed_ahead_is_not_an_ask(self):
+        """A round pasted while the model works is a queued_command attachment
+        (origin.kind human, commandMode prompt), wrapped the same way."""
+        self.settings(journal_every=1, turn_interval=1, min_review_turns=1)
+        # it follows a bare TASK round (machine without the unwrap), so only the
+        # attachment decides this Stop
+        self.tx.human(PASTED_TASK, reply="executing", tool="Bash", prompt_source="typed")
+        self.tx.typed_ahead(WRAPPED_REFLECT, reply="reflecting", tool="Read")
+        d = self.stop()
+        self.assertEqual(_directive(d), "")
+        self.assertIsNone(self.state().get("total_turns"))
+        self.assertEqual(self.log(), "")
+        # a person's ask, then a wrapped round typed ahead: one turn, and the
+        # round never joins the User: line
+        self.tx.human("summarize the incident", prompt_source="typed")
+        self.tx.typed_ahead(WRAPPED_TASK)
+        d = self.stop()
+        self.assertEqual(self.state().get("total_turns"), 1)
+        self.assertNotEqual(_directive(d), "", "positive control: the person's turn fires the cadences")
+        users = [l for l in self.log().splitlines() if l.startswith("**User:**")]
+        self.assertEqual(users, ["**User:** summarize the incident"])
+        for marker in ("pasted_content", "### TASK", "STAGE="):
+            self.assertNotIn(marker, self.log())
+
+    def test_wrapped_rounds_leave_the_log_byte_identical(self):
+        """4-test rule (repeated write): after a human turn is logged, three
+        Stops ending wrapped rounds — a typed record, a queued attachment and
+        another typed record — leave the session log byte-identical."""
+        self.tx.human("rename the parser module", prompt_source="typed")
+        self.stop()
+        first = self.log()
+        self.assertIn("**User:** rename the parser module", first)
+        rounds = ((WRAPPED_TASK, "record"), (WRAPPED_REFLECT, "queued"), (WRAPPED_EXECUTE, "record"))
+        for text, how in rounds:
+            if how == "queued":
+                self.tx.typed_ahead(text, reply="reflecting", tool="Read")
+            else:
+                self.tx.human(text, reply="executing", tool="Bash", prompt_source="typed")
+            self.stop()
+            self.assertEqual(self.log(), first, f"{how}: {text[:40]!r}")
+        self.assertEqual(self.state().get("total_turns"), 1)
+
+    def test_wrapped_human_pastes_still_count(self):
+        """HEAD's human cases replayed through the new unwrap: a pasted
+        lookalike, a person's ordinary paste, words typed BEFORE a pasted
+        round, an id Claude Code never writes, a second nested opener, a marker
+        that does not start the pasted body — all turns, all logged."""
+        cases = (_wrapped(HUMAN_LOOKALIKES[0], "b8c1"),            # `STAGE=PROD make deploy …`
+                 _wrapped(JSON_LOG_LINE, "e3a0"),
+                 "please look at why the bot sent this round:\n" + WRAPPED_TASK,
+                 "is this safe?" + WRAPPED_REFLECT,                 # the opener within the first 64 chars
+                 _wrapped(PASTED_TASK, "zzzz"),
+                 _wrapped(WRAPPED_TASK, "b8c1"),
+                 _wrapped("x" * 600 + "\n" + REFLECT, "c4d2"))
+        for i, text in enumerate(cases, start=1):
+            self.tx.human(text, prompt_source="typed")
+            self.stop()
+            self.assertEqual(self.state().get("total_turns"), i, text[:60])
+        log = self.log()
+        users = [l for l in log.splitlines() if l.startswith("**User:**")]
+        self.assertEqual(len(users), len(cases), log)
+        self.assertIn('**User:** <pasted_content id="e3a0"> {"level":"error"', log)
+        self.assertIn("**User:** please look at why the bot sent this round: <pasted_content", log)
+        self.assertIn('**User:** is this safe? <pasted_content id="1c90"> STAGE=REFLECT', log)
+
+    def test_huge_wrapped_pipeline_prompt_is_fast(self):
+        """Growth through the real entry point, wrapped: a 200 KB pasted round,
+        and 200 KB of whitespace between the opener and the marker."""
+        import time
+        for text in (_wrapped(PASTED_TASK + "\n" + "z" * 200_000),
+                     '<pasted_content id="a75c">' + " \n" * 100_000 + REFLECT):
+            self.tx.human(text, flushed=False, prompt_source="typed")
+            t = time.perf_counter()
+            self.stop()
+            self.assertLess(time.perf_counter() - t, 5.0)
+            self.assertIsNone(self.state().get("total_turns"), text[:40])
+        self.assertEqual(self.log(), "")
+
 
 class TestPipelineMarkers(unittest.TestCase):
     """Unit level: _capture.is_pipeline_prompt / pipeline_prefixes /
@@ -963,6 +1107,9 @@ class TestPipelineMarkers(unittest.TestCase):
         for text in PIPELINE_SHAPES:
             self.assertTrue(self.cap.is_pipeline_prompt(text), text[:40])
             self.assertTrue(self.cap.is_pipeline_prompt(text, logged=True), text[:40])
+            # … and as a session log stores it (whitespace collapsed) — the
+            # wrapped rounds included (review hooks#1)
+            self.assertTrue(self.cap.is_pipeline_prompt(_collapsed(text), logged=True), _collapsed(text)[:40])
         self.assertTrue(self.cap.is_pipeline_prompt("\n\n   " + SDK_VERIFY), "leading whitespace is skipped")
         self.assertTrue(self.cap.is_pipeline_prompt(" " * 600 + "STAGE=VERIFY\nx"),
                         "the 512-char window starts after the leading whitespace")
@@ -1080,6 +1227,128 @@ class TestPipelineMarkers(unittest.TestCase):
         # and through the classifier, on a record (prompt_text + marker)
         rec = {"type": "user", "uuid": "x", "origin": {"kind": "human"},
                "message": {"content": PASTED_TASK + "q" * 40_000}}
+        t0 = time.perf_counter()
+        self.assertEqual(self.cap._classify_record(rec), "machine")
+        self.assertLess(time.perf_counter() - t0, 0.05)
+
+    # ─── review hooks#1: one leading `<pasted_content id="xxxx">` opener ───
+
+    def test_wrapped_rounds_unwrap_one_paste_opener(self):
+        for text in WRAPPED_SHAPES:
+            self.assertTrue(text.startswith('\n\n<pasted_content id="'), "the fixture is really wrapped")
+            self.assertTrue(self.cap.is_pipeline_prompt(text), text[:50])
+            self.assertTrue(self.cap.is_pipeline_prompt(text, logged=True), text[:50])
+        op = '<pasted_content id="a75c">'
+        self.assertTrue(self.cap.is_pipeline_prompt(op + "### TASK 1 ###\nx"), "no newline after the opener")
+        self.assertTrue(self.cap.is_pipeline_prompt(" \t\n" + op + " \n" * 400 + "STAGE=VERIFY\nx"),
+                        "the 512-char window starts after the whitespace behind the opener too")
+        for pid in ("0000", "ffff", "9a0b"):
+            self.assertTrue(self.cap.is_pipeline_prompt(_wrapped(SDK_VERIFY, pid)), pid)
+        for text in (op, op + "  \n ", "\n\n" + op + "\n", "\n\n" + op + "\n</pasted_content id=\"a75c\">\n"):
+            self.assertFalse(self.cap.is_pipeline_prompt(text), repr(text))
+            self.assertFalse(self.cap.is_pipeline_prompt(text, logged=True), repr(text))
+
+    def test_wrapped_human_lookalikes(self):
+        """HEAD's refusal cases (HUMAN_LOOKALIKES) and the paste-specific ones
+        stay human through the unwrap."""
+        self.assertGreater(len(WRAPPED_HUMAN), len(HUMAN_LOOKALIKES))
+        for text in WRAPPED_HUMAN:
+            self.assertFalse(self.cap.is_pipeline_prompt(text), text[:80])
+
+    def test_wrapped_logged_lines(self):
+        """A session log stores a wrapped round whitespace-collapsed (the live
+        pre-fix logs: `**User:** <pasted_content id="a75c"> ### TASK … ###
+        STAGE=EXECUTE …`): logged=True reads it, normal mode still needs the
+        real newline after a `### TASK` line or a bare STAGE name."""
+        for text in WRAPPED_SHAPES:
+            line = _collapsed(text)
+            self.assertTrue(line.startswith('<pasted_content id="') and "\n" not in line, line[:40])
+            self.assertTrue(self.cap.is_pipeline_prompt(line, logged=True), line[:60])
+        for text in (WRAPPED_TASK, WRAPPED_EXECUTE):
+            self.assertFalse(self.cap.is_pipeline_prompt(_collapsed(text)), _collapsed(text)[:60])
+        for text in (WRAPPED_REFLECT, WRAPPED_SUMMARIZER):
+            self.assertTrue(self.cap.is_pipeline_prompt(_collapsed(text)), "a dash / the summarizer survive collapsing")
+        for text in ("please look at the bot round: " + _collapsed(WRAPPED_TASK),
+                     _collapsed(_wrapped(PASTED_TASK, "zzzz")),
+                     _collapsed(_wrapped(WRAPPED_TASK, "b8c1")),
+                     _collapsed(_wrapped(JSON_LOG_LINE, "e3a0"))):
+            self.assertFalse(self.cap.is_pipeline_prompt(text, logged=True), text[:60])
+
+    def test_settings_prefixes_see_the_unwrapped_head(self):
+        s = {"capture": {"pipeline_prefixes": ["[bot]", "### JOB\nmode=nightly"]}}
+        self.assertTrue(self.cap.is_pipeline_prompt(_wrapped("[bot] summarize the alerts"), s))
+        self.assertFalse(self.cap.is_pipeline_prompt(_wrapped("[bot] summarize the alerts")),
+                         "no settings → built-ins only")
+        self.assertTrue(self.cap.is_pipeline_prompt(_wrapped("### JOB\nmode=nightly digest"), s))
+        line = _collapsed(_wrapped("### JOB\nmode=nightly digest"))
+        self.assertTrue(self.cap.is_pipeline_prompt(line, s, logged=True))
+        self.assertFalse(self.cap.is_pipeline_prompt(line, s))
+        self.assertFalse(self.cap.is_pipeline_prompt("ok " + _wrapped("[bot] x"), s), "typed words first")
+        self.assertFalse(self.cap.is_pipeline_prompt(_wrapped(_wrapped("[bot] x"), "b8c1"), s), "one opener only")
+
+    def test_wrapped_records_classify_as_machine(self):
+        c = self.cap._classify_record
+        typed = {"type": "user", "uuid": "w1", "origin": {"kind": "human"}, "promptSource": "typed",
+                 "message": {"content": WRAPPED_TASK}}
+        parts = {"type": "user", "uuid": "w2", "origin": {"kind": "human"}, "promptSource": "typed",
+                 "message": {"content": [{"type": "text", "text": WRAPPED_REFLECT}]}}
+        queued = {"type": "attachment", "uuid": "w3", "attachment": {
+            "type": "queued_command", "prompt": WRAPPED_EXECUTE, "commandMode": "prompt",
+            "origin": {"kind": "human"}}}
+        for rec in (typed, parts, queued):
+            self.assertEqual(c(rec), "machine", rec["uuid"])
+        person = {"type": "user", "uuid": "p", "origin": {"kind": "human"}, "promptSource": "typed",
+                  "message": {"content": _wrapped(JSON_LOG_LINE, "e3a0")}}
+        quoting = {"type": "attachment", "uuid": "q", "attachment": {
+            "type": "queued_command", "prompt": "is this round safe?\n" + WRAPPED_TASK,
+            "commandMode": "prompt", "origin": {"kind": "human"}}}
+        self.assertEqual(c(person), "human")
+        self.assertEqual(c(quoting), "human")
+        reply = {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+        recs = [person, reply, typed, reply, queued, reply, parts, reply]
+        self.assertEqual(self.cap.find_human_prompt(recs), 0, "the wrapped rounds are skipped")
+
+    def test_paste_opener_growth_is_flat(self):
+        """4-test rule for _PASTE_OPEN_RE: 10k/20k/40k-char adversarial
+        pastes, both modes, with settings prefixes in play. The opener match is
+        anchored, fixed-length and bounded to 64 chars; the whitespace skip is
+        one linear lstrip()."""
+        import time
+        op = '<pasted_content id="a75c">'
+        shapes = {  # name: (make, (normal, logged) verdict)
+            "whitespace-run-after-opener": (lambda n: op + " " * n + "### TASK 1 ###\nx", (True, True)),
+            "newline-runs-around-opener": (lambda n: "\n" * (n // 2) + op + "\n" * (n // 2) + REFLECT,
+                                           (True, True)),
+            "repeated-openers": (lambda n: (op * (n // len(op) + 1))[:n], (False, False)),
+            "repeated-openers-then-task": (lambda n: op * (n // len(op) + 1) + "### TASK 1 ###\nx", (False, False)),
+            "unclosed-opener-flood": (lambda n: ('<pasted_content id="' * (n // 20 + 1))[:n], (False, False)),
+            "id-flood": (lambda n: '<pasted_content id="' + "a" * n + '">\n### TASK 1 ###\n', (False, False)),
+            "opener-then-unclosed-task-flood": (lambda n: op + "\n" + ("### TASK " * (n // 9 + 1))[:n],
+                                                (False, True)),
+            "opener-then-task-line-flood": (lambda n: op + "\n" + ("### TASK 1 ###\n" * (n // 15 + 1))[:n],
+                                            (True, True)),
+        }
+        settings = {"capture": {"pipeline_prefixes": ["[bot]" + " " * 150, "### JOB\n" * 20]}}
+        for logged in (False, True):
+            for name, (make, verdict) in shapes.items():
+                times, results = [], []
+                for size in (10_000, 20_000, 40_000):
+                    text = make(size)
+                    self.assertGreaterEqual(len(text), size)
+                    best = None
+                    for _ in range(5):
+                        t0 = time.perf_counter()
+                        r = self.cap.is_pipeline_prompt(text, settings, logged=logged)
+                        dt = time.perf_counter() - t0
+                        best = dt if best is None else min(best, dt)
+                    times.append(best)
+                    results.append(r)
+                self.assertLess(times[2], 0.01, (name, logged, times))
+                self.assertLessEqual(times[2], 2.5 * times[0] + 0.002, (name, logged, times))
+                self.assertEqual(results, [verdict[logged]] * 3, (name, logged))
+        rec = {"type": "attachment", "uuid": "x", "attachment": {
+            "type": "queued_command", "prompt": _wrapped(PASTED_TASK + "q" * 40_000), "commandMode": "prompt",
+            "origin": {"kind": "human"}}}
         t0 = time.perf_counter()
         self.assertEqual(self.cap._classify_record(rec), "machine")
         self.assertLess(time.perf_counter() - t0, 0.05)

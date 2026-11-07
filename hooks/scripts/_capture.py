@@ -172,9 +172,22 @@ _MACHINE_TURN_ORIGINS = ("task_notification",)
 # and 311/331 trade logs with the summarizer's prompt. Its stage prompts carry
 # a `promptSource: sdk` — or, pasted into tmux, `origin.kind: human` — so the
 # provenance fields cannot tell; the marker at the START of the prompt can.
-# Only the first PIPELINE_HEAD_CHARS after lstrip() are examined, so every
-# test below runs on <= 512 chars whatever the paste size (flat growth).
+# Only the first PIPELINE_HEAD_CHARS after lstrip() — and after ONE leading
+# paste opener, below — are examined, so every test below runs on <= 512 chars
+# whatever the paste size (flat growth).
 PIPELINE_HEAD_CHARS = 512
+# Claude Code records a BRACKETED paste (tmux `paste-buffer -p`, a terminal
+# paste) as "\n\n<pasted_content id=\"a75c\">\n<body>\n</pasted_content
+# id=\"a75c\">\n" — the id exactly 4 lowercase hex chars (2.1.301 binary; seen
+# in 2.1.278–2.1.301 transcripts, behind a server-side flag). mention-agent
+# pastes its EXECUTE / REFLECT rounds that way: since October 2026 every one
+# arrived wrapped (198 wrapped rounds in 143 live sessions, Sep–Nov), missed
+# every anchored marker and was counted and captured as the user's turn (and
+# dumped as one at PreCompact). ONE leading opener is skipped; text typed
+# BEFORE it keeps the prompt human (a person quoting a round). Fixed length,
+# anchored, bounded to the first _PASTE_OPEN_SCAN chars.
+_PASTE_OPEN_RE = re.compile(r'<pasted_content id="[0-9a-f]{4}">')
+_PASTE_OPEN_SCAN = 64
 PIPELINE_PREFIX_MAX_CHARS = 200     # capture.pipeline_prefixes: each 1..200 chars
 PIPELINE_PREFIXES_USED = 20         # … and at most 20 of them
 _PIPELINE_PREFIX_SCAN = 1000        # list items looked at (a hand-edited huge list stays cheap)
@@ -223,13 +236,26 @@ def is_pipeline_prompt(text, settings=None, logged: bool = False) -> bool:
       * any `capture.pipeline_prefixes` entry of `settings` (plain startswith —
         never a user regex). `settings=None` → built-in markers only.
 
+    "Starts" = after lstrip() and ONE leading Claude Code paste opener
+    `<pasted_content id="xxxx">` (4 lowercase hex; the whitespace after it is
+    skipped too): a bracketed paste — mention-agent's tmux rounds — is recorded
+    wrapped. Every marker and prefix is tested on that unwrapped head (the first
+    PIPELINE_HEAD_CHARS). Text typed before the opener, a second opener nested
+    in the first, or an id that is not 4 lowercase hex keeps the prompt human.
+
     `logged=True` reads text back from a session log (whitespace collapsed to
     single spaces): a closing `###` or `STAGE=<NAME>` may then be followed by a
     space. Curator use only — never for turn counting. Never raises."""
     try:
         if not isinstance(text, str) or not text:
             return False
-        head = text.lstrip()[:PIPELINE_HEAD_CHARS]
+        s = text.lstrip()
+        m = _PASTE_OPEN_RE.match(s, 0, _PASTE_OPEN_SCAN)
+        if m:
+            # the newline after the opener (a space in a logged line) and any
+            # further blanks, like the whitespace in front of an unwrapped prompt
+            s = s[m.end():].lstrip()
+        head = s[:PIPELINE_HEAD_CHARS]
         if not head:
             return False
         if head.startswith(_SUMMARIZER_PREFIX):
