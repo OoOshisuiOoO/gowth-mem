@@ -188,6 +188,16 @@ class CardLibraryTests(unittest.TestCase):
             ("### Core\n- [decision] use redis because it is fast", "entry_line:2"),
             ("### Core\n[ref] bare entry Source: x", "entry_line:2"),
             ("### Core\n### [exp] heading-form entry", "entry_line:2"),
+            # v4.9 review cards#1: the lines `_index` reads as entries too.
+            ("### Core\n\xa0[decision] NBSP-led", "entry_line:2"),
+            ("### Core\n-\xa0[decision] NBSP after the bullet", "entry_line:2"),
+            ("### Core\n\u2003[decision] EMSP-led", "entry_line:2"),
+            ("### Core\n\x0b[ref] VT-led", "entry_line:2"),
+            ("### Core\n- ## [decision] bullet then heading", "entry_line:2"),
+            ("### Core\n* ### [ref] star then heading", "entry_line:2"),
+            ("### Core\n##\xa0[decision] heading then NBSP", "entry_line:2"),
+            ("### Core\n- see below\u2028## [decision] after a U+2028 break", "entry_line:2"),
+            ("### Core\n- capture strips <private> spans", "private_tag"),
             ("### Core\n- edit the ## Cross-links (manual) list", "bad_heading:2"),
             ("### Core\n- old rule (superseded by the new one)", "forbidden:superseded"),
             ("### Core\n- (Deprecated) old flag", "forbidden:deprecated"),
@@ -360,10 +370,16 @@ class CardCliTests(_Vault):
         _w(self.wsd / "legacy" / "legacy.md", "# Legacy folder note\n")
         _w(self.wsd / "linked" / "elsewhere.md", _skeleton("linked"))
         (self.wsd / "linked" / "00-README.md").symlink_to(self.wsd / "linked" / "elsewhere.md")
+        # v4.9 review cards#3: reserved workspace dirs are never topics, even
+        # with a README in them (any filesystem) or through a symlinked name.
+        _w(self.wsd / "memory" / "MEMORY.md", "# Claude Code auto-memory\n")
+        _w(self.wsd / "memory" / "00-README.md", _skeleton("memory"))
+        _w(self.wsd / "journal" / "00-README.md", _skeleton("journal"))
+        (self.wsd / "jlink").symlink_to(self.wsd / "journal", target_is_directory=True)
         try:
             before = _tree(self.home)
             for topic in ("infra", "orchid", "lily", "legacy", "missing", "../w1", "Bad Slug",
-                          "docs", "linked"):
+                          "docs", "linked", "memory", "journal", "jlink"):
                 self.assertEqual(self.card("--ws", "w1", "--topic", topic, "--set", "-",
                                            stdin=CARD_A).stdout, "-\trejected:no_topic\n", topic)
                 self.assertEqual(self.card("--ws", "w1", "--topic", topic, "--summary",

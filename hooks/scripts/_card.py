@@ -28,7 +28,10 @@ used is `_gate`'s Vietnamese character class), so nothing here can backtrack
 on a hostile README:
   card_state(text)  -> ("none"|"ok"|"unbalanced"|"duplicate"|"outside", region|None)
   card_region(text) -> (start, end) | None     the begin line through the end line
+  card_spans(text)  -> [(start, end)]          every card, corrupt ones too (`_moc`)
   has_card(text)    -> bool
+  tldr_span(text)   -> (start, end) | None     the TL;DR as `_moc` locates it (first hit)
+  tldr_heading_bad(text) -> bool               a "## TL;DR" whose first hit is no heading line
   read_card(readme_path, max_bytes=None) -> {"body", "updated", "path"} | None
   lint(body, settings=None) -> (ok, reason)
   strip_card(text)        the README text routing scores (`_topic._pick_topic`)
@@ -42,9 +45,16 @@ CLI — writes hold file_lock("moc", 10), the lock `_moc` rebuilds take:
   _card.py --ws <ws> --topic <slug> --summary "<line>" # sets the TL;DR one-liner
   _card.py --ws <ws> --check [--json]                  # card findings for every topic
 Status: written | confirmed (same body: only `updated=` moves to today) |
-unchanged | rejected:<reason> (bad_ws, no_topic, lock_timeout, markers_corrupt,
-archive_failed, unreadable, or a lint rule). A replaced card is archived
-verbatim to `<topic>/.history/card-<sha12 of the old region>.txt` first.
+unchanged | rejected:<reason> — bad_ws, no_topic (a reserved workspace dir
+such as `memory` included), lock_timeout, markers_corrupt, tldr_heading (the
+README's first "## TL;DR" is no heading line of its own: mid-line, `### TL;DR`,
+inside the frontmatter), archive_failed, unreadable, secret_leak /
+sanitize_failed (also when `safe_write`'s sanitize would change the WHOLE
+README — a hand-pasted secret, a `<private>` … `</private>` pair: nothing is
+written), or a lint rule (`private_tag`: a curated field never holds a
+`<private>` / `</private>` tag). A replaced card is archived verbatim to
+`<topic>/.history/card-<sha12 of the old region>.txt` first; a `_moc` rebuild
+archives a card it would drop the same way (header `moc-rebuild`).
 """
 from __future__ import annotations
 
@@ -141,19 +151,49 @@ def _is_iso_date(v: str) -> bool:
             and (v[:4] + v[5:7] + v[8:]).isascii() and (v[:4] + v[5:7] + v[8:]).isdigit())
 
 
+def _frontmatter_end(text: str) -> int:
+    """Offset just past the closing `---` of a leading frontmatter block, 0
+    when there is none: an opening `---` line, then up to the first later line
+    that starts with `---` — the block `_frontmatter._FRONT_RE` and `_index`
+    strip. Linear (two `find`s; the regex can backtrack on blank-line runs)."""
+    if not text.startswith("---"):
+        return 0
+    nl = text.find("\n")
+    if nl < 0 or text[3:nl].strip():
+        return 0
+    close = text.find("\n---", nl + 1)
+    return close + 4 if close >= 0 else 0
+
+
 def tldr_span(text: str, spans: list | None = None):
     """(start, end) of the `## TL;DR` section — its heading line up to the next
     line that starts with `## ` (EOF if none): the section a `_moc` rebuild
-    keeps verbatim. None when the README has no TL;DR heading."""
-    spans = spans if spans is not None else _line_spans(text)
-    start = None
-    for a, b in spans:
-        if start is None:
-            if text[a:b].strip() == TLDR_HEADING:
-                start = a
-        elif text.startswith("## ", a):
-            return start, a
-    return (start, len(text)) if start is not None else None
+    keeps verbatim. None when the README has no TL;DR heading.
+
+    The heading is located the way `_moc` locates it — the FIRST "## TL;DR" in
+    the text — so a suffixed heading (`## TL;DR:`, `## TL;DR — …`,
+    `## TL;DR (2026)`) is THE TL;DR here too (review cards#2: an exact-match
+    lookup missed it, `--set`/`--summary` added a second TL;DR above it, and
+    the next rebuild dropped the user's). None as well when that first hit is
+    no heading line of the body — mid-line, inside `### TL;DR`, or inside the
+    frontmatter (`tldr_heading_bad`): `_moc` would still take its TL;DR from
+    there, so no card is ever placed by another reading.
+    `spans` is accepted for the callers' convenience and not needed."""
+    idx = text.find(TLDR_HEADING)
+    if idx < 0:
+        return None
+    start = text.rfind("\n", 0, idx) + 1
+    if text[start:idx].strip(" \t") or idx < _frontmatter_end(text):
+        return None
+    nxt = text.find("\n## ", idx)
+    return start, (nxt + 1 if nxt >= 0 else len(text))
+
+
+def tldr_heading_bad(text: str) -> bool:
+    """True when the text holds "## TL;DR" but its first hit is no heading
+    line — `_moc` would take the TL;DR from there, so a card or summary write
+    refuses (`rejected:tldr_heading`) rather than add a second one."""
+    return isinstance(text, str) and TLDR_HEADING in text and tldr_span(text) is None
 
 
 def card_state(text: str):
@@ -202,6 +242,47 @@ def card_region(text: str):
 
 def has_card(text: str) -> bool:
     return card_region(text) is not None
+
+
+def card_spans(text: str) -> list:
+    """(start, end) of EVERY card in `text`, corrupt ones included — what a
+    `_moc` rebuild must not drop unseen (review cards#4): a begin-marker line
+    through the first end-marker line after it. The scan for that end stops
+    at another begin marker or a section `_moc` regenerates/locates (`## Aspects
+    (auto)`, `## Cross-links (manual)`): a card does not own those. With no end
+    marker the span runs to the first `## ` line (as `strip_card`), else to
+    where the scan stopped. Linear: every line is scanned at most twice."""
+    if not isinstance(text, str) or _HINT not in text:
+        return []
+    spans = _line_spans(text)
+    out: list = []
+    n = len(spans)
+    i = 0
+    while i < n:
+        a, b = spans[i]
+        if not is_begin_marker(text[a:b]):
+            i += 1
+            continue
+        j = i + 1
+        end = None
+        h2 = None
+        while j < n:
+            ja, jb = spans[j]
+            line = text[ja:jb]
+            if is_end_marker(line):
+                end = jb
+                j += 1
+                break
+            if is_begin_marker(line) or text.startswith(_MOC_SECTIONS, ja):
+                break
+            if h2 is None and text.startswith("## ", ja):
+                h2 = ja
+            j += 1
+        if end is None:
+            end = h2 if h2 is not None else (spans[j][0] if j < n else len(text))
+        out.append((a, end))
+        i = j
+    return out
 
 
 def _region_parts(text: str, region) -> tuple:
@@ -325,21 +406,48 @@ def _is_bad_heading(line: str) -> bool:
     return s.startswith(("# ", "## ", "#\t", "##\t"))
 
 
-def _is_entry_line(line: str) -> bool:
-    """`[type]` entry shape (`- [decision] …`, `[ref] …`, `### [exp] …`): the
-    parsers of `_index`, `_gate`, `_prune` would read it as an entry."""
-    s = line.lstrip(" \t")
+def _drop_hash_run(s: str):
+    """`s` without a leading `#` run (≤6, as `TAG_RE`'s `#{2,6}` and the
+    indexer's `#{1,3}` heading allow) and the Unicode whitespace after it;
+    None for a longer run (no parser reads `####### [x]` as an entry)."""
+    if s[:1] != "#":
+        return s
+    k = len(s) - len(s.lstrip("#"))
+    return s[k:].lstrip() if k <= 6 else None
+
+
+def _is_entry_part(s: str) -> bool:
+    """One `splitlines()` part: [ws] [#-run] [ws] [bullet] [ws] [#-run] [ws]
+    `[type]` — the union of `_index` (content `^(?:[-*]\\s*)?(?:#{2,6}\\s*)?\\[`
+    after `.lstrip()`, and `^#{1,3}\\s+` headings whose text is tested the same
+    way: `### - [x]`, `## ## [x]`), the spec's `^\\s*[-*]?\\s*\\[`, `_gate`,
+    `_prune`, `_dedup`, `_memfile` (`## - [decision]`)."""
+    s = _drop_hash_run(s.lstrip())
+    if s is None:
+        return False
     if s[:1] in ("-", "*"):
-        s = s[1:].lstrip(" \t")
-    elif s[:1] == "#":
-        k = len(s) - len(s.lstrip("#"))
-        if k > 6:
-            return False
-        s = s[k:].lstrip(" \t")
-    if not s.startswith("["):
+        s = s[1:].lstrip()
+    s = _drop_hash_run(s)
+    if s is None or not s.startswith("["):
         return False
     close = s.find("]", 1, 13)
     return close > 1 and s[1:close].lower() in ENTRY_TYPES
+
+
+def _is_entry_line(line: str) -> bool:
+    """`[type]` entry shape (`- [decision] …`, `[ref] …`, `### [exp] …`): the
+    parsers of `_index`, `_gate`, `_prune` would read it as an entry.
+
+    Seen the way the parsers see it (review cards#1): `_index.split_chunks`
+    splits on `str.splitlines()` (VT, FF, \\x1c-\\x1e, \\x85, U+2028, U+2029
+    end a line there, not only "\\n"), and their `\\s` is Unicode whitespace
+    (NBSP, EMSP, U+3000 …) = `str.lstrip()`. Linear: a constant number of
+    passes over each part. tests/test_cards_fix.py holds a differential fuzz
+    against `_index.split_chunks` + `_extract_tag`."""
+    for part in line.splitlines() or (line,):
+        if _is_entry_part(part):
+            return True
+    return False
 
 
 def _structure_issues(body: str) -> list:
@@ -367,6 +475,23 @@ def _secret_count(text: str) -> int:
         return -1
 
 
+def _private_tag(text: str):
+    """True when `text` holds a `<private>` or `</private>` tag in any spelling
+    `_privacy` pairs (IGNORECASE: `<prıvate>`, `</PRİVATE>` — a casefold()
+    substring test misses those); None when the patterns cannot be loaded.
+
+    Review gaps-docs#3: each field is sanitised on its own, so `<private>` in
+    the summary and `</private>` in a later card body both passed — and
+    `safe_write`'s whole-file sanitize then paired them across lines and
+    replaced everything between (the begin marker included) with
+    `[REDACTED:private-block]`. A curated field never needs the tag."""
+    try:
+        from _privacy import _PRIVATE_CLOSE_RE, _PRIVATE_OPEN_RE  # type: ignore
+        return bool(_PRIVATE_OPEN_RE.search(text) or _PRIVATE_CLOSE_RE.search(text))
+    except Exception:
+        return None
+
+
 def _not_english(text: str, settings) -> bool:
     if not setting("gate.english_only", bool, False, settings=settings):
         return False
@@ -376,15 +501,21 @@ def _not_english(text: str, settings) -> bool:
 
 def lint(body, settings=None):
     """(ok, reason) for a card body; the first failing rule wins:
-    empty · control_token · secret_leak (sanitize_failed) · comment:<line> ·
-    bad_heading:<line> · entry_line:<line> · forbidden:<word> · not_english ·
-    over_budget:<n>/<max> (code points of the normalised body)."""
+    empty · control_token · private_tag (sanitize_failed) · secret_leak
+    (sanitize_failed) · comment:<line> · bad_heading:<line> · entry_line:<line>
+    · forbidden:<word> · not_english · over_budget:<n>/<max> (code points of
+    the normalised body)."""
     s = settings if isinstance(settings, dict) else read_settings()
     body = normalize_body(body)
     if not body:
         return False, "empty"
     if CONTROL_TOKEN in body.lower():
         return False, "control_token"
+    tag = _private_tag(body)
+    if tag is None:
+        return False, "sanitize_failed"
+    if tag:
+        return False, "private_tag"
     n = _secret_count(body)
     if n < 0:
         return False, "sanitize_failed"
@@ -409,8 +540,9 @@ def lint(body, settings=None):
 
 def lint_summary(line, settings=None):
     """(ok, reason, cleaned) for a TL;DR one-liner: one line, ≤160 chars after
-    a leading `>` is dropped, no control token, no comment, no secret, English
-    when `gate.english_only`."""
+    a leading `>` is dropped, no control token, no comment, no `<private>` /
+    `</private>` tag (`private_tag`), no secret, English when
+    `gate.english_only`."""
     s = settings if isinstance(settings, dict) else read_settings()
     clean = clean_summary(line)
     if not clean:
@@ -423,6 +555,11 @@ def lint_summary(line, settings=None):
         return False, "comment", ""
     if _MOC_SECTIONS[1] in clean:        # `_moc` finds the manual section by text search
         return False, "reserved_heading", ""
+    tag = _private_tag(clean)
+    if tag is None:
+        return False, "sanitize_failed", ""
+    if tag:
+        return False, "private_tag", ""
     n = _secret_count(clean)
     if n < 0:
         return False, "sanitize_failed", ""
@@ -688,15 +825,18 @@ def _restamp(begin_line: str, today: str) -> str:
     return f"{lead}{BEGIN_PREFIX} {' '.join(toks)} -->{tail}"
 
 
-def _archive(readme: Path, old_region: str) -> bool:
+def _archive(readme: Path, old_region: str, why: str = "card-replace") -> bool:
     """Write the OLD region verbatim (sanitised: `.history/` syncs) to
     `<topic>/.history/card-<sha12>.txt` and read it back. False = do not
-    replace the card (the old text would exist nowhere but git)."""
+    replace the card (the old text would exist nowhere but git). `why` names
+    the writer in the header: `card-replace` (`--set`) or `moc-rebuild` (a
+    `_moc` rebuild about to drop a card that is not where a rebuild keeps
+    it)."""
     hist = readme.parent / ".history"
     if hist.is_symlink():
         return False
     sha12 = hashlib.sha1(old_region.encode("utf-8")).hexdigest()[:12]
-    content = f"# verbatim archive (card-replace) of {_vault_rel(readme)}\n{old_region}\n"
+    content = f"# verbatim archive ({why}) of {_vault_rel(readme)}\n{old_region}\n"
     try:
         from _privacy import sanitize  # type: ignore
         cleaned, n = sanitize(content)
@@ -731,6 +871,28 @@ def _read_strict(readme: Path):
         return None
 
 
+def _redaction_refusal(new_text: str):
+    """None when `safe_write`'s whole-file sanitize would leave `new_text`
+    unchanged; else the refusal (`rejected:secret_leak`, or
+    `rejected:sanitize_failed` when the filter crashed) — and the caller
+    writes NOTHING. Review gaps-docs#3: a `<private>` in one write and a
+    `</private>` in another (or in a hand-edited section) were paired across
+    lines by that sanitize and everything between them redacted — the card's
+    begin marker, `## Aspects (auto)`, `## Cross-links (manual)` — while the
+    CLI printed `written`. Every lint passes field by field; this checks the
+    file that would actually be written."""
+    try:
+        from _privacy import sanitize  # type: ignore
+        clean, n = sanitize(new_text)
+    except Exception:
+        return "rejected:sanitize_failed"
+    if not isinstance(n, int) or n < 0:
+        return "rejected:sanitize_failed"
+    if n > 0 or clean != new_text:
+        return "rejected:secret_leak"
+    return None
+
+
 def _apply_card(readme: Path, body: str, today: str) -> str:
     text = _read_strict(readme)
     if text is None:
@@ -744,17 +906,31 @@ def _apply_card(readme: Path, body: str, today: str) -> str:
             if _marker_attrs(begin).get("updated") == today:
                 return "unchanged"
             a = region[0]
-            safe_write(readme, text[:a] + _restamp(begin, today) + text[a + len(begin):])
+            new_text = text[:a] + _restamp(begin, today) + text[a + len(begin):]
+            refused = _redaction_refusal(new_text)
+            if refused:
+                return refused
+            safe_write(readme, new_text)
             return "confirmed"
+        new_text = text[:region[0]] + render_region(body, today) + text[region[1]:]
+        refused = _redaction_refusal(new_text)
+        if refused:
+            return refused
         if not _archive(readme, text[region[0]:region[1]]):
             return "rejected:archive_failed"
-        new_text = text[:region[0]] + render_region(body, today) + text[region[1]:]
     else:
         if tldr_span(text) is None:
-            text = _with_tldr(text, TODO_SUMMARY)
+            if tldr_heading_bad(text):    # `_moc` would take its TL;DR from that hit
+                return "rejected:tldr_heading"
+            text = _with_tldr(text, TODO_SUMMARY)   # only when there is no "## TL;DR" at all
         spans = _line_spans(text)
-        new_text = _splice_block(text, _card_insert_at(text, spans, tldr_span(text, spans)),
-                                 render_region(body, today))
+        tl = tldr_span(text, spans)
+        if tl is None:                    # defensive: the inserted heading must be THE TL;DR
+            return "rejected:tldr_heading"
+        new_text = _splice_block(text, _card_insert_at(text, spans, tl), render_region(body, today))
+        refused = _redaction_refusal(new_text)
+        if refused:
+            return refused
     safe_write(readme, new_text)
     return "written"
 
@@ -770,7 +946,9 @@ def _apply_summary(readme: Path, summary: str) -> str:
     spans = _line_spans(text)
     tl = tldr_span(text, spans)
     if tl is None:
-        new_text = _with_tldr(text, summary)
+        if tldr_heading_bad(text):        # `_moc` would take its TL;DR from that hit
+            return "rejected:tldr_heading"
+        new_text = _with_tldr(text, summary)   # only when there is no "## TL;DR" at all
     else:
         span = summary_span(text, spans, tl, region)
         if span is not None:
@@ -782,6 +960,9 @@ def _apply_summary(readme: Path, summary: str) -> str:
         else:
             heading_end = next(b for a, b in spans if a == tl[0])
             new_text = _splice_block(text, _after_line(text, heading_end), line)
+    refused = _redaction_refusal(new_text)
+    if refused:
+        return refused
     safe_write(readme, new_text)
     return "written"
 
