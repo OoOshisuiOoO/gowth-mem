@@ -29,7 +29,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 from _commitmsg import build_message  # type: ignore
 from _debug import log_debug  # type: ignore
-from _git import auth_url, git_cmd, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
+from _git import auth_url, git_cmd, identity_args, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
 from _home import conflict_md, gowth_home  # type: ignore
 from _lock import file_lock  # type: ignore
 
@@ -209,7 +209,7 @@ def _clear_stale_rebase(gh: Path, quiet: bool) -> bool:
     return False
 
 
-def _stash_if_dirty(gh: Path, quiet: bool):
+def _stash_if_dirty(gh: Path, quiet: bool, host: Optional[str] = None):
     """Stash uncommitted changes if dirty.
 
     Returns: msg (str) if stashed, None if clean, False if stash failed.
@@ -217,7 +217,8 @@ def _stash_if_dirty(gh: Path, quiet: bool):
     status = run_git(gh, "status", "--porcelain", check=False).stdout
     if not status.strip():
         return None
-    r = run_git(gh, "stash", "push", "-u", "-m", _STASH_MSG, check=False)
+    # a stash entry is a commit: same identity as the commit paths (v4.9 §3.4)
+    r = run_git(gh, *identity_args(host), "stash", "push", "-u", "-m", _STASH_MSG, check=False)
     if r.returncode != 0:
         err = (r.stderr or r.stdout or "").strip()[:300]
         log(
@@ -442,15 +443,18 @@ def _restore_memfiles(gh: Path, saved: list, quiet: bool, held: "list | None" = 
 
 
 def pull_rebase(gh: Path, branch: str, quiet: bool,
-                remote: str, token: Optional[str]) -> int:
-    """Pull --rebase; auto-stash dirty tree, restore after. Returns 0/2/1."""
+                remote: str, token: Optional[str], host: Optional[str] = None) -> int:
+    """Pull --rebase; auto-stash dirty tree, restore after. Returns 0/2/1.
+
+    `host` names the `gowth-mem@<host>` identity the replayed commits get
+    (default: config.json host_id, else the hostname — as the commit paths)."""
     if not _clear_stale_rebase(gh, quiet):
         return 1
     _recover_sidecars(gh, quiet)
     held: list = []
     saved = _set_aside_memfiles(gh, quiet, held)
     try:
-        return _pull_rebase_inner(gh, branch, quiet, remote, token, saved)
+        return _pull_rebase_inner(gh, branch, quiet, remote, token, saved, host)
     finally:
         _restore_memfiles(gh, saved, quiet, held)
 
@@ -459,12 +463,15 @@ PULL_TIMEOUT = 120.0
 
 
 def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
-                       token: Optional[str], saved: list) -> int:
-    stash_ref = _stash_if_dirty(gh, quiet)
+                       token: Optional[str], saved: list, host: Optional[str] = None) -> int:
+    stash_ref = _stash_if_dirty(gh, quiet, host)
     if stash_ref is False:
         return 1
 
-    r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
+    # v4.9 (spec §3.4): the rebase replays every unpushed local commit, so it
+    # needs the identity the commit paths pass — without one (CI, a fresh
+    # machine, user.useConfigOnly) the pull failed on the first replay
+    r = run_git(gh, *identity_args(host), "pull", "--rebase", "origin", branch, check=False,
                 remote=remote, token=token, timeout=PULL_TIMEOUT)
     if r.returncode == 0:
         log(f"sync: pulled origin/{branch}", quiet=quiet)
@@ -477,7 +484,7 @@ def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
             rc = 0
         elif "CONFLICT" in err:
             from _conflict import package_conflict  # type: ignore
-            cm = package_conflict()
+            cm = package_conflict(host=host)
             if cm is None:
                 log("sync: memory/MEMORY.md conflict merged automatically", quiet=quiet)
                 rc = 0
@@ -494,6 +501,22 @@ def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
         if not _restore_stash(gh, pull_ok=(rc == 0), quiet=quiet) and rc == 0:
             rc = 2
     return rc
+
+
+def ensure_canon(gh: Path, quiet: bool) -> None:
+    """v4.9 (spec §3.5): deliver the shipped rules + research canon and the gap
+    ledger's `.gitattributes` union line. Called only where no pull can race
+    it — right after a successful pull while the sync lock is still held, or
+    when no remote is configured — so a peer's older canon arrives first and
+    is then updated in place (a tracked modification), never an add/add.
+    Never raises."""
+    try:
+        from _canon import ensure  # type: ignore
+        for dst, status in ensure(gh):
+            if status in ("installed", "updated"):
+                log(f"sync: canon {dst} {status}", quiet=quiet)
+    except Exception as e:
+        log_debug("auto-sync", f"canon delivery failed: {e}")
 
 
 def push(gh: Path, branch: str, quiet: bool,
@@ -548,6 +571,7 @@ def main() -> int:
 
     if not remote:
         log("sync: no remote configured — run /mem-ops config or /mem-install", quiet=quiet)
+        ensure_canon(gh, quiet)          # nothing is pulled here, nothing can race it
         return 0
 
     # SessionStart pull-only path must never block > ~8s. Full sync is more
@@ -559,13 +583,17 @@ def main() -> int:
                 return 1
 
             if args.pull_only:
-                return pull_rebase(gh, branch, quiet, remote, token)
+                rc = pull_rebase(gh, branch, quiet, remote, token, host=host)
+                if rc == 0:
+                    ensure_canon(gh, quiet)      # after the pull, still under the lock
+                return rc
 
             # Default & --pull-rebase-push: commit local, pull, push.
             commit_local(gh, host, quiet)
-            rc = pull_rebase(gh, branch, quiet, remote, token)
+            rc = pull_rebase(gh, branch, quiet, remote, token, host=host)
             if rc != 0:
                 return rc
+            ensure_canon(gh, quiet)              # after the pull, still under the lock
             return push(gh, branch, quiet, remote, token)
     except TimeoutError as e:
         log_debug("auto-sync", f"sync lock timeout (pull_only={args.pull_only}): {e}")

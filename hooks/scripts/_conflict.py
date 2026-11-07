@@ -100,7 +100,7 @@ def _resolve_stop(gh: Path, conflict_files: list[str], sections: list[str]) -> l
     return others + unmerged
 
 
-def package_conflict() -> "Path | None":
+def package_conflict(host: "str | None" = None) -> "Path | None":
     """Inspect current rebase state and write SYNC-CONFLICT.md.
 
     Resets tracked conflicted files to the local side (`--ours` from the
@@ -116,11 +116,18 @@ def package_conflict() -> "Path | None":
     offline stretch or a PreCompact --commit-only), and each one can stop on
     MEMORY.md again. Every stop is merged in turn (bounded by MAX_REPLAYS); a
     replayed commit that became empty is skipped; the loop ends when the
-    rebase finishes (None) or a non-MEMORY.md conflict needs the user."""
+    rebase finishes (None) or a non-MEMORY.md conflict needs the user.
+
+    v4.9 (spec §3.4): `rebase --continue` commits the replayed change, so it
+    runs with the identity the commit paths pass (`gowth-mem@<host>`, host =
+    config.json host_id or the hostname) — without one (CI, a fresh machine,
+    `user.useConfigOnly`) every self-merge ended in SYNC-CONFLICT.md."""
     gh = gowth_home()
     conflict_files = _unmerged(gh)
     if not conflict_files:
         return conflict_md()
+    from _git import identity_args  # type: ignore
+    ident = identity_args(host)
 
     sections: list[str] = []
     remaining: list[str] = []
@@ -130,7 +137,7 @@ def package_conflict() -> "Path | None":
         if remaining:
             exhausted = False
             break
-        rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
+        rc, out, err = _git(gh, *ident, "-c", "core.editor=true", "rebase", "--continue")
         if rc != 0 and not _unmerged(gh):
             # Review m3(b): another session's Stop wrote a tracked file (usually a
             # MEMORY.md re-render) while the rebase was stopped; git refuses to
@@ -148,7 +155,7 @@ def package_conflict() -> "Path | None":
                 log_debug("conflict", f"sanitize before fold failed: {exc}")
             if not skipped:
                 _git(gh, "add", "-u")
-                rc, out, err = _git(gh, "-c", "core.editor=true", "rebase", "--continue")
+                rc, out, err = _git(gh, *ident, "-c", "core.editor=true", "rebase", "--continue")
             else:
                 err = (err or "") + f"\n(not folded: {', '.join(skipped)} could not be sanitized)"
         if rc == 0:
@@ -176,11 +183,11 @@ def package_conflict() -> "Path | None":
                             + " — run `git -C ~/.gowth-mem rebase --continue` (or /mem-sync resolve).\n")
         remaining = remaining or merged
 
-    host = socket.gethostname()
+    machine = socket.gethostname()
     parts: list[str] = [
         "# SYNC CONFLICT\n",
         f"Pull from origin hit conflicts on {len(remaining)} file(s).",
-        f"Host: {host}",
+        f"Host: {machine}",
         "",
         "## Conflicting files\n",
     ]
