@@ -496,7 +496,8 @@ def _compose_lessons(existing: str, adds: list) -> str:
     return tail + "\n" + heading + "\n\n" + body
 
 
-def _salvage_to_lessons(topic: Path, aspect_files: list[Path], dry_run: bool) -> dict:
+def _salvage_to_lessons(topic: Path, aspect_files: list[Path], dry_run: bool,
+                        reader=None) -> dict:
     """Lift every curated entry of the given aspects (`entry_blocks`: bullets,
     `## [type]` blocks, bare `[type]` lines) into the topic's lessons.md,
     verbatim (privacy-sanitized, as `safe_write` stores it) + a provenance
@@ -522,8 +523,8 @@ def _salvage_to_lessons(topic: Path, aspect_files: list[Path], dry_run: bool) ->
     files = []                       # (aspect, [(shape, block, key)]) — readable aspects only
     for f in aspect_files:
         try:
-            text = f.read_text(encoding="utf-8", errors="ignore")
-        except OSError as e:
+            text = reader(f) if reader is not None else f.read_text(encoding="utf-8", errors="ignore")
+        except (OSError, EOFError, ValueError) as e:
             log_debug("forget", f"aspect unreadable, not archived: {f}: {e}")
             continue
         blocks = [(shape, b, _norm_hash(b)) for shape, b in entry_blocks_with_shape(_clean(text))
@@ -674,6 +675,83 @@ def forget_aspects(ws: str, threshold_days: int | None, keep_newest: int,
             "shapes": shapes, "threshold_days": threshold_days}
 
 
+ARCHIVE_GZ_MAX_BYTES = 20_000_000    # decompressed cap per archived aspect (a vault aspect is KBs)
+
+
+def _read_gz(f: Path) -> str:
+    """Text of one archived aspect (`.archive/topics/<ws>/<topic>/<name>.md.gz`)."""
+    if f.is_symlink() or not f.is_file():
+        raise OSError(f"not a regular file: {f}")
+    with gzip.open(f, "rb") as gz:
+        raw = gz.read(ARCHIVE_GZ_MAX_BYTES + 1)
+    if len(raw) > ARCHIVE_GZ_MAX_BYTES:
+        raise ValueError(f"archived aspect over {ARCHIVE_GZ_MAX_BYTES} bytes: {f}")
+    return raw.decode("utf-8", errors="ignore")
+
+
+def resalvage_archive(ws: str, dry_run: bool, gh: Path, lock_timeout: float | None = None) -> dict:
+    """v4.9 recovery: lift the curated entries of ALREADY-archived aspects back
+    into the synced layer. Before v4.9, aspect archival salvaged only `- [type]`
+    bullets, so `## [type]` blocks and bare `[type]` lines of every archived
+    aspect survived only in this machine's gitignored `.archive/topics/` (and
+    the vault's git history). This reads each `.archive/topics/<ws>/<topic>/*.md.gz`
+    and salvages every entry shape into the LIVE topic's lessons.md exactly as
+    `forget_aspects` does now (verbatim, privacy-sanitized, SHA1-deduped against
+    what lessons.md holds, one provenance line each), under `entries-<ws>`.
+
+    It never deletes, moves or rewrites an archive file — the archive stays as
+    it was. A topic whose live folder is gone, is a symlink, or resolves outside
+    the workspace is reported in `missing` and left alone. Idempotent: a re-run
+    finds every entry already present and writes nothing."""
+    out = {"ws": ws, "topics": 0, "files": 0, "salvaged": 0, "unreadable": 0, "not_landed": 0,
+           "missing": [], "busy": 0, "shapes": {"bullet": 0, "block": 0, "bare": 0}}
+    arc_root = gh / ".archive" / "topics" / ws
+    ws_root = workspace_dir(ws)
+    if not arc_root.is_dir() or arc_root.is_symlink() or not ws_root.is_dir():
+        return out
+    try:
+        ws_real = ws_root.resolve()
+    except OSError:
+        return out
+    wait = None
+    for arc in sorted(p for p in arc_root.iterdir() if p.is_dir() and not p.is_symlink()):
+        gz = sorted(f for f in arc.glob("*.md.gz") if f.is_file() and not f.is_symlink())
+        if not gz:
+            continue
+        live = ws_root / arc.name
+        try:
+            inside = live.resolve().is_relative_to(ws_real)
+        except (OSError, ValueError):
+            inside = False
+        if live.is_symlink() or not live.is_dir() or not inside or not is_topic_folder(live):
+            out["missing"].append(arc.name)
+            continue
+        out["topics"] += 1
+        out["files"] += len(gz)
+        try:
+            if dry_run:
+                r = _salvage_to_lessons(live, gz, True, reader=_read_gz)
+            else:
+                from _topic import EntriesLockTimeout, entries_lock  # type: ignore
+                try:
+                    with entries_lock(ws, wait if wait is not None else lock_timeout):
+                        r = _salvage_to_lessons(live, gz, False, reader=_read_gz)
+                except EntriesLockTimeout as e:
+                    log_debug("forget", f"resalvage: entries lock busy, {ws}/{arc.name} skipped: {e}")
+                    out["busy"] += 1
+                    wait = 0.0
+                    continue
+        except Exception as e:
+            log_debug("forget", f"resalvage failed for {ws}/{arc.name}: {e}")
+            out["unreadable"] += 1
+            continue
+        out["salvaged"] += r["salvaged"]
+        for shape, k in r["shapes"].items():
+            out["shapes"][shape] = out["shapes"].get(shape, 0) + k
+        out["not_landed"] += r["unlanded"]      # unreadable, or would not read back intact
+    return out
+
+
 def _curator_held(ws: str, ttl_days: int, now: float):
     """v4.9 curator hold (spec §4.3): while `curator.enabled`, a session log
     that still has unprocessed turns (`_curate.unprocessed`) is kept up to
@@ -787,6 +865,10 @@ def main() -> int:
                          "topic_layout.archive_threshold_days (v4.1 retention)")
     ap.add_argument("--aspect-threshold-days", type=int, default=None)
     ap.add_argument("--keep-newest", type=int, default=DEFAULT_ASPECT_KEEP_NEWEST)
+    ap.add_argument("--resalvage-archive", action="store_true",
+                    help="v4.9 recovery: salvage every entry of ALREADY-archived aspects "
+                         "(.archive/topics) into the live topics' lessons.md; deletes nothing; "
+                         "use --dry-run first")
     args = ap.parse_args()
 
     gh = gowth_home()
@@ -803,6 +885,27 @@ def main() -> int:
 
     from _home import active_workspace  # local import; avoids cycle at module load
     workspaces = list_workspaces() if args.all_workspaces else [active_workspace()]
+
+    if args.resalvage_archive:
+        prefix = "[dry-run] " if args.dry_run else ""
+        total = 0
+        for ws in workspaces:
+            r = resalvage_archive(ws, args.dry_run, gh)
+            total += r["salvaged"]
+            if r["files"] or r["missing"]:
+                sh = r["shapes"]
+                print(f"{prefix}resalvage: [{ws}] {r['files']} archived aspect(s) in {r['topics']} topic(s) → "
+                      f"{r['salvaged']} entr(y/ies) into lessons.md (bullet {sh.get('bullet', 0)}, "
+                      f"block {sh.get('block', 0)}, bare {sh.get('bare', 0)})"
+                      + (f"; {r['not_landed']} not landed" if r["not_landed"] else "")
+                      + (f"; {r['unreadable']} topic(s) failed" if r["unreadable"] else "")
+                      + (f"; {r['busy']} topic(s) busy — re-run later" if r["busy"] else ""))
+                if r["missing"]:
+                    print(f"  [{ws}] no live topic folder for: {', '.join(r['missing'][:20])}"
+                          + (" …" if len(r["missing"]) > 20 else "") + " — left in .archive")
+        print(f"{prefix}resalvage: {total} entr(y/ies) total; nothing was deleted or moved. "
+              f"Run `_moc.py --ws <ws>` afterwards.")
+        return 0
 
     total_arch = 0
     total_salv = 0
