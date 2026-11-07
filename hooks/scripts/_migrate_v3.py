@@ -652,8 +652,12 @@ def _bump_layout_version_and_commit(gh: Path, dry_run: bool,
         try:
             subprocess.run(["git", "-C", str(gh), "add", "."],
                            capture_output=True, timeout=15, check=False)
+            # v4.9: the gowth-mem identity, as every other commit path — on a
+            # machine with no global git identity the commit (check=False)
+            # failed silently and the migration was never committed.
+            from _git import identity_args  # type: ignore
             r = subprocess.run(
-                ["git", "-C", str(gh), "commit", "-m", f"v3 migration {timestamp}"],
+                ["git", "-C", str(gh), *identity_args(), "commit", "-m", f"v3 migration {timestamp}"],
                 capture_output=True, text=True, timeout=15, check=False,
             )
             if r.returncode == 0:

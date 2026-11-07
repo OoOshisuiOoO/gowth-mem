@@ -11,7 +11,7 @@ The wizard for a fresh v3.0 install. Run when the user has the plugin installed 
 
 If `~/.gowth-mem/shared/AGENTS.md` already exists, this is a re-run or an upgrade — do NOT scaffold or copy anything. Read `~/.gowth-mem/settings.json` `layout_version`:
 
-- `layout_version = 3`: already installed. Print `[mem-install] already on v3.0` and stop. Suggest `/mem-ops config` to change remote, `/mem-sync` to sync.
+- `layout_version = 3`: already installed. Run Step 4b (canon delivery — idempotent), print `[mem-install] already on v3.0` and stop. Suggest `/mem-ops config` to change remote, `/mem-sync` to sync.
 - `layout_version < 3`: **v2 → v3 upgrade**. Dry-run `/mem-ops migrate-v3` so the user sees what would change, then ask to proceed. On yes run `/mem-ops migrate-v3`; otherwise abort with `[mem-install] upgrade declined — re-run when ready`.
 - `settings.json` missing but vault exists: corrupt install — refuse and suggest `/mem-doctor`.
 
@@ -24,13 +24,12 @@ cp "${CLAUDE_PLUGIN_ROOT}/templates/AGENTS.md" ~/.gowth-mem/shared/AGENTS.md
 cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v3.json" ~/.gowth-mem/settings.json
 cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md" ~/.gowth-mem/shared/secrets.md
 cp "${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md" ~/.gowth-mem/shared/tools.md
-cp "${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/shared/research/data-quality-2026.md" ~/.gowth-mem/shared/research/data-quality-2026.md
 # Default workspace scaffolded by _workspace.py (creates docs/, journal/, skills/, research/, misc/00-README.md):
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py" create default --title "Default Fallback"
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_moc.py" --all
 ```
 
-`settings.example.v3.json` carries `layout_version: 3`. `data-quality-2026.md` is the canonical write-quality canon referenced from `shared/AGENTS.md` §7.
+`settings.example.v3.json` carries `layout_version: 3`. Do NOT copy the canon files (`shared/memory-rules.md`, `shared/research/*.md`) by hand — Step 4b delivers them after the first sync.
 
 ## Step 2 — gather config
 
@@ -64,6 +63,14 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py" --init
 ```
 
 This creates `.git`, sets up `origin`, commits, attempts pull (allowing unrelated histories), pushes. Reports each step.
+
+## Step 4b — deliver the shipped canon (v4.9)
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_canon.py"
+```
+
+Copies the rules + reference canon (`shared/memory-rules.md`, `shared/research/{data-quality,extraction-reuse,provenance}-2026.md`) into the vault and adds `workspaces/*/docs/questions.md merge=union` to its `.gitattributes`. One line per file: `installed`, `current`, `updated` (matched an older shipped version) or `user-modified` (never overwritten). It runs AFTER the first sync on purpose: on a second machine the pull brings the first machine's copy, which `_canon.py` then updates in place — copying first would collide with it (add/add). Run it also for a local-only vault (no remote).
 
 ## Step 5 — confirm + suggest next
 

@@ -42,4 +42,6 @@ What to do when the block is thin or truncated:
 - Topic bodies, `docs/{exp,ref,tools,files}.md`, journals and skills are **not** in the block:
   they reach the model per prompt (gated BM25 recall) or via `/mem-recall` and Read.
 
-Token estimate is chars / 4 (±20% vs the real tokenizer).
+Token figures are chars / 4 — a rough guide for English text only. Vietnamese and other diacritic-heavy
+text runs about 2.1–2.5 chars per token, so the real count can be close to twice the estimate. For the
+real number, run `/context` in a session.

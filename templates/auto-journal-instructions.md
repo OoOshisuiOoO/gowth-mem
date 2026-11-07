@@ -92,7 +92,12 @@ Do this WITHOUT user prompting before yielding control:
    `Source:`, the rationale, the version…) and `--append` it once more, or
    count it as dropped. `rejected:unroutable` is not a content problem — the
    vault has no safe topic for it (e.g. a folder that resolves outside the
-   vault): do not retry; name it in your report. Overlap ≥ 0.4 + polarity flip vs an existing entry
+   vault): do not retry; name it in your report. Not content problems either:
+   `rejected:lock_timeout` — another writer held the workspace's entries lock;
+   re-run the SAME call once, unchanged; `rejected:no_topic` — the `--topic`
+   you named does not exist: drop `--topic` and let routing choose;
+   `rejected:bad_ws` — the `--ws` value is not a workspace: check
+   `ls <vault-root>/workspaces/` and fix the name. Overlap ≥ 0.4 + polarity flip vs an existing entry
    → flag it as a contradiction in your report, don't silently overwrite.
    Never blind append; never raw-Write topic files.
 6. Update workspaces/{ws}/docs/handoff.md (prefix host:<machine>) with new task / next / blocker.

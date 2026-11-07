@@ -183,3 +183,31 @@ class MemfileMergeWithoutIdentityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MigrateV3CommitWithoutIdentityTest(unittest.TestCase):
+    """`_migrate_v3` commits the migrated layout with `check=False`: without the
+    gowth-mem identity, a machine with no global git identity skipped that
+    commit silently (the layout stayed uncommitted and unsynced)."""
+
+    def test_the_migration_commit_lands_without_an_identity(self):
+        tmp = Path(tempfile.mkdtemp(prefix="gowth_ident_mig_"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        home = tmp / "vault"
+        fixture = ROOT / "tests" / "fixtures" / "v2-snapshot"
+        shutil.copytree(fixture, home)
+        git(tmp, "init", "-q", "-b", "main", str(home))
+        git(home, "add", "-A")
+        git(home, "commit", "-q", "-m", "seed v2 fixture")
+        env = no_identity_env(tmp, GOWTH_MEM_HOME=str(home))
+        # positive control: git itself refuses to commit in this env
+        probe = git(home, "commit", "--allow-empty", "-q", "-m", "probe", env=env, check=False)
+        self.assertNotEqual(probe.returncode, 0, "the env still has an identity — the test would be vacuous")
+        out = subprocess.run([sys.executable, str(SCRIPTS / "_migrate_v3.py")], env=env, cwd=str(ROOT),
+                             capture_output=True, text=True, timeout=120)
+        report = json.loads(out.stdout)
+        self.assertEqual(report.get("status"), "ok", report)
+        self.assertTrue(report.get("git_commit"), f"the migration commit did not land: {report}")
+        subject = git(home, "log", "-1", "--format=%s %ae").stdout.strip()
+        self.assertTrue(subject.startswith("v3 migration "), subject)
+        self.assertIn(" gowth-mem@", subject)
