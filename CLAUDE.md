@@ -43,21 +43,26 @@ detection) were closed in v2.9–v3.2. See `.claude/research/product-architectur
 │   ├── AGENTS.md                   global operating rules
 │   ├── secrets.md                  pointers only (env-var names)
 │   ├── tools.md                    tool quirks
+│   ├── memory-rules.md             v4.9 rules + refs canon (delivered + committed by _canon.py; user edits never overwritten)
 │   └── skills/<slug>.md            reusable workflows
 ├── workspaces/<ws>/                per-workspace knowledge
 │   ├── docs/{handoff,exp,ref,tools,files}.md
-│   ├── journal/<date>.md
+│   ├── docs/questions.md           v4.9 gap ledger (research | ask), `.gitattributes` merge=union
+│   ├── docs/worklog/<date>-<host>-<run>.md   v4.9 daily curator worklog (processed turns = the coverage cursor)
+│   ├── journal/<date>.md           + journal/sessions/<date>-<sid8>.md per-turn session logs (line 2: `<!-- cwd: … -->`)
 │   ├── skills/<slug>.md
 │   ├── research/<topic>/           deep-research scratch (raw/ + distilled.md; excluded from default recall)
 │   ├── memory/MEMORY.md            v4.8 managed block + Claude's own auto-memory notes (autoMemoryDirectory → here)
 │   └── <slug>/                     v3 topic folder
-│       ├── 00-README.md            MOC (auto-rebuilt)
+│       ├── 00-README.md            MOC (auto-rebuilt); v4.9 card inside the TL;DR (never touched by rebuilds)
 │       ├── YYYY-MM-DD-<aspect>.md  dated aspect (route() writes here)
-│       └── lessons.md              per-topic ledger
+│       ├── lessons.md              per-topic ledger
+│       └── .history/card-<sha12>.txt  verbatim archive of each replaced card
 ├── settings.json                   synced behavior (layout_version: 3)
 ├── config.json                     local-only (gitignored): remote, branch, token
 ├── state.json                      counters, stamps, recall telemetry (gitignored)
-├── index.db                        FTS5 + optional sqlite-vec (gitignored)
+├── index.db                        FTS5 + optional sqlite-vec + v4.9 corrections table (gitignored)
+├── .curator/<ws>/                  v4.9 claim markers, prep digests, cards-terms-<ws> (gitignored)
 ├── .backup/v2-pre-v3-<utc>/        migration snapshots, rolling-2 (gitignored)
 └── .locks/                         fcntl lock files (gitignored)
 ```
@@ -75,6 +80,10 @@ detection) were closed in v2.9–v3.2. See `.claude/research/product-architectur
 | Token via HTTP header per-command | `git -c http.<url>.extraHeader=AUTHORIZATION: basic <b64>` — never in remote URL |
 | fcntl + atomic write | Multi-session safety; SQLite WAL for concurrent index access |
 | Conflict → SYNC-CONFLICT.md | Raw `<<<<<<<` markers break FTS5 indexing; AI-mediated resolution instead |
+| Daily curator = ONE background plugin agent (v4.9) | `gowth-mem:curator` (Bash/Read/Grep/Glob/WebSearch/WebFetch only) consolidates a deterministic digest of the day's unprocessed session turns + vault changes; it writes ONLY through the gated CLIs (`_topic --append`, `_card`, `_gaps`, `_lesson`, `_curate commit`), never git, never the handoff (stale items become `ask` questions). Learned from a production bot whose daily curator kept its knowledge current |
+| Unknowns are tracked work (v4.9) | `docs/questions.md`: `research` (an agent can find it) vs `ask` (only the user knows); shown in MEMORY.md; the curator researches a few per run, escalates to `ask` after 3 tries |
+| Corrections are appended, never edits (v4.9) | `Correction: <old> → <new> (<date>; Corrects: <path>; Source: …)` of the same type; the read path pairs a corrected entry with its correction; the topic CARD carries the current truth |
+| Memory is data, not instructions (v4.9) | Every recall/card block is labelled as data; curated text may not contain the `[gowth-mem:` control prefix; "fewer wrong flags" comes from honest, provenance-labelled context — never from guardrail-removal material |
 
 ## Commands
 
@@ -87,6 +96,7 @@ bin/test-install.sh                                   # clean-room install+upgra
 bin/doctor.sh --dry-run                               # diagnose plugin registration (installed_plugins.json)
 bin/release.sh [patch|minor|major]                    # bump plugin.json+marketplace.json in lockstep, commit, tag, push
 bash tests/e2e/native_e2e.sh                          # v4.8 real-binary E2E (scratch project + vault; skips without `claude`)
+bash tests/e2e/v49_e2e.sh                             # v4.9 real-binary E2E: plugin agent, curator in default permission mode, cards, GOWTH_MEM_OFF, pipeline prompt
 GOWTH_MEM_HOME=<vault-copy> python3 tests/probes/recall_probe.py     # recall hit@k/MRR + per-prompt gate sweep on a vault COPY
 GOWTH_MEM_HOME=<vault-copy> python3 tests/probes/tokens_per_100.py   # main-context chars per 100 turns on a vault COPY
 ```
@@ -106,8 +116,9 @@ hooks/scripts/_*.py       importable library modules (underscore prefix = shared
 hooks/scripts/*.{py,sh}   hook entrypoints (no underscore): read JSON event on stdin, ALWAYS exit 0
 commands/mem-*.md         16 slash commands: 15 user-facing + `/mem-ops <sub>` (v4.8: the listing cost 9,153 chars/session at 39);
                           descriptions ≤80 chars, no bare `: `, no ` #` (tests/test_command_surface.py)
-templates/ops/<sub>.md    bodies of the 24 rarely-typed operations reached via /mem-ops, /mem-research, /mem-sync resolve
+templates/ops/<sub>.md    bodies of the 26 rarely-typed operations reached via /mem-ops, /mem-research, /mem-sync resolve (v4.9: + gap, curate)
 skills/<name>/SKILL.md    6 auto-trigger skills (save, sync, install, distill, sync-resolve, recall)
+agents/curator.md         v4.9 plugin agent `gowth-mem:curator` (the daily curator protocol; frontmatter: tools without Write/Edit/Agent, model sonnet, maxTurns 80, background, omitClaudeMd)
 templates/                vault-file scaffolds + externalized hook instruction blocks (auto-journal, self-review)
 bin/                      operational shell: release.sh, doctor.sh, test-install.sh, migrate-v3.sh/rollback-v3.sh
                           (every bin/*.sh must be referenced outside bin/ — tests/test_version_drift.py
@@ -121,10 +132,13 @@ Hook wiring (`hooks/hooks.json`):
 | Event | Script | Role |
 |---|---|---|
 | `SessionStart` | `session-start.sh` → `bootstrap-load.py` | startup/clear/compact: native header ≤600 chars when the project loads `MEMORY.md` from the vault, else the ≤8,500-char fallback bootstrap; refreshes `MEMORY.md`, spawns a detached incremental reindex + `bin/doctor.sh` self-heal (v4.8) |
-| `UserPromptSubmit` | `conflict-detect.sh` → `recall-on-prompt.sh` | bash pre-checks; conflict notice only with `SYNC-CONFLICT.md`; gated BM25 recall ≤2,000 chars (v4.8: ≥50% term coverage + subject term + bm25 threshold + once per session — measured 0–3/20 generic prompts per workspace), silent by default |
-| `Stop` | `auto-journal.py` | journal cadence, session capture, prune/consolidate/forget, 15-turn self-review — counts REAL user turns (skips `stop_hook_active` + machine re-invocations) and emits directives on the non-error Stop channel (v4.7.3); v4.8: verbatim judge prompt, `MEMORY.md` block refresh, `memory/*.md` sanitize in EVERY workspace before the autosync spawn (`_memsan.py`, also on every commit path), incremental reindex, one settings parse per Stop |
+| `UserPromptSubmit` | `conflict-detect.sh` → `recall-on-prompt.sh` | bash pre-checks; conflict notice only with `SYNC-CONFLICT.md`; gated BM25 recall ≤2,000 chars (v4.8: ≥50% term coverage + subject term + bm25 threshold + once per session — measured 0–3/20 generic prompts per workspace), silent by default; v4.9: the card of a topic the prompt NAMES (once per session; 8–39-byte prompts reach Python only on a `grep -qiwF` hit in `.curator/cards-terms-<ws>`), corrections paired with the entries they correct, pipeline prompts skipped |
+| `Stop` | `auto-journal.py` | journal cadence, session capture, prune/consolidate/forget, 15-turn self-review — counts REAL user turns (skips `stop_hook_active` + machine re-invocations) and emits directives on the non-error Stop channel (v4.7.3); v4.8: verbatim judge prompt, `MEMORY.md` block refresh, `memory/*.md` sanitize in EVERY workspace before the autosync spawn (`_memsan.py`, also on every commit path), incremental reindex, one settings parse per Stop; v4.9: the once-a-day curator directive (after the review block, only when nothing else was emitted; never in `claude -p`/SDK sessions), pipeline prompts never counted or captured, bounded session map |
 | `PreCompact` | `precompact.sh` | deterministic transcript raw-dump — must NEVER block `/compact` |
-| `PostCompact` | `auto-sync.py --pull-rebase-push` | git sync after compaction |
+| `PostCompact` | `auto-sync.py --pull-rebase-push` | git sync after compaction (`|| true`); v4.9: canon delivered + committed right after a successful pull |
+
+`GOWTH_MEM_OFF=1` (v4.9) makes every entrypoint drain stdin and exit 0 before touching the vault — for bots and
+pipelines that drive `claude -p` / tmux sessions.
 
 Shell wrappers exist to dodge Python startup cost on hot paths: keep cheap pre-checks in bash, branch into Python only when work exists.
 
@@ -180,6 +194,18 @@ the author's machine and never shipped; treat the list as local reading, not rep
   symlink refusal, quality gate) ships with a test that replays HEAD's refusal cases through the NEW
   entry point. (v4.7.6 round 3: `_ensure_landing()` returned early and skipped
   `ensure_topic_folder()`'s path-escape guard.)
+- Every read-modify-write of a workspace topic or docs file holds `file_lock(f"entries-{ws}", 5)` from its read to its
+  write (`_topic.entries_lock`); a shared side file (`shared/secrets.md`) holds its own lock, whose name no workspace
+  lock can produce. flock is NOT re-entrant: never take it inside a function that already holds it.
+- Anything code delivers into the synced vault (the canon, `.gitattributes`) is committed right away under the sync
+  lock — an untracked delivered file meets a peer's tracked copy at the next pull and strands the pre-pull stash
+  (v4.9 review: on git 2.33 the user's tracked edits left the working tree).
+- Curated text written by a CLI (cards, questions, answers, entries) may not contain the control prefix `[gowth-mem:`
+  or a `<private>` / `</private>` tag; a writer that re-renders a whole file sanitizes the rendered text and writes
+  NOTHING when the sanitizer would change it (a tag in one field paired with one in another field deleted questions).
+- A plugin agent or teammate that must run outside bypass mode issues ONE CLI call per Bash command, written out in
+  full (no shell variables, `eval`, chains or loops): permission rules match the literal command start. The v4.9
+  real-binary E2E caught the curator batching `_topic.py --append` calls through `eval` — denied, run blocked.
 - **Before `bin/release.sh`: exercise every NEW/changed code path once on real data** (run the new command, route a real entry). v4.1.0 tagged two untested paths; both broke on first live use (`.git` leak into the synced vault, slug crash) → two same-day patches that a 2-minute pre-tag smoke test would have prevented.
 
 ## Anti-patterns
@@ -202,6 +228,13 @@ the author's machine and never shipped; treat the list as local reading, not rep
 - Emitting more than 9,000 chars from any hook (see Development Rules) — it silently becomes a 2,000-char preview. Reading a documented "loaded 5/5 files" summary as proof the model saw them: the v4.3 repair counted what the hook emitted, never what arrived.
 - Treating `.claude/research/` notes as shipped documentation — the directory is gitignored.
 - Writing `${CLAUDE_PLUGIN_ROOT}` into a file the model READS at runtime (`templates/ops/*.md`, skills' reference files) and expecting it to expand — Claude Code substitutes it only inside `commands/*.md` at load time, and the Bash tool does not export it (verified on 2.1.283 with `--plugin-dir`: the ops body's `python3 "${CLAUDE_PLUGIN_ROOT}/…"` ran as `python3 "/…"`). A dispatching command hands the model the substituted root as an `export CLAUDE_PLUGIN_ROOT='…'; ` to start the Bash call with — never a bare `VAR=… cmd` prefix, which does not apply to expansions in the same command (round-5 review); `tests/test_command_surface.py` pins it.
+- Matching a prompt marker on the raw prompt text — Claude Code 2.1.301 wraps a bracketed paste as
+  `<pasted_content id="xxxx">…</pasted_content id="xxxx">` (4 hex), so every tmux-pasted bot round since October 2026
+  slipped past an anchored check. Unwrap ONE leading opener first (`_capture.is_pipeline_prompt`).
+- Two locators for the same section in different modules (`_card` vs `_moc` on `## TL;DR`): the stricter one inserted a
+  second heading and the other then deleted the user's original section. One locator, shared.
+- Editing or deleting a curated entry to fix it — append a `Correction: … Corrects: <path>` entry of the same type and
+  refresh the card; the read path pairs them.
 - Assuming the transcript is complete at Stop time — the FINAL assistant record is flushed AFTER Stop hooks run (proven by a snapshot taken inside a real Stop hook). For the current turn use the Stop input (`prompt_id`, `last_assistant_message`). Offline replays of finished transcripts cannot catch this; only a real-binary E2E (`claude -p --setting-sources project` + scratch `GOWTH_MEM_HOME`) can.
 
 ## Shipped Features
