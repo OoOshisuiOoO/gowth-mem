@@ -60,4 +60,24 @@ The one case this cannot tell apart: a never-touched default skeleton you create
 named exactly like another file's slug — the scan lists it first; give it a title or summary to
 keep it. Non-conformant frontmatter makes a file invisible to `[[wikilinks]]`, the recall layer's scoring, and the auto-MOC — so keeping this clean matters.
 
+## Topic-card findings (v4.9)
+
+Reported for a `00-README.md` only when it holds a card marker (`--cards` also lists `card-none` — no card — and
+`card-todo-summary` — the TL;DR one-liner is missing or still the TODO placeholder). The same rows come from
+`/mem-topic card check`. Nothing here is auto-fixed:
+
+| Finding | Meaning | Repair |
+|---|---|---|
+| `card-markers:unbalanced` / `card-markers:duplicate` | a begin or end marker line is missing, or there are two cards | edit the markers back by hand — see `/mem-topic` **Repairing a card** |
+| `card-outside-tldr` | the begin marker is not inside the README's first `## TL;DR` section (a hand-written `## ` heading above it, a renamed TL;DR, the card under `## Aspects (auto)`), or the end marker swallowed those sections | move the heading or the card back — see `/mem-topic` **Repairing a card**; until then `card set` / `card summary` answer `rejected:markers_corrupt` |
+| `card-bad-heading:<line>` | an `#` / `##` line (or a `## Cross-links (manual)` mention) inside the card | rewrite the card with `card <slug> set` (H3 and deeper only) |
+| `card-entry-line:<line>` | a `[decision]` / `[ref]` / … line the indexer would tag as an entry — also after NBSP or other Unicode whitespace, `- ## [x]`, `### - [x]`, or a U+2028 / VT / FF line break inside the line | rewrite the card with `card <slug> set` without entry lines (entries live in aspects) |
+| `card-over-budget:<n>/<max>` | the body is longer than `topic_card.max_chars` (default 2000) | shorten it with `card <slug> set` |
+| `card-control-token` | the body holds `[gowth-mem:` | rewrite the card with `card <slug> set` |
+
+`<line>` is the README line number. A card that a MOC rebuild (`_moc.py`, also run after every `/mem-lesson`) would
+drop — it sits outside the TL;DR section the rebuild keeps — is first archived verbatim to
+`<topic>/.history/card-<sha12>.txt` (header `moc-rebuild`); when that archive cannot be written the README is left
+unrebuilt and `_moc.py` prints a `WARN` naming it. Restore an archived card's body with `/mem-topic card <slug> set`.
+
 Background: `.claude/research/v3.7-supremor-comparison.md`.

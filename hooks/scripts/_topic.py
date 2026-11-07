@@ -32,9 +32,12 @@ v4.9: every read-modify-write of a workspace topic/docs file holds
 `entries_lock(ws)` (`file_lock(f"entries-{ws}", 5)`) from its read to its
 write — `append_entry_status` (folder + body + tag merge + fix_aspect as one
 critical section), `_lesson`, `_tags --backfill`, `_validate --fix`; a timeout
-is `rejected:lock_timeout`, never an unlocked write. `--append --topic <slug>`
-forces an EXISTING topic (no creation; `rejected:no_topic` otherwise). Routing
-never scores a README's topic card (`_card.strip_card`).
+is `rejected:lock_timeout`, never an unlocked write. A `[secret-ref]` goes to
+the ONE `shared/secrets.md` of every workspace: it holds the single
+`shared-entries` lock instead (`entries_lock_for`). `--append --topic <slug>`
+forces an EXISTING topic (no creation; `rejected:no_topic` otherwise — a
+reserved dir such as `memory` included). Routing never scores a README's
+topic card (`_card.strip_card`).
 
 Section mapping (from line prefix):
   [exp]/[reflection] → "## [exp]"
@@ -184,7 +187,24 @@ ENTRIES_LOCK_TIMEOUT = 5.0
 
 
 class EntriesLockTimeout(Exception):
-    """`entries-<ws>` could not be taken in time (never raised from inside)."""
+    """An entries lock (`entries-<ws>`, or `shared-entries` for `shared/`)
+    could not be taken in time (never raised from inside)."""
+
+
+@contextmanager
+def _entries_file_lock(name: str, timeout: float | None):
+    """`file_lock(name, timeout)`; EntriesLockTimeout when it cannot be taken —
+    distinct from a TimeoutError (an OSError) raised by the work. `timeout`
+    defaults to ENTRIES_LOCK_TIMEOUT (read at call time)."""
+    cm = file_lock(name, ENTRIES_LOCK_TIMEOUT if timeout is None else timeout)
+    try:
+        cm.__enter__()
+    except TimeoutError as exc:
+        raise EntriesLockTimeout(str(exc)) from exc
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
 
 
 @contextmanager
@@ -196,15 +216,49 @@ def entries_lock(ws: str, timeout: float | None = None):
     `timeout` defaults to ENTRIES_LOCK_TIMEOUT (read at call time)."""
     if not isinstance(ws, str) or ws in ("", ".", "..") or "/" in ws or "\\" in ws or "\0" in ws:
         raise ValueError(f"invalid workspace for a lock name: {ws!r}")
-    cm = file_lock(f"entries-{ws}", ENTRIES_LOCK_TIMEOUT if timeout is None else timeout)
-    try:
-        cm.__enter__()
-    except TimeoutError as exc:
-        raise EntriesLockTimeout(str(exc)) from exc
-    try:
+    with _entries_file_lock(f"entries-{ws}", timeout):
         yield
-    finally:
-        cm.__exit__(None, None, None)
+
+
+# v4.9 (review safety-sync#3): a `[secret-ref]` lands in the ONE
+# `shared/secrets.md` every workspace writes, so `entries-<ws>` (one lock per
+# workspace) could not serialise two workspaces' appends there — both printed
+# `written` and one entry was gone (44-49 of 100 lost under load). Every
+# read-modify-write of a file under `shared/` takes this single lock instead,
+# through `entries_lock_for`. Its name is one no workspace lock can produce:
+# `entries-shared` is the lock of a valid workspace named `shared` (WS_RE
+# accepts it), and nesting it inside that workspace's own lock would make
+# flock block against itself.
+SHARED_ENTRIES_LOCK = "shared-entries"
+
+
+def _under_shared(path: Path) -> bool:
+    """True iff `path` is `shared_dir()` or below it (as given, or resolved)."""
+    try:
+        Path(path).relative_to(shared_dir())
+        return True
+    except ValueError:
+        pass
+    try:
+        Path(path).resolve().relative_to(shared_dir().resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+@contextmanager
+def entries_lock_for(path: Path, ws: str, timeout: float | None = None):
+    """The ONE entries lock guarding a read-modify-write of `path`: the single
+    SHARED_ENTRIES_LOCK for a file under `shared_dir()` (no workspace lock is
+    taken with it — nothing is nested), else `entries_lock(ws)`. Raises
+    EntriesLockTimeout either way. Every writer of entries in `shared/*.md`
+    (today `[secret-ref]` → `shared/secrets.md`) takes its lock through here."""
+    if _under_shared(path):
+        with _entries_file_lock(SHARED_ENTRIES_LOCK, timeout):
+            yield
+    else:
+        with entries_lock(ws, timeout):
+            yield
 
 
 def _validate_slug(slug: str) -> str:
@@ -386,14 +440,30 @@ def resolve_topic_folder(slug: str, ws: str | None = None, *, ensure: bool = Tru
     domain's topics; a third top-level twin helps nobody), as does one that
     resolves outside the workspace through a symlink. `ensure=False` returns
     the same folder without creating anything.
+
+    v4.9: a reserved workspace dir (`memory`, `journal`, `docs`, `skills`,
+    `research`) — by name, or reached through a symlink — raises ValueError.
     """
     ws = ws or active_workspace()
     _validate_slug(slug)
+    # v4.9 (review cards#3): a reserved workspace dir is never a topic. Without
+    # this, `_lesson.py --topic memory|journal|docs|skills|research` wrote
+    # `lessons.md` into it on every filesystem, and `--append --topic memory`
+    # wrote an aspect into Claude Code's auto-memory dir on case-insensitive
+    # APFS (`memory/MEMORY.md` passes as the legacy `memory/memory.md`
+    # landing) — where no list, MOC or index ever looks, while the CLI said
+    # `written`. One check here covers `_topic --topic`, `_lesson --topic`
+    # and `_card`.
+    if is_reserved(slug):
+        raise ValueError(f"{slug!r} is a reserved workspace directory "
+                         f"({', '.join(sorted(RESERVED_SUBDIRS))}), not a topic")
     root = workspace_dir(ws)
     top = root / slug
     if top.is_dir():
         if not _inside_workspace(top, ws):
             raise ValueError(f"topic {slug!r} resolves outside the workspace (symlink?)")
+        if _in_reserved_dir(top, ws):
+            raise ValueError(f"topic {slug!r} resolves into a reserved workspace directory (symlink?)")
         if _is_domain(top):
             inner = sorted(p.parent.name for p in iter_topic_landings(ws)
                            if top in p.parent.parents)
@@ -403,6 +473,8 @@ def resolve_topic_folder(slug: str, ws: str | None = None, *, ensure: bool = Tru
     nested = [p.parent for p in iter_topic_landings(ws) if p.parent.name == slug]
     if any(not _inside_workspace(n, ws) for n in nested):
         raise ValueError(f"topic {slug!r} resolves outside the workspace (symlink?)")
+    if any(_in_reserved_dir(n, ws) for n in nested):
+        raise ValueError(f"topic {slug!r} resolves into a reserved workspace directory (symlink?)")
     if len(nested) > 1:
         raise ValueError(f"topic {slug!r} is ambiguous — "
                          + ", ".join(str(n.relative_to(root)) for n in nested))
@@ -505,6 +577,17 @@ def _inside_workspace(folder: Path, ws: str) -> bool:
         return True
     except (ValueError, OSError):
         return False
+
+
+def _in_reserved_dir(folder: Path, ws: str) -> bool:
+    """True iff `folder` RESOLVES into a reserved workspace dir (`memory/`,
+    `journal/`, …) — a topic name symlinked there: every list, MOC and index
+    path skips those dirs, so an entry written through it is lost to recall."""
+    try:
+        rel = folder.resolve().relative_to(workspace_dir(ws).resolve())
+    except (ValueError, OSError):
+        return False
+    return bool(rel.parts) and rel.parts[0] in RESERVED_SUBDIRS
 
 
 def _avoid_domain(slug: str, ws_dir: Path) -> str:
@@ -611,9 +694,11 @@ def derive_topic_folder(content: str, ws: str | None = None,
 def _forced_topic(topic: str, ws: str) -> Path | None:
     """`--topic <slug>`: the EXISTING topic folder it names, or None — never
     created. The guards of `_lesson.py --topic` (`resolve_topic_folder`):
-    an invalid slug, a domain folder, an ambiguous nested name, a folder that
-    resolves outside the workspace (symlink) are refused; so is a name with no
-    topic folder (no landing) behind it."""
+    an invalid slug, a reserved workspace dir (`memory`, `journal`, `docs`,
+    `skills`, `research` — or a name symlinked into one), a domain folder, an
+    ambiguous nested name, a folder that resolves outside the workspace
+    (symlink) are refused; so is a name with no topic folder (no landing)
+    behind it."""
     try:
         folder = resolve_topic_folder(topic, ws=ws, ensure=False)
     except ValueError:
@@ -726,10 +811,12 @@ def append_entry_status(content: str, ws: str | None = None,
     no-op'd an entry it could have repaired (e.g. by adding its `Source:`).
 
     v4.9: `topic` forces an EXISTING topic folder (`rejected:no_topic` when
-    there is none — nothing is created); the folder ensure, the body write,
-    the frontmatter tag merge and `fix_aspect` run as ONE critical section
-    under `entries_lock(ws)` (`rejected:lock_timeout` when it cannot be taken
-    in 5 s — nothing is written then).
+    there is none, or when it names a reserved dir — nothing is created); the
+    folder ensure, the body write, the frontmatter tag merge and `fix_aspect`
+    run as ONE critical section under `entries_lock(ws)` — for a
+    `[secret-ref]` (the one `shared/secrets.md` of every workspace) under the
+    single `shared-entries` lock instead (`entries_lock_for`) —
+    `rejected:lock_timeout` when it cannot be taken in 5 s, nothing written.
     """
     ws = ws or active_workspace()
     validate_workspace(ws)  # reject junk ws BEFORE any mkdir
@@ -777,7 +864,10 @@ def append_entry_status(content: str, ws: str | None = None,
             entry = content  # tagging is best-effort; never block a write
 
     try:
-        with entries_lock(ws):
+        # The lock of the file being written: `entries-<ws>` for a topic aspect
+        # or a skill, the one `shared-entries` lock for `[secret-ref]` →
+        # shared/secrets.md (written by every workspace).
+        with entries_lock_for(target, ws):
             if side is None:
                 try:
                     target = _today_aspect_path(_materialise(slug, folder, ws),
@@ -806,9 +896,9 @@ def append_entry_status(content: str, ws: str | None = None,
 
 def _write_entry_locked(target: Path, entry: str, tags: list, s: dict) -> None:
     """The read-modify-write of one routed entry. The caller holds
-    `entries_lock(ws)`: body, frontmatter tag union and `fix_aspect` are ONE
-    critical section, so a concurrent writer can never interleave between
-    them and lose an entry."""
+    `entries_lock_for(target, ws)`: body, frontmatter tag union and
+    `fix_aspect` are ONE critical section, so a concurrent writer can never
+    interleave between them and lose an entry."""
     if target.is_file():
         existing = target.read_text(errors="ignore")
         body = existing.rstrip() + "\n" + entry.rstrip() + "\n"

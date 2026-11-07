@@ -91,8 +91,9 @@ def append_lesson_status(
     cannot be taken in 5 s.
 
     Raises ValueError when an explicit `topic` names a domain folder, matches
-    several nested topics, or resolves outside the workspace (a symlink) —
-    the message names the candidates; nothing is written."""
+    several nested topics, resolves outside the workspace (a symlink), or (v4.9)
+    names a reserved workspace dir (`memory`, `journal`, `docs`, `skills`,
+    `research`) — the message names the candidates; nothing is written."""
     ws = ws or active_workspace()
     validate_workspace(ws)  # reject junk ws BEFORE any mkdir (resolve_topic_folder)
     today = today or date.today().isoformat()
@@ -193,7 +194,7 @@ def _cli() -> int:
             topic=args.topic,
             ws=args.ws,
         )
-    except ValueError as exc:   # --topic names a domain, an ambiguous or an invalid slug
+    except ValueError as exc:   # --topic names a domain, a reserved dir, an ambiguous or an invalid slug
         print(f"not appended: {exc}")
         return 2
     # v4.7.6: said "appended:" even when dedup or the gate refused the lesson.

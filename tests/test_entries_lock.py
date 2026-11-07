@@ -137,35 +137,92 @@ class TopicFlagTests(_Vault):
         self.assertEqual(snaps[1], snaps[2])
         self.assertFalse((self.wsd / "orchid").exists())                     # no top-level twin
 
-    def test_forced_topic_refusals_replay_the_lesson_guards(self):
-        """HEAD's `_lesson.py --topic` refusals (domain, ambiguous, symlink out
-        of the vault — top-level and nested — invalid slug), plus what
-        `--topic` adds: no creation (missing name, reserved dir, a folder with
-        no landing). Each → `rejected:no_topic`, nothing written anywhere."""
+    def _seed_refusals(self, outside: Path) -> None:
+        """HEAD's `--topic` refusal fixtures plus the reserved workspace dirs
+        (review cards#3). The `<dir>/<dir>.md` legacy landings make `journal`,
+        `skills` and `research` look like topics on EVERY filesystem (so the
+        case-sensitive CI fails without the guard too); `memory/MEMORY.md` is
+        Claude Code's auto-memory file — the landing case-insensitive APFS
+        reads as `memory/memory.md`."""
         for t in ("redis", "pg"):
             _w(self.wsd / "infra" / t / "00-README.md", _skeleton(t))
         _w(self.wsd / "a" / "orchid" / "00-README.md", _skeleton("orchid"))
         _w(self.wsd / "b" / "orchid" / "00-README.md", _skeleton("orchid"))
+        _w(outside / "lily" / "00-README.md", _skeleton("lily"))
+        _w(outside / "nested-lily" / "00-README.md", _skeleton("nested-lily"))
+        (self.wsd / "lily").symlink_to(outside / "lily", target_is_directory=True)
+        (self.wsd / "dom").mkdir()
+        (self.wsd / "dom" / "nested-lily").symlink_to(outside / "nested-lily", target_is_directory=True)
+        (self.wsd / "docs").mkdir()
+        _w(self.wsd / "bare" / "2026-01-01-x.md", "- [exp] an aspect with no landing\n")
+        _w(self.wsd / "memory" / "MEMORY.md", "# Claude Code auto-memory\n- [Note](note.md)\n")
+        _w(self.wsd / "journal" / "journal.md", "# Journal\n")
+        _w(self.wsd / "skills" / "skills.md", "# Skills\n")
+        _w(self.wsd / "research" / "research.md", "# Research\n")
+        # A topic NAME symlinked into a reserved dir.
+        (self.wsd / "jlink").symlink_to(self.wsd / "journal", target_is_directory=True)
+
+    RESERVED = ("memory", "journal", "skills", "research", "docs", "jlink")
+
+    def test_forced_topic_refusals_replay_the_lesson_guards(self):
+        """HEAD's `_lesson.py --topic` refusals (domain, ambiguous, symlink out
+        of the vault — top-level and nested — invalid slug), plus what
+        `--topic` adds: no creation (missing name, a folder with no landing),
+        plus the reserved workspace dirs — by name or through a symlink — that
+        v4.9 refuses before every other guard. Each → `rejected:no_topic`,
+        nothing written anywhere."""
         outside = Path(tempfile.mkdtemp(prefix="gowth_outside_"))
         try:
-            _w(outside / "lily" / "00-README.md", _skeleton("lily"))
-            _w(outside / "nested-lily" / "00-README.md", _skeleton("nested-lily"))
-            (self.wsd / "lily").symlink_to(outside / "lily", target_is_directory=True)
-            (self.wsd / "dom").mkdir()
-            (self.wsd / "dom" / "nested-lily").symlink_to(outside / "nested-lily", target_is_directory=True)
-            (self.wsd / "docs").mkdir()
-            _w(self.wsd / "bare" / "2026-01-01-x.md", "- [exp] an aspect with no landing\n")
+            self._seed_refusals(outside)
             before = _tree(self.home)
             outside_before = _tree(outside)
             entry = "[exp] cache stampede on cold start because nothing coalesces misses"
-            for topic in ("infra", "orchid", "lily", "nested-lily", "missing", "docs", "bare",
-                          "../w1", "Bad Slug", "a/orchid", ""):
+            for topic in ("infra", "orchid", "lily", "nested-lily", "missing", "bare",
+                          "../w1", "Bad Slug", "a/orchid", "") + self.RESERVED:
                 path, status = self.append(entry, "--ws", "w1", "--topic", topic)
                 self.assertEqual(status, "rejected:no_topic", topic)
             self.assertEqual(_tree(self.home), before)
             self.assertEqual(_tree(outside), outside_before)
             # Positive control: the same command writes a real topic.
             self.assertEqual(self.append(entry, "--ws", "w1", "--topic", "redis-cache")[1], "written")
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_lesson_topic_refuses_reserved_dirs_and_replays_head_guards(self):
+        """`_lesson.py --topic` wrote `lessons.md` into ANY existing reserved
+        dir (its `ensure` path swallowed `ensure_topic_folder`'s refusal) —
+        `memory/lessons.md`, `journal/lessons.md` on every filesystem, and a
+        skeleton README through a symlinked name. Now `not appended`, rc 2,
+        tree unchanged; HEAD's refusals still refuse through the same CLI."""
+        outside = Path(tempfile.mkdtemp(prefix="gowth_outside_"))
+        try:
+            self._seed_refusals(outside)
+            before = _tree(self.home)
+            outside_before = _tree(outside)
+            for topic in self.RESERVED + ("infra", "orchid", "lily", "nested-lily", "../w1", "Bad Slug"):
+                r = self.run_py(str(SCRIPTS / "_lesson.py"), "--ws", "w1", "--topic", topic,
+                                "--symptom", "cache stampede on a cold start", "--tried", "warming by hand",
+                                "--root", "nothing coalesces misses because the lock is per key",
+                                "--fix", "single-flight the loader", "--source", "runbook.md:12")
+                self.assertEqual(r.returncode, 2, (topic, r.stdout, r.stderr))
+                self.assertTrue(r.stdout.startswith("not appended: "), (topic, r.stdout))
+                self.assertNotIn("Traceback", r.stderr)
+            for topic in ("memory", "journal", "skills", "research"):
+                self.assertIn(f"'{topic}' is a reserved workspace directory",
+                              self.run_py(str(SCRIPTS / "_lesson.py"), "--ws", "w1", "--topic", topic,
+                                          "--symptom", "s long enough", "--tried", "t", "--root", "r because x",
+                                          "--fix", "f").stdout)
+            self.assertEqual(_tree(self.home), before)
+            self.assertEqual(_tree(outside), outside_before)
+            self.assertFalse((self.wsd / "memory" / "lessons.md").exists())
+            self.assertFalse((self.wsd / "journal" / "00-README.md").exists())
+            # Positive control: the same CLI appends to a real topic.
+            r = self.run_py(str(SCRIPTS / "_lesson.py"), "--ws", "w1", "--topic", "redis-cache",
+                            "--symptom", "cache stampede on a cold start", "--tried", "warming by hand",
+                            "--root", "nothing coalesces misses because the lock is per key",
+                            "--fix", "single-flight the loader", "--source", "runbook.md:12")
+            self.assertIn("appended: ", r.stdout, r.stderr)
+            self.assertIn("cache stampede on a cold start", (self.topic / "lessons.md").read_text())
         finally:
             shutil.rmtree(outside, ignore_errors=True)
 
@@ -406,6 +463,108 @@ class ConcurrencyTests(_Vault):
         self.assertTrue(_prune_takes_entries_lock(),
                         "_prune.py must hold entries-<ws> while it rewrites a file (spec §3.3)")
         self._run(with_prune=True)
+
+
+_SECRET_APPENDER = r"""
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+import _topic
+go, ws, n = Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+while not go.exists():
+    time.sleep(0.005)
+t0 = time.time()
+out = []
+for i in range(n):
+    tok = f"{ws}x{i:03d}"
+    entry = f"[secret-ref] SVC_{tok.upper()}_TOKEN env var holds the {tok} service token"
+    out.append(_topic.append_entry_status(entry, ws=ws)[1])
+print(json.dumps({"statuses": out, "t0": t0, "t1": time.time()}))
+"""
+
+_ONE_APPEND = ("import sys; sys.path.insert(0, sys.argv[1])\n"
+               "import _topic\n_topic.ENTRIES_LOCK_TIMEOUT = 0.3\n"
+               "print(_topic.append_entry_status(sys.argv[2], ws=sys.argv[3])[1])\n")
+
+
+class SharedEntriesLockTests(_Vault):
+    """Review safety-sync#3: every workspace appends its `[secret-ref]` to the
+    ONE `shared/secrets.md`; `entries-<ws>` never serialised two workspaces."""
+    N = 50
+    SECRET = "[secret-ref] PAGER_API_KEY env var holds the pager integration key"
+    TOPIC_ENTRY = "[exp] cache stampede on cold start because nothing coalesces misses"
+
+    def setUp(self):
+        super().setUp()
+        for ws in ("w2", "shared"):
+            _w(self.home / "workspaces" / ws / "workspace.json", "{}")
+        self._saved_home = os.environ.get("GOWTH_MEM_HOME")
+        os.environ["GOWTH_MEM_HOME"] = self.tmp
+
+    def tearDown(self):
+        if self._saved_home is None:
+            os.environ.pop("GOWTH_MEM_HOME", None)
+        else:
+            os.environ["GOWTH_MEM_HOME"] = self._saved_home
+        super().tearDown()
+
+    def one(self, entry: str, ws: str) -> str:
+        r = self.run_py("-c", _ONE_APPEND, str(SCRIPTS), entry, ws)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_two_workspaces_appending_secret_refs_lose_nothing(self):
+        go = self.home.parent / f"{self.home.name}.go"
+        procs = [subprocess.Popen([sys.executable, "-c", _SECRET_APPENDER, str(SCRIPTS), str(go), ws, str(self.N)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=_env(self.home))
+                 for ws in ("w1", "w2")]
+        try:
+            time.sleep(0.3)
+            go.write_text("go")
+            results = []
+            for p in procs:
+                out, err = p.communicate(timeout=300)
+                self.assertEqual(p.returncode, 0, err)
+                results.append(json.loads(out))
+        finally:
+            go.unlink(missing_ok=True)
+        for res in results:
+            self.assertEqual(res["statuses"], ["written"] * self.N)
+        a, b = results
+        self.assertLess(max(a["t0"], b["t0"]), min(a["t1"], b["t1"]), "the appenders never overlapped")
+        text = (self.home / "shared" / "secrets.md").read_text()
+        missing = [f"{ws}x{i:03d}" for ws in ("w1", "w2") for i in range(self.N)
+                   if text.count(f"env var holds the {ws}x{i:03d} service token") != 1]
+        self.assertEqual(missing, [], f"{len(missing)} of {2 * self.N} [secret-ref] entries lost or doubled")
+
+    def test_secret_ref_takes_the_one_shared_lock(self):
+        from _lock import file_lock  # type: ignore
+        secrets = self.home / "shared" / "secrets.md"
+        # Held `shared-entries` blocks a [secret-ref] from EVERY workspace —
+        # and nothing else (a topic entry takes `entries-<ws>`).
+        with file_lock("shared-entries", timeout=5):
+            self.assertEqual(self.one(self.SECRET, "w1"), "rejected:lock_timeout")
+            self.assertEqual(self.one(self.SECRET.replace("PAGER", "PAGER2"), "w2"), "rejected:lock_timeout")
+            self.assertEqual(self.one(self.TOPIC_ENTRY, "w1"), "written")
+        self.assertFalse(secrets.exists())
+        # A workspace's own lock no longer guards (nor blocks) the shared file …
+        with file_lock("entries-w1", timeout=5):
+            self.assertEqual(self.one(self.SECRET, "w1"), "written")
+        # … and the shared lock's name is no workspace lock: `entries-shared`
+        # belongs to a workspace named `shared` (WS_RE accepts it), which
+        # appends its own [secret-ref] without blocking on itself.
+        with file_lock("entries-shared", timeout=5):
+            self.assertEqual(self.one(self.SECRET.replace("PAGER", "PAGER3"), "w2"), "written")
+        self.assertEqual(self.one(self.SECRET.replace("PAGER", "PAGER4"), "shared"), "written")
+        text = secrets.read_text()
+        for key in ("PAGER_API_KEY", "PAGER3_API_KEY", "PAGER4_API_KEY"):
+            self.assertEqual(text.count(f"[secret-ref] {key} env var"), 1, (key, text))
+        self.assertNotIn("PAGER2_API_KEY", text)
+        import _topic  # type: ignore
+        self.assertEqual(_topic.SHARED_ENTRIES_LOCK, "shared-entries")
+        self.assertTrue(_topic._under_shared(secrets))
+        self.assertFalse(_topic._under_shared(self.wsd / "redis-cache" / "x.md"))
+        self.assertFalse(_topic._under_shared(self.home / "workspaces" / "shared" / "x.md"))
 
 
 class RepeatedWriteTests(_Vault):

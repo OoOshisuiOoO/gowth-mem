@@ -24,7 +24,11 @@ there and drop the rest. Frontmatter keys the rebuild does not render are
 kept verbatim (after the known keys, original order), and a scalar
 `aliases:/parents:/links:/tags:` value is a 1-item list, no longer one item
 per character. A README with no card, no unknown key and no scalar list
-value renders byte-identically to v4.8 (tests/test_moc_golden.py).
+value renders byte-identically to v4.8 (tests/test_moc_golden.py). A card
+the rebuild would NOT keep (it sits below a hand-written `## ` heading, under
+a renamed TL;DR or under `## Aspects (auto)`) is archived verbatim to
+`<topic>/.history/card-<sha12>.txt` first; if that fails the README is left
+as it is (review cards#4).
 
 F18 lock (2026-05-17): dropped legacy `rebuild_topic_folder_moc` /
 `rebuild_topic_subfolders` (which emitted `_MAP.md` inside topic folders).
@@ -40,7 +44,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write, safe_write  # type: ignore  # noqa: F401
-from _card import card_region, is_begin_marker, is_end_marker  # type: ignore
+from _card import _archive as _archive_card  # type: ignore
+from _card import card_region, card_spans, is_begin_marker, is_end_marker  # type: ignore
 from _frontmatter import _FRONT_RE, parse, parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
@@ -102,13 +107,12 @@ def _extract_tldr_block(path: Path) -> str:
     return _tldr_block_from_text(text)
 
 
-def _tldr_block_from_text(text: str) -> str:
-    """`_extract_section(TL;DR)` on text (v4.8 semantics), extended over a
-    card that starts in the TL;DR and runs past where the section would end
-    (a hand-typed `## ` line inside the card) — the card is never cut."""
+def _tldr_bounds(text: str):
+    """(start, end) in `text` of the TL;DR block `_tldr_block_from_text` keeps
+    (before its rstrip), or None when there is no `## TL;DR`."""
     idx = text.find(TLDR_HEADING)
     if idx < 0:
-        return ""
+        return None
     rest = text[idx:]
     end = len(rest)
     for stop in (ASPECTS_HEADING, MANUAL_HEADING, "## "):
@@ -119,7 +123,40 @@ def _tldr_block_from_text(text: str) -> str:
     if region is not None and region[0] >= idx and region[1] - idx > end:
         pos = rest.find("\n## ", region[1] - idx)
         end = pos + 1 if pos >= 0 else len(rest)
-    return rest[:end].rstrip() + "\n"
+    return idx, idx + end
+
+
+def _tldr_block_from_text(text: str) -> str:
+    """`_extract_section(TL;DR)` on text (v4.8 semantics), extended over a
+    card that starts in the TL;DR and runs past where the section would end
+    (a hand-typed `## ` line inside the card) — the card is never cut."""
+    bounds = _tldr_bounds(text)
+    if bounds is None:
+        return ""
+    return text[bounds[0]:bounds[1]].rstrip() + "\n"
+
+
+def _dropped_cards(text: str) -> str:
+    """The card text of an existing README that `rebuild_topic_readme` would
+    NOT copy, "" when none: every card span (`_card.card_spans`, corrupt ones
+    included) outside the TL;DR block and the manual block — the two pieces
+    of the old README a rebuild copies verbatim — joined in README order.
+    Review cards#4: a card below a hand-written `## ` heading (between the
+    summary and the card), under a renamed TL;DR or under `## Aspects (auto)`
+    sat in a section the rebuild regenerates, and vanished without a copy.
+    Linear: one pass for the spans, two `find`s for the kept blocks."""
+    spans = card_spans(text)
+    if not spans:
+        return ""
+    kept = []
+    bounds = _tldr_bounds(text)
+    if bounds is not None:
+        kept.append(bounds)
+    mi = text.find(MANUAL_HEADING)
+    if mi >= 0:
+        kept.append((mi, len(text)))
+    return "\n".join(text[a:b].rstrip("\r\n") for a, b in spans
+                     if not any(s <= a and b <= e for s, e in kept))
 
 
 def _summary_line(fm: dict, fallback: str) -> str:
@@ -342,7 +379,8 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
 
     Returns the README path written, or None if `folder` is not a topic folder
     (defensive — caller should pre-filter via `is_topic_folder`) or resolves
-    outside the workspaces tree.
+    outside the workspaces tree, or (v4.9) when a topic card the rebuild would
+    drop could not be archived first — nothing is written then.
 
     v4.7.6: a topic folder symlinked to notes kept elsewhere (another repo) was
     rebuilt THROUGH the link — its hand-written README overwritten by the
@@ -466,9 +504,35 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
                 return readme
         except Exception:
             pass
+        # v4.9 (review cards#4): card text this rebuild would drop is archived
+        # verbatim to `<folder>/.history/card-<sha12>.txt` first (one file per
+        # rebuild, under the moc lock `rebuild_all` holds, as `_card.py`
+        # writes); when that fails NOTHING is written — the README keeps its
+        # card and `_card.py --check` keeps reporting it. Cards the rebuild
+        # keeps (inside the TL;DR or the manual block — `unbalanced` and
+        # `duplicate` ones included) are untouched: their README is rebuilt
+        # as before, never frozen.
+        dropped = _dropped_cards(existing)
+        if dropped and not _archive_card(readme, dropped, why="moc-rebuild"):
+            _warn_card_kept(readme)
+            return None
 
     safe_write(readme, body)
     return readme
+
+
+def _warn_card_kept(readme: Path) -> None:
+    msg = (f"WARN: _moc left {readme} unchanged: a topic card there sits outside its TL;DR "
+           f"and could not be archived to .history/ — see `_card.py --check`")
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:
+        pass
+    try:
+        from _debug import log_debug  # type: ignore
+        log_debug("moc", msg)
+    except Exception:
+        pass
 
 
 # ─── workspace registry ──────────────────────────────────────────────────
