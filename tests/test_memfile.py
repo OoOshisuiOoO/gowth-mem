@@ -111,23 +111,32 @@ class RenderTest(_MemfileCase):
         self.assertIn("Beta is about B.", lines[0])
 
     def test_shrink_order_drops_decisions_then_topics_then_handoff(self):
-        # 60 handoff lines + 40 topics + 10 decisions cannot fit a 90-line budget
+        # v4.9 (spec §5.3) re-baseline: the shrink is incremental — one line at a
+        # time in step order (decisions→0, topics→10, handoff→20, …) — and stops
+        # as soon as the block fits, so this pins "within budget + cut order",
+        # not the old fixed 10/20 cut (which threw away 35 handoff lines that fit).
+        # 60 handoff lines + 40 topics + decisions cannot fit a 90-line budget
         (self.wsd / "docs" / "handoff.md").write_text(
             "## 2026-09-13 s\n" + "".join(f"- host:mac 2026-09-13 [done] item {i}\n" for i in range(80)))
         for i in range(45):
             d = self.wsd / f"t{i:02d}"
             d.mkdir()
             (d / "00-README.md").write_text(_readme(f"t{i:02d}", f"T{i}", "2026-09-05", f"Topic {i}."))
+        self._seed_decisions()
+        self.assertIn("## Recent decisions", _memfile.render(self.ws), "positive control: decisions render")
         block = _memfile.render(self.ws, free_zone_lines=100)
         self.assertLessEqual(block.count("\n"), 90)
-        self.assertNotIn("## Recent decisions", block)
+        self.assertGreaterEqual(block.count("\n"), 88, "incremental: nothing is cut beyond the budget")
+        self.assertNotIn("## Recent decisions", block, "decisions are cut first")
         lines = block.splitlines()
         t0 = lines.index("## Topics") + 1
         t1 = next(i for i in range(t0, len(lines)) if lines[i].startswith("## "))
-        self.assertEqual(len(lines[t0:t1]), 10)
+        self.assertEqual(len(lines[t0:t1]), 10, "topics reach their step minimum before handoff is cut")
         h0 = lines.index("## Handoff") + 1
         h1 = next(i for i in range(h0, len(lines)) if lines[i].startswith("## "))
-        self.assertEqual(len(lines[h0:h1]), 20)
+        self.assertGreater(len(lines[h0:h1]), 20, "handoff is cut only as far as needed")
+        self.assertLess(len(lines[h0:h1]), 60, "handoff is cut after topics")
+        self.assertIn("## Secrets (pointers only)", block, "secrets come after handoff in the cut order")
         self.assertTrue(lines[h0].startswith("### 2026-09-13"), "handoff headers are demoted to H3")
 
     def test_floor_keeps_rules_and_using_memory(self):

@@ -41,7 +41,9 @@ CODE_KEYS = [
     "recall.on_prompt_enabled", "recall.on_prompt_max_entries", "recall.on_prompt_max_chars",
     "recall.on_prompt_min_terms", "recall.on_prompt_min_coverage", "recall.on_prompt_score_threshold",
     "recall.on_prompt_prompt_cap",
+    "recall.card_enabled", "recall.card_max_chars",
     "memfile.max_lines", "memfile.max_chars",
+    "gaps.memfile_lines",
     "capture.pipeline_prefixes",
     "topic_card.max_chars",
 ]

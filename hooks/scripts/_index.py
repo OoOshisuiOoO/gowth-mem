@@ -9,6 +9,9 @@ Tables:
   chunks_vec (sqlite-vec virtual; only when sqlite-vec installed AND embedding key)
   slugs(workspace, slug, path, title, parents, status, last_touched, aliases)
     PRIMARY KEY (workspace, slug)
+  corrections(target, correction_path, date, chunk_id)   v4.9 (spec §6.2): one row
+    per `Corrects: <vault-rel path>` (<= 3 per chunk) of a curated chunk; the
+    rows of a path are replaced whenever that path is reindexed
 
 Sources:
   shared/                                 (workspace = "shared")
@@ -554,6 +557,211 @@ def _fts_columns(db: sqlite3.Connection) -> set[str]:
     return set(re.findall(r"\b(\w+)\b", row[0]))
 
 
+# ─── v4.9 corrections (spec §6.2) ─────────────────────────────────────────
+#
+# A curated correction names what it corrects:
+#   [decision] Correction: <old> → <new> (2026-11-07; Corrects: workspaces/x/t/2026-10-01-a.md; Source: …)
+# Recall (`_query`, `_recall_prompt`) shows the newest correction next to a
+# hit on its target, so a stale entry is never served alone. The parser is a
+# linear scan (str.find + bounded per-occurrence scans), no regex: every
+# occurrence reads at most CORRECTS_PATH_MAX path chars and stops at the first
+# char that cannot be in a vault path (':' included), so a `Corrects:` flood
+# costs O(n).
+
+CORRECTS_MAX_PER_CHUNK = 3
+CORRECTS_PATH_MAX = 300
+CORRECTS_DATE_WINDOW = 80
+_CORRECTS_TAIL = "orrects:"
+_PATH_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-~")
+_PATH_OPENERS = "`'\"[(<"
+# Raw or derived layers never carry curated corrections (a session log quoting
+# "Corrects: …" must not mark an entry as corrected).
+_CORRECTIONS_SKIP_PARTS = ("/journal/", "/memory/", "/research/", "/docs/worklog/")
+_CORRECTIONS_SKIP_SUFFIXES = ("/docs/questions.md", "/docs/handoff.md", "/docs/handoff-archive.md")
+
+
+def _is_iso_date(s: str) -> bool:
+    return (len(s) == 10 and s[4] == "-" and s[7] == "-"
+            and (s[:4] + s[5:7] + s[8:]).isascii() and (s[:4] + s[5:7] + s[8:]).isdigit())
+
+
+def corrections_source_ok(rel: str) -> bool:
+    """True when chunks of vault-relative `rel` may declare corrections: live
+    `.md` under workspaces/ or shared/, outside journal/, memory/, research/,
+    docs/worklog/ and the handoff / questions ledgers."""
+    if not rel or not rel.endswith(".md") or rel.startswith(ARCHIVE_DIR + "/"):
+        return False
+    if not (rel.startswith("workspaces/") or rel.startswith("shared/")):
+        return False
+    r = "/" + rel
+    if any(p in r for p in _CORRECTIONS_SKIP_PARTS):
+        return False
+    return not any(r.endswith(s) for s in _CORRECTIONS_SKIP_SUFFIXES)
+
+
+def normalize_target(raw: str, source_rel: str) -> str:
+    """A `Corrects:` value as a vault-relative path, or "" when it is not one:
+    `./` and a leading `~/.gowth-mem/` (or the vault's absolute path) are
+    dropped; a workspace-relative value gets the source's `workspaces/<ws>/`
+    prefix (`shared/` for a shared source). Must end in `.md`, no `..`, no `//`."""
+    t = (raw or "").rstrip(".")
+    if not t or len(t) > CORRECTS_PATH_MAX:
+        return ""
+    if t.startswith("~/.gowth-mem/"):
+        t = t[len("~/.gowth-mem/"):]
+    elif t.startswith("/"):
+        try:
+            t = Path(t).relative_to(gowth_home()).as_posix()
+        except ValueError:
+            return ""
+    while t.startswith("./"):
+        t = t[2:]
+    if not t.endswith(".md") or ".." in t.split("/") or "//" in t or t.startswith("/"):
+        return ""
+    if t.startswith("workspaces/") or t.startswith("shared/"):
+        return t
+    parts = source_rel.split("/")
+    if parts[0] == "workspaces" and len(parts) >= 3:
+        return f"workspaces/{parts[1]}/{t}"
+    if parts[0] == "shared":
+        return f"shared/{t}"
+    return ""
+
+
+def _date_before(text: str, pos: int, line_start: int) -> str:
+    """The ISO date nearest before `pos` on the same line (<= 80 chars back)."""
+    k = pos - 10
+    lo = max(line_start, pos - CORRECTS_DATE_WINDOW)
+    while k >= lo:
+        if text[k] in "12" and _is_iso_date(text[k:k + 10]):
+            return text[k:k + 10]
+        k -= 1
+    return ""
+
+
+def corrects_refs(text: str, source_rel: str, max_refs: int = CORRECTS_MAX_PER_CHUNK) -> list:
+    """[(target, date)] for the first `max_refs` valid `Corrects: <path>` of
+    `text` (a chunk's heading + content) outside fenced code blocks. `date` is
+    the ISO date just before it on the same line (`(<date>; Corrects: …`),
+    else the source's dated-aspect filename date, else ""."""
+    if not text or _CORRECTS_TAIL not in text:
+        return []
+    out: list = []
+    seen: set = set()
+    fallback = ""
+    name = source_rel.rsplit("/", 1)[-1]
+    if _is_iso_date(name[:10]):
+        fallback = name[:10]
+    pos = 0
+    n = len(text)
+    in_fence = False
+    while pos < n and len(out) < max_refs:
+        eol = text.find("\n", pos)
+        if eol < 0:
+            eol = n
+        line_start = pos
+        stripped = text[pos:min(eol, pos + 8)].lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+        elif not in_fence:
+            j = text.find(_CORRECTS_TAIL, pos, eol)
+            while j >= 0 and len(out) < max_refs:
+                c = j - 1
+                ok = c >= line_start and text[c] in "Cc"
+                if ok and c > line_start:
+                    prev = text[c - 1]
+                    ok = not (prev.isalnum() or prev == "_")
+                if ok:
+                    k = j + len(_CORRECTS_TAIL)
+                    while k < eol and text[k] in " \t":
+                        k += 1
+                    while k < eol and text[k] in _PATH_OPENERS:
+                        k += 1
+                    e = k
+                    while e < eol and e - k < CORRECTS_PATH_MAX and text[e] in _PATH_CHARS:
+                        e += 1
+                    target = normalize_target(text[k:e], source_rel)
+                    if target and target not in seen:
+                        seen.add(target)
+                        out.append((target, _date_before(text, c, line_start) or fallback))
+                j = text.find(_CORRECTS_TAIL, j + len(_CORRECTS_TAIL), eol)
+        pos = eol + 1
+    return out
+
+
+def _has_table(db: sqlite3.Connection, name: str) -> bool:
+    try:
+        return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                          (name,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def _index_corrections(db: sqlite3.Connection, cid: int, rel: str, heading: str,
+                       content: str) -> int:
+    """Insert the correction rows of one chunk; 0 when it declares none (or
+    the table is missing — an index the migration could not upgrade)."""
+    if not corrections_source_ok(rel):
+        return 0
+    refs = corrects_refs(f"{heading or ''}\n{content or ''}", rel)
+    for target, date in refs:
+        try:
+            db.execute("INSERT INTO corrections (target, correction_path, date, chunk_id) "
+                       "VALUES (?, ?, ?, ?)", (target, rel, date, cid))
+        except sqlite3.OperationalError:
+            return 0
+    return len(refs)
+
+
+def _migrate_corrections_table(db: sqlite3.Connection) -> None:
+    """Idempotent v4.9 migration: create `corrections` and backfill it from the
+    chunks already indexed (only when the table is new — checked again under
+    file_lock("index-migrate"), so two indexers never backfill twice)."""
+    if _has_table(db, "corrections"):
+        return
+    try:
+        lock_cm = file_lock("index-migrate", timeout=10.0)
+    except Exception:
+        lock_cm = None
+    if lock_cm is not None:
+        with lock_cm:
+            _migrate_corrections_inner(db)
+    else:
+        _migrate_corrections_inner(db)
+
+
+def _migrate_corrections_inner(db: sqlite3.Connection) -> None:
+    if _has_table(db, "corrections"):
+        return
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS corrections (
+            target TEXT NOT NULL,
+            correction_path TEXT NOT NULL,
+            date TEXT NOT NULL DEFAULT '',
+            chunk_id INTEGER NOT NULL DEFAULT 0
+        )""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_corrections_target ON corrections(target)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_corrections_path ON corrections(correction_path)")
+    rows = db.execute(
+        "SELECT id, path, heading, content FROM chunks "
+        "WHERE path NOT LIKE '.archive/%' AND (content LIKE '%orrects:%' OR heading LIKE '%orrects:%')"
+    ).fetchall()
+    for cid, path, heading, content in rows:
+        _index_corrections(db, cid, path, heading or "", content or "")
+    db.commit()
+
+
+def ensure_corrections_table(db: sqlite3.Connection) -> bool:
+    """Lazy migration for the write paths that skip `_ensure_schema`
+    (`incremental`, `reindex_paths`). Never raises."""
+    try:
+        _migrate_corrections_table(db)
+        return True
+    except Exception as exc:
+        log_debug("index", f"corrections migration skipped: {exc}")
+        return False
+
+
 def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> None:
     # NOTE: idx_chunks_tag is NOT created here because the old `chunks` table may
     # already exist without the `tag` column. _migrate_tag_column() adds the column
@@ -595,6 +803,7 @@ def _ensure_schema(db: sqlite3.Connection, sample_dim: int, use_vec: bool) -> No
     _migrate_tag_column(db)
     _migrate_keywords_column(db)
     _migrate_heading_column(db)
+    _migrate_corrections_table(db)     # v4.9
     if use_vec:
         sqlite_vec.load(db)  # type: ignore
         db.execute(
@@ -742,6 +951,8 @@ def main() -> int:
     if args.full:
         db.execute("DELETE FROM chunks_fts")
         db.execute("DELETE FROM chunks")
+        if _has_table(db, "corrections"):
+            db.execute("DELETE FROM corrections")
         if use_vec:
             db.execute("DELETE FROM chunks_vec")
         db.commit()
@@ -822,6 +1033,12 @@ def _drop_path_rows(db: sqlite3.Connection, rel: str, use_vec: bool) -> None:
         if use_vec:
             db.execute("DELETE FROM chunks_vec WHERE id=?", (oid,))
     db.execute("DELETE FROM chunks WHERE path=?", (rel,))
+    # v4.9: the corrections this path declared go with its chunks (re-added
+    # by `_index_one` when the path is reindexed)
+    try:
+        db.execute("DELETE FROM corrections WHERE correction_path=?", (rel,))
+    except sqlite3.OperationalError:
+        pass                                    # pre-v4.9 index: no table yet
 
 
 def _index_one(
@@ -869,6 +1086,7 @@ def _index_one(
             "VALUES (?, ?, ?, ?, ?)",
             (cid, tag, keywords, heading or "", content),
         )
+        _index_corrections(db, cid, rel, heading or "", content)   # v4.9 §6.2
         if use_vec:
             vec = embed_one(content)
             if vec:
@@ -907,6 +1125,7 @@ def incremental(max_files: int = 200) -> dict:
             db = sqlite3.connect(str(db_path))
             try:
                 db.execute("PRAGMA busy_timeout=5000")
+                ensure_corrections_table(db)      # v4.9: lazy, idempotent
                 known: dict = {}
                 for path, mt in db.execute(
                         "SELECT path, MAX(mtime) FROM chunks WHERE path NOT LIKE '.archive/%' "
@@ -997,6 +1216,7 @@ def reindex_paths(paths) -> int:
             db = sqlite3.connect(str(db_path))
             try:
                 db.execute("PRAGMA busy_timeout=5000")
+                ensure_corrections_table(db)      # v4.9: lazy, idempotent
                 done = 0
                 for rel, p in targets:
                     if not p.is_file():
