@@ -283,6 +283,18 @@ class TurnNumberSeedTest(_Hook):
         self.turn("a prompt that recall saw first")
         self.assertEqual(self._numbers(), [1, 2, 3])
 
+    def test_a_repeated_run_in_an_old_log_continues_after_the_highest(self):
+        # a log written before the seed existed: turns 1-6, then the entry was
+        # re-created and numbering restarted at 1-2 (the WP-A1 open issue)
+        p = self._log()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        blocks = "".join(f"\n## turn {i} — 09:{i:02d}\n**User:** earlier {i}\n**Claude:** ok\n**Actions:** \n"
+                         for i in (1, 2, 3, 4, 5, 6, 1, 2))
+        p.write_text(f"# Session log — {self.today} — {self.sid[:8]}\n\n_x_\n" + blocks)
+        self.turn("a prompt after the session entry was pruned again")
+        self.assertEqual(self._numbers(), [1, 2, 3, 4, 5, 6, 1, 2, 7])
+        self.assertEqual(self.state()["session"][self.sid]["total_turns"], 7)
+
     def test_existing_counter_is_kept(self):
         self._seed_log(2)
         (self.home / "state.json").write_text(json.dumps({"version": 2, "files": {}, "session": {

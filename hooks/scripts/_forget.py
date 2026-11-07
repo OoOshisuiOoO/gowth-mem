@@ -339,15 +339,16 @@ def _curator_held(ws: str, ttl_days: int, now: float):
     timestamp) — a held log older than ttl + hold_days is archived anyway.
     Any failure → nothing held (archival as before)."""
     try:
-        from _home import setting  # type: ignore
-        if not setting("curator.enabled", bool, True):
+        from _home import read_settings, setting  # type: ignore
+        s = read_settings()                    # one snapshot for the knobs and the coverage
+        if not setting("curator.enabled", bool, True, settings=s):
             return set(), now
-        hold = setting("curator.hold_days", int, 30)
-        hold = max(0, min(365, hold if isinstance(hold, int) else 30))
+        hold = setting("curator.hold_days", int, 30, settings=s)
+        hold = max(0, min(365, hold if isinstance(hold, int) and not isinstance(hold, bool) else 30))
         if hold <= 0:
             return set(), now
         from _curate import unprocessed  # type: ignore
-        return set(unprocessed(ws)), now - (ttl_days + hold) * 86400
+        return set(unprocessed(ws, s)), now - (ttl_days + hold) * 86400
     except Exception as e:
         log_debug("forget", f"curator hold skipped for {ws}: {e}")
         return set(), now

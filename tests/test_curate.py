@@ -481,6 +481,179 @@ class DigestTest(_Vault):
         self.assertEqual(self.cli("prep", "--ws", self.WS, "--now", "yesterday").strip(), "rejected:bad_now")
 
 
+# ── the digest's unused budget (round 2) ─────────────────────────────────────
+
+def _section(md: str, sid: str) -> str:
+    return md.split(f"## §{sid} ", 1)[1].split("\n## §", 1)[0]
+
+
+def _items(md: str, sid: str) -> list:
+    return [ln for ln in _section(md, sid).split("\n") if ln.startswith("- ")]
+
+
+class DigestBudgetGrowthTest(_Vault):
+    """Live devops/trade digests used 29k of 40k while §4c showed 7 of 208
+    entries: a section's unused budget now goes to the cut sections — tier 1
+    (§6 §4c §7 §5 §4b §10) round-robin, then tier 2 (§4 §9 §8) — and never to
+    §2 (its printed turns are `processed`) or §3."""
+
+    NOWDT = datetime.fromisoformat(NOW)
+
+    def build(self, grow=True):
+        from unittest import mock
+        if grow:
+            return _curate.build_digest(self.WS, _curate.read_settings(), self.NOWDT)
+        with mock.patch.object(_curate, "_grow_sections", return_value=0):
+            return _curate.build_digest(self.WS, _curate.read_settings(), self.NOWDT)
+
+    def topic(self, slug="t", entries=80, hyps=0) -> None:
+        topic = self.wsd / slug
+        topic.mkdir()
+        (topic / "00-README.md").write_text(f"---\nslug: {slug}\ntitle: T\n---\n# T\n\n## TL;DR\n\n> T topic\n")
+        (topic / "2026-11-06-notes.md").write_text("\n".join(
+            f"- [ref] entry number {i} about the curator digest budget — Source: x.md" for i in range(entries)))
+        if hyps:
+            # longer than a §4c line: once §4c's next item no longer fits, a §9 one cannot either
+            (topic / "2025-01-01-old.md").write_text("\n".join(
+                f"- [hypothesis] old guess {i} about routing tables, the gateway retry policy and the fallback "
+                f"order of the regional upstream pools — Verify: run it" for i in range(hyps)))
+
+    def test_unused_budget_grows_cut_sections_within_the_total(self):
+        self.settings({"curator": {"max_prep_chars": 8000}})
+        self.write_log("2026-11-06-abcd1234", [_turn(1), _turn(2)])        # a short §2, an empty §3
+        self.topic(entries=80)
+        base_md, base_meta = self.build(grow=False)
+        md, meta = self.build()
+        base_n, n = len(_items(base_md, "4c")), len(_items(md, "4c"))
+        self.assertGreaterEqual(base_n, 1)
+        self.assertGreater(n, base_n + 10, "the unused budget went to §4c")
+        self.assertIn(f"\n+{80 - n} more — the aspect files of the §7 topics hold them", _section(md, "4c"))
+        self.assertLessEqual(len(md), 8000, "growth never exceeds curator.max_prep_chars")
+        self.assertGreater(len(md), 7000, "and uses most of it")
+        self.assertEqual(meta["sections"]["4c"]["items"], n)
+        self.assertEqual(meta["sections"]["4c"]["more"], 80 - n)
+        # the index line ranges still point at the section headings
+        lines = md.split("\n")
+        for sid, info in meta["sections"].items():
+            self.assertTrue(lines[info["line_start"] - 1].startswith(f"## §{sid} "), sid)
+        # §2 is untouched: same printed turns, same processed set, same run
+        self.assertEqual(_section(md, "2"), _section(base_md, "2"))
+        self.assertEqual((meta["processed"], meta["run"]), (base_meta["processed"], base_meta["run"]))
+
+    def test_section_2_never_grows(self):
+        self.settings({"curator": {"max_prep_chars": 8000}})
+        self.write_log("2026-11-06-abcd1234", [_turn(n) for n in range(1, 60)])
+        base_md, base_meta = self.build(grow=False)
+        md, meta = self.build()
+        self.assertEqual(_section(md, "2"), _section(base_md, "2"))
+        self.assertIn("\n+", _section(md, "2"), "§2 is still cut")
+        self.assertEqual(meta["processed"], base_meta["processed"])
+        self.assertEqual(meta["unprocessed_left"], base_meta["unprocessed_left"])
+
+    def test_tier_one_is_served_before_tier_two(self):
+        self.settings({"curator": {"max_prep_chars": 8000}})
+        self.write_log("2026-11-06-abcd1234", [_turn(1)])
+        self.topic(entries=200, hyps=80)                    # §4c (tier 1) cannot be served in full
+        base_md, _ = self.build(grow=False)
+        md, _ = self.build()
+        self.assertGreater(len(_items(md, "4c")), len(_items(base_md, "4c")))
+        self.assertEqual(len(_items(md, "9")), len(_items(base_md, "9")), "§9 (tier 2) waits for tier 1")
+        self.assertIn("\n+", _section(md, "9"))
+        # once tier 1 is served in full, tier 2 grows
+        shutil.rmtree(self.wsd / "t")
+        self.topic(entries=3, hyps=80)
+        base_md, _ = self.build(grow=False)
+        md, _ = self.build()
+        self.assertNotIn("more —", _section(md, "4c"))
+        self.assertGreater(len(_items(md, "9")), len(_items(base_md, "9")))
+
+    def test_research_candidates_are_exactly_the_printed_section_10(self):
+        import _gaps  # type: ignore
+        self.settings({"curator": {"max_prep_chars": 8000, "max_research": 4}})
+        self.write_log("2026-11-06-abcd1234", [_turn(1)])
+        ids = []
+        for i in range(6):
+            qid, st = _gaps.add(self.WS, "research", f"which retention period applies to archive bucket "
+                                                     f"{'abcdefghij'[i]} {'y' * 120}", force=True, settings={})
+            self.assertEqual(st, "added")
+            ids.append(qid)
+        base_md, base_meta = self.build(grow=False)
+        md, meta = self.build()
+        printed = [ln.split()[1] for ln in _items(md, "10")]
+        self.assertGreater(len(printed), len(_items(base_md, "10")), "§10 grew past its own budget")
+        self.assertEqual(len(printed), 4, "never past curator.max_research")
+        self.assertIn("\n+2 more — ", _section(md, "10"))
+        self.assertEqual(meta["research_candidates"], printed)
+        self.assertEqual(base_meta["research_candidates"], [ln.split()[1] for ln in _items(base_md, "10")])
+
+    def test_three_passes_with_growth_are_byte_identical(self):
+        self.settings({"curator": {"max_prep_chars": 8000}})
+        self.write_log("2026-11-06-abcd1234", [_turn(1), _turn(2)])
+        self.topic(entries=80)
+        blobs = []
+        for _ in range(3):
+            out = self.cli("prep", "--ws", self.WS, "--now", NOW)
+            p = Path(out.splitlines()[0])
+            blobs.append((out, p.read_bytes(), p.with_suffix(".json").read_bytes()))
+        self.assertEqual(blobs[0], blobs[1])
+        self.assertEqual(blobs[1], blobs[2])
+        self.assertGreater(blobs[0][1].count(b"- workspaces/w/t/2026-11-06-notes.md: "), 10)
+
+
+class ProjectCommitsAndHintsTest(_Vault):
+    def test_beyond_20_commits_per_repo_is_a_more_line(self):
+        repo = self.root / "proj"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        for i in range(25):
+            (repo / "f.txt").write_text(str(i))
+            _git(repo, "add", "f.txt")
+            _git(repo, "commit", "-q", "-m", f"feat: change number {i}")
+        self.write_log("2026-11-06-abcd1234", [_turn(1)], cwd=str(repo))
+        out = self.cli("prep", "--ws", self.WS, "--dry", "--now", datetime.now().strftime("%Y-%m-%dT%H:%M"))
+        sec = _section(out, "4b")
+        self.assertEqual(len([ln for ln in sec.split("\n") if ln.startswith("- proj@")]), 20)
+        self.assertIn("- proj@", sec)
+        self.assertIn("feat: change number 24", sec, "newest first")
+        self.assertIn("\n+5 more — beyond 20 per repo or the budget. Full list (a person, not the curator", sec)
+
+    def test_one_repo_probe_per_working_directory(self):
+        from unittest import mock
+        repo = self.root / "proj"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        (repo / "a.txt").write_text("a")
+        _git(repo, "add", "a.txt")
+        _git(repo, "commit", "-q", "-m", "feat: the only commit")
+        for i in range(6):
+            self.write_log(f"2026-11-06-abcd12{i:02d}", [_turn(1)], cwd=str(repo))
+        self.write_log("2026-11-06-ffff0000", [_turn(1)], cwd=str(self.root / "not-a-repo"))
+        calls = []
+        real = _curate._repo_root
+
+        def spy(cwd):
+            calls.append(cwd)
+            return real(cwd)
+
+        with mock.patch.object(_curate, "_repo_root", side_effect=spy):
+            md, _meta = _curate.build_digest(self.WS, {}, datetime.now().replace(microsecond=0))
+        self.assertEqual(sorted(calls), sorted([str(repo), str(self.root / "not-a-repo")]))
+        self.assertIn("feat: the only commit", _section(md, "4b"), "the repo was found and read")
+
+    def test_vault_change_hint_never_asks_the_curator_to_run_git(self):
+        _git(self.vault, "init", "-q")
+        f = self.wsd / "t.md"
+        for i in range(45):
+            f.write_text(str(i))
+            _git(self.vault, "add", "-A")
+            _git(self.vault, "commit", "-q", "-m", f"add: entry {i}")
+        out = self.cli("prep", "--ws", self.WS, "--dry", "--now", datetime.now().strftime("%Y-%m-%dT%H:%M"))
+        sec = _section(out, "4")
+        self.assertEqual(len([ln for ln in sec.split("\n") if ln.startswith("- ")]), 40, "<= 40 commits")
+        self.assertIn("\n+5 more — older commits; §4c and §7 show what they wrote. Full list (a person, "
+                      "not the curator — it never runs git): git -C ", sec)
+
+
 # ── coverage ─────────────────────────────────────────────────────────────────
 
 class CoverageTest(_Vault):
@@ -585,6 +758,30 @@ class CommitTest(_Vault):
         target.write_text("---\ntype: worklog\nrun: ffffffffffff\n---\n")
         self.assertTrue(self.commit(run, 1).endswith("\trejected:run_mismatch"))
         self.assertTrue(self.commit(run, 2).endswith("\trejected:run_mismatch"))
+
+    def test_a_symlink_out_of_the_workspace_is_refused(self):
+        meta = self.prep()
+        outside = self.root / "outside"
+        outside.mkdir()
+        wl = self.wsd / "docs" / "worklog"
+        wl.symlink_to(outside, target_is_directory=True)
+        out = self.commit(meta["run"], 1)
+        self.assertTrue(out.endswith("\trejected:bad_path"), out)
+        self.assertEqual(list(outside.iterdir()), [], "nothing written through the symlink")
+        # a symlinked docs/ as well
+        wl.unlink()
+        docs = self.wsd / "docs"
+        shutil.move(str(docs), str(self.root / "realdocs"))
+        docs.symlink_to(self.root / "realdocs", target_is_directory=True)
+        out = self.commit(meta["run"], 1)
+        self.assertTrue(out.endswith("\trejected:bad_path"), out)
+        self.assertFalse((self.root / "realdocs" / "worklog").exists())
+        # positive control: the workspace's own directory again → written
+        docs.unlink()
+        shutil.move(str(self.root / "realdocs"), str(docs))
+        out = self.commit(meta["run"], 1)
+        self.assertTrue(out.endswith("\twritten"), out)
+        self.assertTrue((self.vault / out.split("\t")[0]).is_file())
 
     def test_lock_timeout(self):
         meta = self.prep()

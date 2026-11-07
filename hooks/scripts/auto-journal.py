@@ -715,14 +715,18 @@ def _mark_paused_notified(session_id: str) -> None:
 
 
 def _seed_total_turns(ws: str, session_id: str) -> int:
-    """v4.9: the last `## turn N` of today's session log for this sid (0 when
-    there is none). Called inside the counter lock only when the session's
-    state entry has no total_turns yet."""
+    """v4.9: the highest `## turn N` of today's session log for this sid (0
+    when there is none). Called inside the counter lock only when the
+    session's state entry has no total_turns yet. The highest, not the last:
+    a log written before this fix can hold a repeated run (1-9, then 1-3), and
+    continuing after its last number would repeat 4-9 once more."""
     try:
         p = _session_log_path(ws, session_id)
         if not p.is_file():
             return 0
-        return int(_capture._last_turn_no(p.read_text(encoding="utf-8", errors="replace")) or 0)
+        from _curate import parse_log  # type: ignore  # line scan, no regex
+        turns = parse_log(p.read_text(encoding="utf-8", errors="replace"))["turns"]
+        return max((t["n"] for t in turns), default=0)
     except Exception:
         return 0
 

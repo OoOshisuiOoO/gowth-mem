@@ -72,9 +72,11 @@ GOWTH_MEM_HOME says otherwise) and `<plugin>` = this plugin's root (the paths pr
 "Read(//<plugin>/**)"
 ```
 
-(`Read(//<absolute path>/**)` for a vault outside your home directory.) The curator has no
-Write, Edit or Agent tool: it changes the vault only through these CLIs, never runs git, and
-never launches subagents.
+(`Read(//<absolute path>/**)` for a vault outside your home directory.) Research uses WebSearch /
+WebFetch only when they are allowed too (`"WebSearch"`, `"WebFetch(domain:<docs host>)"`); without
+them a research question is marked tried and the run goes on. The curator has no Write, Edit or
+Agent tool: it changes the vault only through these CLIs, never runs git, and never launches
+subagents.
 
 ## Settings (`curator.*`)
 

@@ -16,7 +16,8 @@ only through CLIs; this module is the curator's own:
       -> "<worklog path>\\twritten|unchanged|rejected:<reason>"
       reasons: no_prep run_mismatch no_phase1 too_long missing_actions
       control_token secret_leak sanitize_failed lock_timeout write_failed
-      bad_ws bad_phase unreadable_input
+      bad_ws bad_phase bad_path (docs/ or docs/worklog/ is a symlink out of
+      the workspace) unreadable_input
   _curate.py status [--ws <ws>] [--json]
   _curate.py claim  --ws <ws> [--now …]   the next attempt marker (/mem-ops curate now)
   _curate.py directive --ws <ws>          the dispatch directive (/mem-ops curate now)
@@ -28,6 +29,10 @@ The digest (sections 1-10 of the spec, each with its own budget and a
   live handoff items · §6 open questions (+ answered-elsewhere candidates) ·
   §7 topics touched (card status) · §8 budget report · §9 old [hypothesis]
   entries · §10 research candidates.
+What a section leaves of its own budget is not lost: once all are built, the
+digest's unused budget (curator.max_prep_chars minus the text) shows more of
+the cut sections — never §2 (its printed turns are the run's `processed`) or
+§3 (spec caps: 55 % / 15 %) — so the digest stays <= max_prep_chars.
 
 Coverage cursor. A worklog's frontmatter `processed` lists the session-log
 turns its digest PRINTED (`"<log stem>:<ranges>"`, turn numbers are the
@@ -113,7 +118,9 @@ FETCH_TIMEOUT = 5.0
 REPO_GIT_TIMEOUT = 2.0
 VAULT_GIT_TIMEOUT = 5.0
 MAX_REPOS = 3
-REPO_COMMITS = 20
+MAX_CWD_PROBES = 12          # distinct session-log working directories probed for a repo root
+REPO_COMMITS = 20            # shown per repo (spec §4.4 §4b: -n 20) …
+REPO_COMMITS_SCAN = 500      # … of up to this many read, so the rest is a `+N more`, never a silent cut
 VAULT_COMMITS = 40
 CORRECTION_ITEMS = 15
 HYPOTHESIS_DAYS = 30
@@ -1007,26 +1014,51 @@ def already_curated(ws: str, today: str, me: str, remote_names: "list | None" = 
 
 class _Section:
     """One digest section: its own budget, items added in order until one does
-    not fit — everything after is counted into the `+N more` line."""
+    not fit — that item and everything after it stay `pending` and are counted
+    into the `+N more` line, never cut silently. `cap()` counts an item cut by
+    a hard per-section limit (§4's 40 commits, §4b's 20 per repo, §3's 15
+    items, §10's max_research) — those are never shown. Once every section is
+    built, `_grow_sections` hands the digest's unused budget to the cut
+    sections, so a quiet day's empty §3 does not leave §4c cut at 7 entries."""
 
     def __init__(self, sid: str, title: str, budget: int, more_hint: str) -> None:
         self.sid, self.title, self.budget, self.more_hint = sid, title, budget, more_hint
         self.items: list = []
         self.notes: list = []
+        self.pending: list = []
+        self.capped = 0
         self.used = 0
-        self.more = 0
+
+    @property
+    def more(self) -> int:
+        return len(self.pending) + self.capped
 
     def add(self, item: str) -> bool:
-        if self.more:
-            self.more += 1
+        if self.pending:
+            self.pending.append(item)
             return False
         need = len(item) + 1
         if self.used + need > self.budget:
-            self.more += 1
+            self.pending.append(item)
             return False
         self.items.append(item)
         self.used += need
         return True
+
+    def cap(self, n: int = 1) -> None:
+        self.capped += max(0, n)
+
+    def take_pending(self, room: int) -> int:
+        """Show the next pending item when it fits in `room` chars; the chars
+        it used (0 = it does not fit, or nothing is pending)."""
+        if not self.pending:
+            return 0
+        need = len(self.pending[0]) + 1
+        if need > room:
+            return 0
+        self.items.append(self.pending.pop(0))
+        self.used += need
+        return need
 
     def lines(self) -> list:
         out = [f"## §{self.sid} {self.title}"]
@@ -1042,6 +1074,47 @@ class _Section:
 
 def _budget(c: dict, sid: str) -> int:
     return max(MIN_SECTION_BUDGET, int(c["max_prep_chars"] * BUDGETS[sid]))
+
+
+# Who gets the digest's unused budget: tier by tier, and inside a tier one
+# pending item per section per round (round-robin, so one long section cannot
+# starve the rest of its tier). Tier 1 = what the protocol acts on (questions,
+# entries to review, card topics, stale handoff items, commit evidence,
+# research); tier 2 = context (vault commits, old hypotheses, budgets). §2 and
+# §3 never grow: the spec caps them (55 % / 15 %), and §2's printed turns ARE
+# the run's `processed` set. §6 first: the spec wants ALL open questions.
+GROW_TIERS = (("6", "4c", "7", "5", "4b", "10"), ("4", "9", "8"))
+
+
+def _grow_sections(sections: list, room: int) -> int:
+    """Show pending items of cut sections while they fit in `room` chars (the
+    digest's unused budget); returns the chars used. Deterministic."""
+    by_id = {sec.sid: sec for sec in sections}
+    used = 0
+    for tier in GROW_TIERS:
+        order = [by_id[sid] for sid in tier if sid in by_id]
+        while room - used > 0:
+            moved = False
+            for sec in order:
+                n = sec.take_pending(room - used)
+                if n:
+                    used += n
+                    moved = True
+            if not moved:
+                break
+    return used
+
+
+def _render(header: list, sections: list) -> tuple:
+    """(markdown, {sid: index row}) — the digest text and its section index."""
+    lines = list(header)
+    index: dict = {}
+    for sec in sections:
+        start_line = len(lines) + 1
+        lines.extend("\n".join(sec.lines()).split("\n"))   # multi-line items count line by line
+        index[sec.sid] = {"title": sec.title, "items": len(sec.items), "more": sec.more,
+                          "line_start": start_line, "line_end": len(lines) - 1}
+    return "\n".join(lines).rstrip("\n") + "\n", index
 
 
 def _actions_digest(actions: str, cap: int = 120) -> str:
@@ -1207,8 +1280,10 @@ def build_digest(ws: str, settings=None, now: "datetime | None" = None, attempt:
         if not sec2.add("\n".join(block)):
             break
         printed.append(t)
-    if sec2.more:
-        sec2.more = len(turns) - len(printed)
+    # §2 never grows (its printed turns are this run's `processed`): what did
+    # not fit is a plain count — the next prep starts with those turns.
+    sec2.pending = []
+    sec2.capped = len(turns) - len(printed)
     processed_map: dict = {}
     for t in printed:
         processed_map.setdefault(t["stem"], set()).add(t["n"])
@@ -1223,7 +1298,7 @@ def build_digest(ws: str, settings=None, now: "datetime | None" = None, attempt:
         if (t["stem"], t["n"], t["idx"]) not in printed_keys or not is_correction(t["user"]):
             continue
         if corrections >= CORRECTION_ITEMS:
-            sec3.more += 1
+            sec3.cap()
             continue
         all_turns = logs_info.get(t["stem"], {}).get("all") or []
         prev_t = all_turns[t["idx"] - 1] if t["idx"] > 0 else None
@@ -1237,49 +1312,63 @@ def build_digest(ws: str, settings=None, now: "datetime | None" = None, attempt:
             corrections += 1
 
     # ── §4 vault changes ──
-    sec4 = _Section("4", "Vault changes" + (f" since {since_sha}" if since_sha else
-                                              f" since {start.isoformat(timespec='minutes')}"),
+    # The `+N more` hints never ask the curator to run git (its protocol
+    # forbids it): they say where the omitted changes show up in this digest,
+    # and give the git command for a person.
+    since_txt = start.isoformat(timespec="minutes")
+    sec4 = _Section("4", "Vault changes" + (f" since {since_sha}" if since_sha else f" since {since_txt}"),
                     _budget(c, "4"),
-                    f"git -C {gh} log " + (f"{since_sha}..HEAD" if since_sha else
-                                           f"--since={start.isoformat(timespec='minutes')}")
-                    + f" -- workspaces/{ws}/")
+                    "older commits; §4c and §7 show what they wrote. Full list (a person, not the curator — "
+                    f"it never runs git): git -C {gh} log "
+                    + (f"{since_sha}..HEAD" if since_sha else f"--since={since_txt}") + f" -- workspaces/{ws}/")
     items4, _total4, note4 = _git_vault_changes(gh, ws, since_sha, start)
     if note4:
         sec4.notes.append(note4)
     for i, it in enumerate(items4):
         if i >= VAULT_COMMITS:
-            sec4.more += 1
+            sec4.cap()
             continue
         sec4.add(it)
 
     # ── §4b project commits ──
     sec4b = _Section("4b", "Project commits (repos the window's sessions ran in)", _budget(c, "4b"),
-                     "git -C <repo> log --since=<window start> in that repo")
+                     f"beyond {REPO_COMMITS} per repo or the budget. Full list (a person, not the curator — it "
+                     f"never runs git): git -C <repo> log --since={since_txt}")
     printed_stems = set(processed_map)
-    roots: dict = {}
+    # Turns per distinct working directory, then one `rev-parse` per directory
+    # (busiest first, at most MAX_CWD_PROBES): a busy week has many logs but
+    # few directories, and every probe may cost its 2 s timeout.
+    cwd_turns: dict = {}
     for stem, info in sorted(logs_info.items()):
         if not info["cwd"] or (stem[:10] < start_day and stem not in printed_stems):
             continue
-        root = _repo_root(info["cwd"])
+        cwd_turns[info["cwd"]] = cwd_turns.get(info["cwd"], 0) + info["turns"]
+    probe = sorted(cwd_turns.items(), key=lambda kv: (-kv[1], kv[0]))
+    roots: dict = {}
+    for cwd, n_turns in probe[:MAX_CWD_PROBES]:
+        root = _repo_root(cwd)
         if root:
-            roots[root] = roots.get(root, 0) + info["turns"]
+            roots[root] = roots.get(root, 0) + n_turns
     ranked = sorted(roots.items(), key=lambda kv: (-kv[1], kv[0]))
     if not ranked:
         sec4b.notes.append("(no session log of the window names a git repo that exists on this host)")
+    if len(probe) > MAX_CWD_PROBES:
+        sec4b.notes.append(f"(+{len(probe) - MAX_CWD_PROBES} more working directories not probed)")
     for root, _n in ranked[:MAX_REPOS]:
-        rc, out = _git(root, "log", f"--since={start.isoformat(timespec='minutes')}",
-                       "--format=%H%x1f%s", "-n", str(REPO_COMMITS), timeout=REPO_GIT_TIMEOUT)
+        rc, out = _git(root, "log", f"--since={since_txt}", "--format=%H%x1f%s", "-n", str(REPO_COMMITS_SCAN),
+                       timeout=REPO_GIT_TIMEOUT)
         name = os.path.basename(root.rstrip("/")) or root
         if rc != 0:
             sec4b.notes.append(f"- {name} ({root}): git log failed")
             continue
-        commits = [ln.split("\x1f", 1) for ln in out.splitlines() if "\x1f" in ln]
+        commits = [(sha.strip(), subj) for sha, subj in
+                   (ln.split("\x1f", 1) for ln in out.splitlines() if "\x1f" in ln) if _is_sha(sha.strip())]
         if not commits:
             sec4b.add(f"- {name} ({root}): no commits since the window start")
             continue
-        for sha, subj in commits:
-            if _is_sha(sha.strip()):
-                sec4b.add(f"- {name}@{sha.strip()[:12]} {_cut(subj, 120)}")
+        for sha, subj in commits[:REPO_COMMITS]:
+            sec4b.add(f"- {name}@{sha[:12]} {_cut(subj, 120)}")
+        sec4b.cap(len(commits) - REPO_COMMITS)
     if len(ranked) > MAX_REPOS:
         sec4b.notes.append(f"(+{len(ranked) - MAX_REPOS} more repos: "
                            + ", ".join(r for r, _n in ranked[MAX_REPOS:MAX_REPOS + 5]) + ")")
@@ -1389,7 +1478,6 @@ def build_digest(ws: str, settings=None, now: "datetime | None" = None, attempt:
                     f"_gaps.py --ws {ws} list")
     sec10 = _Section("10", "Research candidates", _budget(c, "10"),
                      f"_gaps.py --ws {ws} list --kind research")
-    research_ids: list = []
     try:
         from _gaps import _TOKEN_RE, _clean, open_items  # type: ignore
         opens = open_items(ws)
@@ -1430,13 +1518,15 @@ def build_digest(ws: str, settings=None, now: "datetime | None" = None, attempt:
     research = [q for q in opens if q.get("kind") == "research"]
     research.sort(key=lambda q: (int(q.get("tries") or 0), q.get("last_tried") or "", q.get("opened") or "",
                                  q.get("id") or ""))
+    research_item: dict = {}            # §10 line → question id (the run's research candidates)
     for i, q in enumerate(research):
         if i >= c["max_research"]:
-            sec10.more += 1
+            sec10.cap()
             continue
-        if sec10.add(f"- {q['id']} tries={int(q.get('tries') or 0)} last={q.get('last_tried') or '-'} "
-                     f"opened={q.get('opened')} {_cut(q.get('question'), 160)}"):
-            research_ids.append(q["id"])
+        item = (f"- {q['id']} tries={int(q.get('tries') or 0)} last={q.get('last_tried') or '-'} "
+                f"opened={q.get('opened')} {_cut(q.get('question'), 160)}")
+        research_item[item] = q["id"]
+        sec10.add(item)
 
     # ── assemble ──
     unprocessed_left = len(turns) - len(printed)
@@ -1464,14 +1554,14 @@ def build_digest(ws: str, settings=None, now: "datetime | None" = None, attempt:
         "",
     ]
     sections = [sec2, sec3, sec4, sec4b, sec4c, sec5, sec6, sec7, sec8, sec9, sec10]
-    lines = list(header)
-    index: dict = {}
-    for sec in sections:
-        start_line = len(lines) + 1
-        lines.extend("\n".join(sec.lines()).split("\n"))   # multi-line items count line by line
-        index[sec.sid] = {"title": sec.title, "items": len(sec.items), "more": sec.more,
-                          "line_start": start_line, "line_end": len(lines) - 1}
-    md = "\n".join(lines).rstrip("\n") + "\n"
+    md, _index = _render(header, sections)
+    # The budget is the digest's, not only each section's: what a short §2/§3
+    # left unused goes to the cut sections (the result stays <= max_prep_chars
+    # — a `+N more` line only ever shortens as N falls).
+    if _grow_sections(sections, c["max_prep_chars"] - len(md)):
+        md, _index = _render(header, sections)
+    index = _index
+    research_ids = [research_item[it] for it in sec10.items if it in research_item]
     meta = {
         "v": 1, "type": "curator-prep", "ws": ws, "host": me, "date": today_s, "run": run,
         "attempt": attempt, "window_start": window_start, "window_end": window_end,
@@ -1712,6 +1802,16 @@ def worklog_path(meta: dict) -> Path:
     return worklog_dir(meta["ws"]) / f"{meta['date']}-{meta['host']}-{meta['run'][:6]}.md"
 
 
+def _worklog_dir_ok(ws: str) -> bool:
+    """docs/ and docs/worklog/ of the workspace are its own directories (or do
+    not exist yet) — a symlink there would put a synced write outside the
+    workspace, unsanitized (`safe_write` only sanitizes inside the vault)."""
+    try:
+        return worklog_dir(ws).resolve() == workspace_dir(ws).resolve() / "docs" / "worklog"
+    except (OSError, RuntimeError):
+        return False
+
+
 def _find_prep(ws: str, run: str) -> "Path | None":
     try:
         found = sorted(p for p in curator_dir(ws).glob(f"prep-*-{run}.json") if p.is_file())
@@ -1757,6 +1857,8 @@ def commit(ws: str, run: str, phase: int, body: str) -> tuple:
     if n > 0:
         return target, "rejected:secret_leak"
     content = render_worklog(meta, phase, text)
+    if not _worklog_dir_ok(ws):
+        return target, "rejected:bad_path"
     try:
         with file_lock(f"curator-{ws}", timeout=LOCK_TIMEOUT):
             existing = None
