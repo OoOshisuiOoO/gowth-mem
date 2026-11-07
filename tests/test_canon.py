@@ -8,7 +8,9 @@ and never race a pull.
   * auto-sync delivers it only AFTER a successful pull (under the sync lock): a
     pull that brings a peer's older canon lands first and is then updated in
     place — a tracked modification, no add/add — uncommitted edits survive and
-    no stash is left behind; the no-remote branch installs it too;
+    no stash is left behind; the no-remote branch installs it too; what was
+    delivered is committed at once, never left untracked for the next pull's
+    stash (review safety-sync#1 — tests/test_canon_commit_fix.py);
   * bootstrap-load delivers it only for a vault with no .git or no remote;
   * templates/canon-hashes.json holds the current template's sha1 (fails the
     build when a template changes without `--rebuild-hashes`).
@@ -323,8 +325,16 @@ class SyncDeliveryTest(unittest.TestCase):
         self.assertIn("canon shared/memory-rules.md updated", r.stdout)
         rules = self.b / "shared" / "memory-rules.md"
         self.assertEqual(rules.read_text(), V2)
+        # the update is committed right away (review safety-sync#1) — as a
+        # modification of the peer's tracked copy, not an add/add
+        self.assertIn("committed the delivered canon (3 file(s))", r.stdout)
+        changed = git(self.b, "show", "--name-status", "--format=", "HEAD").stdout.splitlines()
+        self.assertIn("M\tshared/memory-rules.md", changed, "a tracked modification, not an add/add")
+        self.assertIn("A\tshared/research/data-quality-2026.md", changed)
+        self.assertIn("A\t.gitattributes", changed)
+        self.assertEqual(git(self.b, "show", "HEAD~1:shared/memory-rules.md").stdout, V1, "the peer's copy came first")
         st = self.porcelain()
-        self.assertIn(" M shared/memory-rules.md", st, "a tracked modification, not an add/add")
+        self.assertEqual(st, [" M workspaces/demo/t/2026-11-07-a.md"], "no canon path left uncommitted")
         self.assertFalse(any(ln[:2] in ("AA", "UU", "DU", "UD") for ln in st), st)
         self.assertFalse((self.b / "SYNC-CONFLICT.md").exists())
         self.assertEqual(git(self.b, "stash", "list").stdout.strip(), "", "no stash left behind")
@@ -338,18 +348,26 @@ class SyncDeliveryTest(unittest.TestCase):
         self.assertNotIn("canon", r2.stdout)
         self.assertEqual(rules.read_bytes(), before)
 
-    def test_delivering_before_the_pull_strands_a_stash(self):
+    def test_delivering_before_the_pull_with_another_version_is_a_visible_conflict(self):
         """Positive control for the ordering above: the SAME scenario with the
-        canon delivered BEFORE the pull (an untracked V2 meets the peer's
-        tracked V1) leaves a stash pop conflict, rc 2 and a stranded stash —
-        the add/add §3.5 forbids."""
+        canon delivered BEFORE the pull (B's V2 meets the peer's tracked V1 —
+        two plugin versions) is the add/add §3.5 avoids. The CLI commits what
+        it delivers (review safety-sync#1), so it surfaces as a visible
+        SYNC-CONFLICT.md (spec §11), no longer as the silent stranded stash an
+        UNTRACKED copy caused ("already exists, no checkout"); B's uncommitted
+        edit is in the stash the conflict message names. (Same version on both
+        sides: tests/test_canon_commit_fix.py — the pull drops the duplicate.)"""
         r0 = subprocess.run([sys.executable, str(self.plugin / "hooks" / "scripts" / "_canon.py")],
                             capture_output=True, text=True, env=self.env, timeout=60)
         self.assertIn("shared/memory-rules.md\tinstalled", r0.stdout)
+        self.assertIn("committed 3 delivered file(s)", r0.stderr)
         r = self.sync("--pull-only")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("already exists", r.stderr)
-        self.assertNotEqual(git(self.b, "stash", "list").stdout.strip(), "")
+        self.assertNotIn("already exists", r.stderr)
+        self.assertIn("conflict — wrote", r.stderr)
+        self.assertIn("shared/memory-rules.md", (self.b / "SYNC-CONFLICT.md").read_text())
+        self.assertIn("dirty changes preserved in stash", r.stderr)
+        self.assertIn("uncommitted edit on B must survive", git(self.b, "stash", "show", "-p").stdout)
 
     def test_full_sync_delivers_after_the_pull_and_still_pushes(self):
         handoff = self.b / "workspaces" / "demo" / "docs" / "handoff.md"
@@ -362,8 +380,11 @@ class SyncDeliveryTest(unittest.TestCase):
         self.assertIn("A: canon v1", log)
         self.assertIn("B: local work", log, "B's commit was replayed and pushed")
         self.assertEqual(git(self.b, "rev-list", "--count", "origin/main..HEAD").stdout.strip(), "0", "pushed")
-        self.assertIn(" M shared/memory-rules.md", self.porcelain(),
-                      "updated after the pull: a tracked modification for the next commit")
+        # updated after the pull and committed before the push: it went out with it
+        self.assertIn("update(shared): deliver gowth-mem canon (3 files)", log)
+        self.assertEqual(git(self.bare, "show", "main:shared/memory-rules.md").stdout, V2)
+        self.assertFalse(any("shared/" in ln or ".gitattributes" in ln for ln in self.porcelain()),
+                         self.porcelain())
         self.assertEqual(git(self.b, "stash", "list").stdout.strip(), "")
         self.assertFalse((self.b / ".git" / "rebase-merge").exists())
 
