@@ -37,7 +37,14 @@ SDK_VERIFY = ("STAGE=VERIFY\nVerify the mention below BEFORE the operator decide
               "1. Who is asking, which service does it belong to?")
 PASTED_TASK = ("### TASK 469044d829 R13 ###\nSTAGE=EXECUTE\nOperator APPROVED. Execute the PLAN from the "
                "VERIFY stage (same session).")
+REFLECT = "STAGE=REFLECT — task done. GOAL: join every source → extract lessons → push gowth-mem."
 GOOD = "why did we choose pelican-router for the ingress gateway last time, and what was the rationale?"
+
+
+def _wrapped(body: str, pid: str = "a75c") -> str:
+    """Review hooks#1: Claude Code's record of a bracketed (tmux) paste — every
+    mention-agent EXECUTE/REFLECT round since October 2026 arrives this way."""
+    return f'\n\n<pasted_content id="{pid}">\n{body}\n</pasted_content id="{pid}">\n'
 
 
 def _load(name: str, filename: str):
@@ -479,6 +486,37 @@ class RecallSkipsPipelinePromptsTest(unittest.TestCase):
         self.assertEqual(self.daily_prompts(), 0)
         self.assertIn("gowth-mem:recall", self.run_sh(GOOD).stdout)
 
+    def run_py(self, prompt: str) -> subprocess.CompletedProcess:
+        """_recall_prompt.py's main itself, past the bash pre-check."""
+        ev = json.dumps({"prompt": prompt, "cwd": str(self.proj), "session_id": "rp-sess"})
+        return subprocess.run([sys.executable, str(SCRIPTS / "_recall_prompt.py")], input=ev,
+                              capture_output=True, text=True, env=_env(self.vault), timeout=60)
+
+    def test_wrapped_pipeline_prompts_get_no_recall_and_no_telemetry(self):
+        """Review hooks#1: the same rounds pasted through tmux arrive wrapped in
+        Claude Code's `<pasted_content id=…>` — still silent, still untracked."""
+        self.settings(prefixes=["[nightly-bot]"])
+        prompts = (_wrapped("### TASK 469044d829 R13 ###\nSTAGE=EXECUTE\n" + GOOD),
+                   _wrapped("STAGE=REFLECT — task done. " + GOOD, "1c90"),
+                   _wrapped("Below is a conversation log from a Claude Code coding session.\n" + GOOD, "2d41"),
+                   _wrapped("[nightly-bot] " + GOOD, "09ef"))
+        for prompt in prompts:
+            for run in (self.run_sh, self.run_py):
+                r = run(prompt)
+                self.assertEqual((r.returncode, r.stdout), (0, ""), prompt[:40])
+                self.assertNotIn("Traceback", r.stderr)
+        self.assertEqual(self.daily_prompts(), 0, "recall_daily is untouched by wrapped pipeline prompts")
+        # positive controls: a person's paste — a wrapped question, or words typed
+        # before a pasted round (the opener past / within the first 64 chars) —
+        # is still profiled (telemetry counts it) …
+        for n, prompt in enumerate((_wrapped(GOOD, "e3a0"), GOOD + "\n" + prompts[0],
+                                    "explain this round:" + prompts[0]), start=1):
+            r = self.run_sh(prompt)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.daily_prompts(), n, prompt[:40])
+        # … and the same words typed are served
+        self.assertIn("[gowth-mem:recall ws=demo]", self.run_sh(GOOD).stdout)
+
 
 class ConflictNagSkipsPipelinePromptsTest(unittest.TestCase):
     def setUp(self):
@@ -502,6 +540,18 @@ class ConflictNagSkipsPipelinePromptsTest(unittest.TestCase):
         self.assertIn("SYNC-CONFLICT pending", out, "positive control: a person is still told")
         self.assertIn("SYNC-CONFLICT pending", self.nag(None), "an event without a prompt is still nagged")
 
+    def test_wrapped_pipeline_prompts_are_not_nagged(self):
+        """Review hooks#1: wrapped (`<pasted_content id=…>`) rounds are as silent
+        as bare ones; HEAD's human cases replayed through the unwrap are not."""
+        for prompt in (_wrapped(SDK_VERIFY), _wrapped(PASTED_TASK, "1c90"), _wrapped(REFLECT, "2d41"),
+                       _wrapped("[bot] nightly digest", "09ef")):
+            self.assertEqual(self.nag(prompt), "", prompt[:40])
+        for prompt in (_wrapped("why does the sync keep failing?", "e3a0"),
+                       "is this round safe to run?\n" + _wrapped(PASTED_TASK),
+                       _wrapped(PASTED_TASK, "zzzz"),
+                       _wrapped(_wrapped(REFLECT, "2d41"), "b8c1")):
+            self.assertIn("SYNC-CONFLICT pending", self.nag(prompt), prompt[:40])
+
 
 class PrecompactIgnoresPipelinePromptsTest(unittest.TestCase):
     def setUp(self):
@@ -519,13 +569,23 @@ class PrecompactIgnoresPipelinePromptsTest(unittest.TestCase):
         self.tx = self.root / "t.jsonl"
 
     def transcript(self, prompts) -> str:
+        """source: "sdk" (`claude -p`), "human" (origin only), "typed" (origin +
+        promptSource typed — keyboard input and tmux pastes) or "queued" (a
+        queued_command attachment: typed/pasted while the model works)."""
         recs = []
         for i, (text, source) in enumerate(prompts):
-            rec = {"type": "user", "uuid": f"u{i}", "message": {"content": text}}
-            if source == "sdk":
-                rec["promptSource"] = "sdk"
+            if source == "queued":
+                rec = {"type": "attachment", "uuid": f"u{i}", "attachment": {
+                    "type": "queued_command", "prompt": text, "commandMode": "prompt",
+                    "origin": {"kind": "human"}}}
             else:
-                rec["origin"] = {"kind": "human"}
+                rec = {"type": "user", "uuid": f"u{i}", "message": {"content": text}}
+                if source == "sdk":
+                    rec["promptSource"] = "sdk"
+                else:
+                    rec["origin"] = {"kind": "human"}
+                    if source == "typed":
+                        rec["promptSource"] = "typed"
             recs.append(rec)
             recs.append({"type": "assistant", "uuid": f"a{i}",
                          "message": {"content": [{"type": "text", "text": f"answer {i}"}]}})
@@ -561,6 +621,49 @@ class PrecompactIgnoresPipelinePromptsTest(unittest.TestCase):
         pf = _load("gowth_precompact_hyg", "precompact-flush.py")
         self.assertEqual(pf.user_turn_count(tx), 1, "without the settings snapshot only [bot] counts")
         self.assertEqual(pf.user_turn_count(tx, {"capture": {"pipeline_prefixes": ["[bot]"]}}), 0)
+
+    # ─── review hooks#1: wrapped rounds, through the PreCompact hook itself ──
+
+    def flush_sh(self, tx: str) -> subprocess.CompletedProcess:
+        """The hook as hooks.json wires it: precompact.sh → precompact-flush.py,
+        then a commit-only sync (a no-op: the scratch vault has no .git)."""
+        home = self.root / "home"
+        home.mkdir(exist_ok=True)
+        r = subprocess.run(["bash", str(SCRIPTS / "precompact.sh")],
+                           input=json.dumps({"transcript_path": tx, "trigger": "manual"}),
+                           capture_output=True, text=True, env=_env(self.vault, HOME=str(home)), timeout=60)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        return r
+
+    def test_wrapped_rounds_are_not_dumped_as_user_turns(self):
+        tx = self.transcript([("please fix the login bug", "typed"), (_wrapped(PASTED_TASK), "typed"),
+                              (_wrapped(REFLECT, "1c90"), "queued"), (_wrapped(SDK_VERIFY, "2d41"), "typed"),
+                              ("also update the docs", "typed")])
+        self.flush_sh(tx)
+        dump = self.journal()
+        self.assertIn("[auto-precompact-dump]", dump, "positive signal: the dump ran")
+        users = dump.split("### [user]")[1:]
+        self.assertEqual(len(users), 2, dump)
+        self.assertIn("please fix the login bug", users[0])
+        self.assertIn("also update the docs", users[1])
+        for marker in ("pasted_content", "STAGE=", "### TASK"):
+            self.assertNotIn(marker, dump)
+
+    def test_wrapped_rounds_alone_are_not_dumped(self):
+        """Three wrapped rounds (>= MIN_USER_TURNS if they counted): no dump."""
+        tx = self.transcript([(_wrapped(PASTED_TASK), "typed"), (_wrapped(REFLECT, "1c90"), "typed"),
+                              (_wrapped(PASTED_TASK.replace("R13", "R14"), "2d41"), "queued")])
+        self.flush_sh(tx)
+        self.assertEqual(self.journal(), "", "bot rounds alone → nothing to flush")
+        pf = _load("gowth_precompact_hyg_w", "precompact-flush.py")
+        self.assertEqual(pf.user_turn_count(tx), 0)
+        # positive control: the same rounds with the words a person typed in
+        # front of each are three user turns
+        quoted = self.transcript([("why this? " + _wrapped(PASTED_TASK), "typed"),
+                                  ("and this? " + _wrapped(REFLECT, "1c90"), "typed"),
+                                  ("this too? " + _wrapped(PASTED_TASK.replace("R13", "R14"), "2d41"), "queued")])
+        self.assertEqual(pf.user_turn_count(quoted), 3)
 
 
 if __name__ == "__main__":
