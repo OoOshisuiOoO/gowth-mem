@@ -83,5 +83,5 @@ subagents.
 `enabled` (true) · `hour` (0) · `min_new_turns` (5) · `first_window_days` (7) · `stale_days` (14) ·
 `max_cards` (5) · `max_research` (2) · `max_research_tries` (3) · `retry_minutes` (120) ·
 `hold_days` (30 — a session log with unprocessed turns outlives `journal.raw_ttl_days` by up to
-this) · `max_prep_chars` (40000) · `model` ("sonnet") · `hosts` ([] — when set, only these hosts
+this) · `max_prep_chars` (80000 — about 100 session turns per run) · `model` ("sonnet") · `hosts` ([] — when set, only these hosts
 curate; otherwise one host per workspace, with failover after 2 days).

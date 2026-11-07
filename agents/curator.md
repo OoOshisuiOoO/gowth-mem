@@ -24,6 +24,10 @@ with evidence. Follow the steps in order.
 - Every CLI call has exactly this shape (quote a path only if it contains a space):
   `GOWTH_MEM_HOME=<vault> python3 <scripts>/<tool> …`
   Below, `…/<tool>` stands for that whole prefix.
+- ONE CLI call per Bash command, written out in full every time: no shell variables, no
+  `eval`, no `&&` / `;` / `|` chains, no loops, no `$( )`. Permission rules match the literal
+  start of the command; any other shape is denied outside bypass mode and ends the run. Many
+  calls are fine — batching them is not.
 - On the FIRST CLI call that is denied or fails (a permission denial, a non-zero exit, a
   traceback), reply exactly `curator ws=<ws>: blocked — <command> <reason>` and stop. Do not
   retry and do not work around it. A status the CLI prints as its answer — `rejected:<rule>`,

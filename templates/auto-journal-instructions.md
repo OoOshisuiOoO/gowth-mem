@@ -39,6 +39,9 @@ Anchors (a fresh subagent has no SessionStart bootstrap — derive, don't guess)
   `#tags`, SHA-1 dedup, and write-time reindexing. **NEVER hand-write topic
   entries with a raw Write/Edit** — entries written that way are born
   untagged, ungated, and unrecallable until a manual /mem-ops reindex.
+  One `--append` call per Bash command, written out in full — no shell
+  variables, `eval`, `&&`/`;` chains or loops: outside bypass mode the
+  permission rules match the literal command start and deny any other shape.
 
 Do this WITHOUT user prompting before yielding control:
 

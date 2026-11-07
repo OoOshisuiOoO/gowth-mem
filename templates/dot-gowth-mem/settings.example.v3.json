@@ -89,7 +89,7 @@
     "max_research_tries": 3,
     "retry_minutes": 120,
     "hold_days": 30,
-    "max_prep_chars": 40000,
+    "max_prep_chars": 80000,
     "model": "sonnet",
     "hosts": []
   },

@@ -322,7 +322,7 @@ strings `"true"`/`"false"`; a malformed value falls back to its default without 
   // v4.9
   "curator":  { "enabled": true, "hour": 0, "min_new_turns": 5, "model": "sonnet",
                 "max_cards": 5, "max_research": 2, "max_research_tries": 3, "stale_days": 14,
-                "retry_minutes": 120, "hold_days": 30, "max_prep_chars": 40000, "first_window_days": 7,
+                "retry_minutes": 120, "hold_days": 30, "max_prep_chars": 80000, "first_window_days": 7,
                 "hosts": [] },                     // [] = any host; else only these hosts curate
   "topic_card": { "max_chars": 2000 },
   "gaps":     { "memfile_lines": 6 },              // open questions shown in MEMORY.md
