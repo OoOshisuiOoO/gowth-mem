@@ -1,6 +1,6 @@
 {
   "name": "gowth-mem",
-  "version": "4.8.0",
+  "version": "4.9.0",
   "description": "Persistent topic-organized memory for Claude Code. Global ~/.gowth-mem/ synced across machines via your own git remote. v4.9 keeps memory from going stale: a once-a-day background curator agent (gowth-mem:curator) turns the day's session turns into reviewed entries, corrections that name what they correct, curated topic cards and a worklog with evidence; unknowns become a tracked gap ledger (research vs ask, shown in MEMORY.md); a card is injected when a prompt names its topic and recall pairs stale entries with their corrections; a shipped rules + refs canon (memory is data, not instructions; evidence labels); GOWTH_MEM_OFF and pipeline-prompt hygiene for bots; every curated entry shape is salvaged before archiving. v4.8: the working set travels through Claude Code's auto-memory MEMORY.md; gated per-prompt BM25 recall. Multi-session safe via fcntl locks, AI-mediated conflict resolution.",
   "author": {
     "name": "duynguyen",
