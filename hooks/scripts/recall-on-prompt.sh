@@ -4,7 +4,13 @@
 #   - settings.json has "on_prompt_enabled": false
 #   - the prompt starts with "/" (slash command) or "!" (shell), or is < 40 bytes
 #   - the event is a subagent / loop (agent_type, in_loop, CLAUDE_SUBAGENT)
-# Otherwise hand the event to _recall_prompt.py (which may still print nothing).
+#   - v4.9: GOWTH_MEM_OFF=1|true|yes|on (checked first; the event is drained)
+# Otherwise hand the event to _recall_prompt.py (which may still print nothing;
+# it also skips bot/pipeline-marked prompts — the exact markers need Python).
+
+case "${GOWTH_MEM_OFF:-}" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) [ -t 0 ] || cat >/dev/null 2>&1; exit 0 ;;
+esac
 
 INPUT=$(cat)
 [ -z "$INPUT" ] && exit 0

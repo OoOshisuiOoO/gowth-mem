@@ -181,6 +181,10 @@ def prepare(ws: str, settings: dict) -> None:
 def _report(ws: str, cwd: str, settings: dict) -> int:
     from _memfile import (  # type: ignore
         MAX_CHARS, MAX_LINES, memfile_path, render, render_hook_bootstrap, split)
+    from _home import HOOKS_OFF_NOTICE, hooks_off  # type: ignore
+    if hooks_off():
+        # v4.9: the report still runs (an explicit CLI); the hooks do not.
+        print(HOOKS_OFF_NOTICE)
     mode_ = mode(ws, cwd, settings)
     block = render(ws)
     print(f"bootstrap (v4.8) workspace={ws} mode={mode_} cwd={cwd or '(none)'}")
@@ -234,6 +238,13 @@ def _report(ws: str, cwd: str, settings: dict) -> int:
 
 
 def main() -> int:
+    # v4.9: GOWTH_MEM_OFF — the SessionStart path drains its event and exits
+    # before any vault access; `--report` (/mem-cost) is a CLI and still runs.
+    if "--report" not in sys.argv[1:]:
+        from _home import drain_stdin, hooks_off  # type: ignore
+        if hooks_off():
+            drain_stdin()
+            return 0
     try:
         ev = _stdin_event()
         source = str(ev.get("source") or "")

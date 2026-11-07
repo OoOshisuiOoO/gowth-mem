@@ -42,6 +42,7 @@ CODE_KEYS = [
     "recall.on_prompt_min_terms", "recall.on_prompt_min_coverage", "recall.on_prompt_score_threshold",
     "recall.on_prompt_prompt_cap",
     "memfile.max_lines", "memfile.max_chars",
+    "capture.pipeline_prefixes",
 ]
 # Deliberately undocumented: reflection.capture_enabled (an explicit true in the
 # example would defeat the enabled:false privacy opt-out) and the legacy

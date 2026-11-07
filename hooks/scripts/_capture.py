@@ -166,6 +166,88 @@ _HUMAN_TURN_ORIGINS = ("human", "sdk")
 _MACHINE_TURN_ORIGINS = ("task_notification",)
 
 
+# v4.9 — bot / pipeline prompts. A program driving Claude Code (mention-agent's
+# `claude -p` stages, tmux pastes of EXECUTE rounds, a session summarizer) is
+# not the user: 16/86 devops session logs opened with `**User:** STAGE=VERIFY …`
+# and 311/331 trade logs with the summarizer's prompt. Its stage prompts carry
+# a `promptSource: sdk` — or, pasted into tmux, `origin.kind: human` — so the
+# provenance fields cannot tell; the marker at the START of the prompt can.
+# Only the first PIPELINE_HEAD_CHARS after lstrip() are examined, so every
+# test below runs on <= 512 chars whatever the paste size (flat growth).
+PIPELINE_HEAD_CHARS = 512
+PIPELINE_PREFIX_MAX_CHARS = 200     # capture.pipeline_prefixes: each 1..200 chars
+PIPELINE_PREFIXES_USED = 20         # … and at most 20 of them
+_PIPELINE_PREFIX_SCAN = 1000        # list items looked at (a hand-edited huge list stays cheap)
+_SUMMARIZER_PREFIX = "Below is a conversation log from a Claude Code coding session"
+# `STAGE=<NAME>` then end / newline / "." / blanks + an opening paren or dash —
+# so `STAGE=PROD make deploy` (an env assignment typed by a person) stays human.
+_STAGE_RE = re.compile(r"STAGE=[A-Z][A-Z0-9_-]{1,31}(?:\Z|\n|\.|[ \t]+[(\u2014\u2013-])")
+# `### TASK <id> R<n> ###` / `### DAILY … ###` alone on the first line.
+_TASK_RE = re.compile(r"### (?:TASK|DAILY)\b[^\n]{0,160}?###[ \t]*(?:\n|\Z)")
+# logged=True: text read back from a session log, whose whitespace capture
+# collapsed to single spaces — the newline after the marker became a space.
+_STAGE_LOGGED_RE = re.compile(r"STAGE=[A-Z][A-Z0-9_-]{1,31}(?:\Z|\n|\.| |[ \t]+[(\u2014\u2013-])")
+_TASK_LOGGED_RE = re.compile(r"### (?:TASK|DAILY)\b[^\n]{0,160}?###(?:[ \t]*(?:\n|\Z)| )")
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def pipeline_prefixes(settings) -> tuple:
+    """`capture.pipeline_prefixes` from a settings SNAPSHOT: literal strings of
+    1..200 chars, at most 20, anything else ignored. `settings` that is not a
+    dict (None included) → () — this never reads settings.json itself (the
+    Stop hook parses it once per event). Never raises."""
+    if not isinstance(settings, dict):
+        return ()
+    try:
+        from _home import setting  # type: ignore
+        raw = setting("capture.pipeline_prefixes", list, [], settings=settings)
+    except Exception:
+        return ()
+    out: list = []
+    for p in raw[:_PIPELINE_PREFIX_SCAN]:
+        if isinstance(p, str) and 1 <= len(p) <= PIPELINE_PREFIX_MAX_CHARS:
+            out.append(p)
+            if len(out) >= PIPELINE_PREFIXES_USED:
+                break
+    return tuple(out)
+
+
+def is_pipeline_prompt(text, settings=None, logged: bool = False) -> bool:
+    """True when `text` STARTS with a bot/pipeline marker (v4.9):
+
+      * `STAGE=<NAME>` (`[A-Z][A-Z0-9_-]{1,31}`) followed by the end, a newline,
+        "." or blanks + one of `( — – -`;
+      * a first line `### TASK … ###` / `### DAILY … ###`;
+      * the session summarizer's `Below is a conversation log from a Claude
+        Code coding session`;
+      * any `capture.pipeline_prefixes` entry of `settings` (plain startswith —
+        never a user regex). `settings=None` → built-in markers only.
+
+    `logged=True` reads text back from a session log (whitespace collapsed to
+    single spaces): a closing `###` or `STAGE=<NAME>` may then be followed by a
+    space. Curator use only — never for turn counting. Never raises."""
+    try:
+        if not isinstance(text, str) or not text:
+            return False
+        head = text.lstrip()[:PIPELINE_HEAD_CHARS]
+        if not head:
+            return False
+        if head.startswith(_SUMMARIZER_PREFIX):
+            return True
+        if (_STAGE_LOGGED_RE if logged else _STAGE_RE).match(head):
+            return True
+        if (_TASK_LOGGED_RE if logged else _TASK_RE).match(head):
+            return True
+        for p in pipeline_prefixes(settings):
+            if head.startswith(p):
+                return True
+            if logged and head.startswith(_WS_RUN_RE.sub(" ", p)):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def prompt_text(rec) -> str:
     """The words of a prompt record — user-record content or a queued
     attachment's `prompt` (str or content parts). '' when there are none."""
@@ -266,8 +348,13 @@ def _origin_kind(origin):
     return None
 
 
-def _classify_record(rec) -> str | None:
-    """"human" | "machine" | "unconfirmed" | None (not a prompt). Never raises."""
+def _classify_record(rec, settings=None) -> str | None:
+    """"human" | "machine" | "unconfirmed" | None (not a prompt). Never raises.
+
+    v4.9: a pipeline-marked prompt (`is_pipeline_prompt`, with the
+    `capture.pipeline_prefixes` of the `settings` snapshot) is "machine" — tested
+    BEFORE the origin, because a tmux paste carries `origin.kind: human` and a
+    `claude -p` stage `promptSource: sdk`."""
     try:
         if not isinstance(rec, dict):
             return None
@@ -275,8 +362,11 @@ def _classify_record(rec) -> str | None:
             att = rec.get("attachment")
             if not isinstance(att, dict) or att.get("type") != "queued_command":
                 return None
-            if not prompt_text(rec).strip():
+            txt = prompt_text(rec)
+            if not txt.strip():
                 return None
+            if is_pipeline_prompt(txt, settings):
+                return "machine"
             if _origin_kind(att.get("origin")) == "human" and att.get("commandMode") == "prompt":
                 return "human"
             return "machine"
@@ -287,6 +377,8 @@ def _classify_record(rec) -> str | None:
         txt = prompt_text(rec).lstrip()
         if not txt:
             return None  # tool_result-only records carry no prompt
+        if is_pipeline_prompt(txt, settings):
+            return "machine"
         kind = _origin_kind(rec.get("origin"))
         if kind == "human":
             return "human"
@@ -312,7 +404,7 @@ def _is_assistant(rec) -> bool:
     return isinstance(rec, dict) and rec.get("type") == "assistant"
 
 
-def _newest_human(items, current_prompt_id=None):
+def _newest_human(items, current_prompt_id=None, settings=None):
     """(index, record) of the newest human prompt in `items` — an iterable of
     (index, record) NEWEST FIRST — or (-1, None).
 
@@ -328,7 +420,7 @@ def _newest_human(items, current_prompt_id=None):
         if _is_assistant(rec):
             answered = True
             continue
-        kind = _classify_record(rec)
+        kind = _classify_record(rec, settings)
         if kind is None:
             continue
         if kind == "unconfirmed" and current_prompt_id \
@@ -340,18 +432,19 @@ def _newest_human(items, current_prompt_id=None):
     return -1, None
 
 
-def find_human_prompt(records: list[dict], current_prompt_id=None) -> int:
+def find_human_prompt(records: list[dict], current_prompt_id=None, settings=None) -> int:
     """Index of the newest human prompt record in `records`; -1 if none.
 
     The turn's prompt — for the Stop hook's turn identity and capture_turn's
     "User:" line. v4.7.3: it used to be "the last user record carrying text":
     Stop-hook feedback, skill expansions and notification XML were recorded as
     the user's prompt (the judge scored machine text as the user's prompting)
-    and every machine re-invocation looked like a new turn.
+    and every machine re-invocation looked like a new turn. v4.9: `settings`
+    (the event's snapshot) adds `capture.pipeline_prefixes` to the markers.
     """
     try:
         return _newest_human(((i, records[i]) for i in range(len(records) - 1, -1, -1)),
-                             current_prompt_id)[0]
+                             current_prompt_id, settings)[0]
     except Exception:
         return -1
 
@@ -372,7 +465,8 @@ def _turn_window_start(records: list[dict]) -> int | None:
     return None
 
 
-def _asks_since_previous_stop(transcript_path, max_bytes: int | None = None) -> list[dict]:
+def _asks_since_previous_stop(transcript_path, max_bytes: int | None = None,
+                              settings=None) -> list[dict]:
     """Human asks between the previous Stop's summary and EOF, oldest first —
     for turns longer than the 512 KB tail (a request, heavy tool output, then
     a typed-ahead follow-up). Bounded reverse scan. Never raises."""
@@ -381,7 +475,7 @@ def _asks_since_previous_stop(transcript_path, max_bytes: int | None = None) -> 
         for _, rec in _reverse_scan(Path(transcript_path), max_bytes or SCAN_BACK_MAX_BYTES):
             if _is_stop_summary(rec):
                 break
-            if _classify_record(rec) == "human":
+            if _classify_record(rec, settings) == "human":
                 asks.append(rec)
     except Exception:
         pass
@@ -448,7 +542,7 @@ def _reverse_scan(p: Path, max_bytes: int):
 
 
 def scan_back_for_human(transcript_path, max_bytes: int = SCAN_BACK_MAX_BYTES,
-                        current_prompt_id=None):
+                        current_prompt_id=None, settings=None):
     """Newest human prompt record in the last `max_bytes` of the transcript, or
     None. Never raises.
 
@@ -459,7 +553,7 @@ def scan_back_for_human(transcript_path, max_bytes: int = SCAN_BACK_MAX_BYTES,
     """
     try:
         return _newest_human(_reverse_scan(Path(transcript_path), max_bytes),
-                             current_prompt_id)[1]
+                             current_prompt_id, settings)[1]
     except Exception:
         return None
 
@@ -575,11 +669,39 @@ def _last_turn_no(text: str) -> int | None:
         return None
 
 
+CWD_HEADER_MAX_CHARS = 500
+
+
+def cwd_header_line(cwd) -> str:
+    """`<!-- cwd: <abs path> -->` for a new session log (v4.9 provenance: the
+    curator maps a log to the project repo it ran in), or '' when the Stop
+    input's cwd is missing, not absolute, longer than 500 chars (raw or once
+    sanitized), holds a line break or control character, or would break out of
+    the comment. The path is written VERBATIM between `<!-- cwd: ` and ` -->`
+    (privacy-sanitized, never cut, collapsed or stripped — an altered path is
+    wrong provenance). Never raises."""
+    try:
+        if not isinstance(cwd, str) or not cwd or len(cwd) > CWD_HEADER_MAX_CHARS:
+            return ""
+        if not cwd.startswith("/") or len(cwd.splitlines()) != 1:
+            return ""
+        if any(ord(c) < 32 or 127 <= ord(c) < 160 for c in cwd):
+            return ""
+        value = _sanitized(cwd, CWD_HEADER_MAX_CHARS)[0]
+        if not value or len(value) > CWD_HEADER_MAX_CHARS or len(value.splitlines()) != 1 \
+                or "-->" in value or "<!--" in value:
+            return ""
+        return f"<!-- cwd: {value} -->"
+    except Exception:
+        return ""
+
+
 def capture_turn(transcript_path: str, ws: str, session_id: str,
                  turn_no: int, settings: dict | None = None,
                  records: list[dict] | None = None,
                  prompt_rec: dict | None = None,
-                 final_text: str | None = None) -> bool:
+                 final_text: str | None = None,
+                 cwd: str | None = None) -> bool:
     """Capture one turn (prompt + thinking digest + outcome) into the session log.
 
     `records`: the already-parsed transcript tail (the Stop hook parses it once
@@ -589,6 +711,8 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
     `final_text`: the Stop input's `last_assistant_message` — the turn's final
     answer, which Claude Code writes to the transcript only AFTER the Stop hook
     (without it, 20% of live turns had an empty Claude: line).
+    `cwd`: the Stop input's cwd — written once, as `<!-- cwd: … -->` under the
+    title, when this call CREATES the log (v4.9; never on later turns).
 
     Returns True on write (or idempotent skip), False on any failure or when
     there is nothing to capture. Never raises.
@@ -627,8 +751,9 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
         # (v4.7.3: not merely the last user record carrying text — see
         # find_human_prompt). Everything the assistant did after it, across
         # skill expansions and tool results, belongs to the turn.
+        snapshot = settings if isinstance(settings, dict) else None
         if not isinstance(prompt_rec, dict):
-            idx = find_human_prompt(records)
+            idx = find_human_prompt(records, settings=snapshot)
             if idx < 0:
                 return False
             prompt_rec = records[idx]
@@ -648,10 +773,10 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
             except OSError:
                 truncated = False
         asks = [i for i in range(start, len(records))
-                if records[i] is prompt_rec or _classify_record(records[i]) == "human"]
+                if records[i] is prompt_rec or _classify_record(records[i], snapshot) == "human"]
         # Only real transcripts (record identity) are guaranteed Stop summaries
         # to stop the scan at; a hand-built one would join every ask in 32 MB.
-        older = (_asks_since_previous_stop(transcript_path)
+        older = (_asks_since_previous_stop(transcript_path, settings=snapshot)
                  if truncated and has_record_identity(records) else [])
         if older:
             # The turn began before the tail: its asks come from the file, and
@@ -735,8 +860,11 @@ def capture_turn(transcript_path: str, ws: str, session_id: str,
         sid8 = (session_id or "default")[:8] or "default"
         target = journal_dir(ws) / "sessions" / f"{today}-{sid8}.md"
 
+        cwd_line = cwd_header_line(cwd)
         header = (
-            f"# Session log — {today} — {sid8}\n\n"
+            f"# Session log — {today} — {sid8}\n"
+            + (f"{cwd_line}\n" if cwd_line else "")
+            + "\n"
             "_Auto-captured turn log (user prompt + Claude summary + actions trace). "
             "Ephemeral: archived by `_forget.py` after `journal.raw_ttl_days`. "
             "Feeds the every-N-turn self-review (`/mem-review`)._\n"

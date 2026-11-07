@@ -257,14 +257,18 @@ def _bump_daily(state: dict, hits: list) -> None:
 
 def _record(sid: str, hits: list, chars: int) -> None:
     """Best-effort telemetry under the shared state lock; skipped on timeout.
-    Called for EVERY profiled prompt; session ids/chars only when injecting."""
+    Called for EVERY profiled prompt; session ids/chars only when injecting.
+    v4.9: the session entry it writes — or one that already exists — gets the
+    `seen` liveness stamp the Stop hook's session-map prune keys on (no entry
+    is created just for a stamp)."""
     try:
+        import time
         from _lock import file_lock  # type: ignore
         with file_lock("state", timeout=2.0):
             state = _load_state()
             _bump_daily(state, hits)
+            sessions = state.get("session")
             if hits:
-                sessions = state.setdefault("session", {})
                 if not isinstance(sessions, dict):
                     sessions = state["session"] = {}
                 sess = sessions.setdefault(sid, {"turn_count": 0})
@@ -277,12 +281,29 @@ def _record(sid: str, hits: list, chars: int) -> None:
                     "chars": int(rec.get("chars", 0) or 0) + chars,
                     "ids": ids[-IDS_KEEP:],
                 }
+            if isinstance(sessions, dict) and isinstance(sessions.get(sid), dict):
+                sessions[sid]["seen"] = int(time.time())
             atomic_write(state_path(), json.dumps(state, indent=1))
     except Exception as exc:
         log_debug("recall-prompt", f"telemetry skipped: {exc}")
 
 
+def _pipeline_prompt(prompt: str, settings: dict) -> bool:
+    """v4.9: a bot/pipeline-marked prompt gets no recall (and no telemetry)."""
+    try:
+        from _capture import is_pipeline_prompt  # type: ignore
+        return is_pipeline_prompt(prompt, settings)
+    except Exception as exc:
+        log_debug("recall-prompt", f"pipeline check failed: {exc}")
+        return False
+
+
 def main() -> int:
+    # v4.9: GOWTH_MEM_OFF — checked first, before any vault access or logging.
+    from _home import drain_stdin, hooks_off  # type: ignore
+    if hooks_off():
+        drain_stdin()
+        return 0
     try:
         raw = sys.stdin.read()
     except Exception:
@@ -300,6 +321,8 @@ def main() -> int:
         settings = read_settings()
         if not setting("recall.on_prompt_enabled", bool, True, settings=settings):
             return 0
+        if _pipeline_prompt(prompt, settings):
+            return 0  # silent; recall_daily untouched
         cwd = ev.get("cwd")
         ws = active_workspace(Path(cwd)) if isinstance(cwd, str) and cwd else active_workspace()
         sid = str(ev.get("session_id") or "default")

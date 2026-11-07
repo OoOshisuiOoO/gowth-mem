@@ -20,6 +20,11 @@ Pass-through paths (all return 0, no stdout):
   4. extract_recent_turns returned empty (tool-result-only transcript)
   5. raw_dump_to_journal raised — logged, not surfaced
   6. Happy path — dump succeeded
+
+v4.9: GOWTH_MEM_OFF=1|true|yes|on → stdin drained, exit 0 before anything
+else. Bot/pipeline-marked prompts classify as machine records
+(`_capture.is_pipeline_prompt`, plus `capture.pipeline_prefixes`): they are
+neither counted toward MIN_USER_TURNS nor dumped as the user's words.
 """
 from __future__ import annotations
 
@@ -32,7 +37,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write, safe_write  # type: ignore
 from _debug import log_debug  # type: ignore
-from _home import active_workspace, journal_dir, workspace_dir  # type: ignore
+from _home import (  # type: ignore
+    active_workspace, drain_stdin, hooks_off, journal_dir, read_settings, workspace_dir)
 from _lock import file_lock  # type: ignore
 
 FLUSH_GRACE = 300  # seconds — recent flush window
@@ -91,18 +97,19 @@ def _read_records(transcript_path: str) -> list:
     return out
 
 
-def _prompt_records(records: list) -> list:
+def _prompt_records(records: list, settings: "dict | None" = None) -> list:
     """v4.8 (holistic review H2): indexes of the records that are the USER's
     words, via `_capture._classify_record` — human prompts always, unconfirmed
     ones only when an assistant record answered them before the next prompt,
-    machine records (notification relays, hook feedback) and non-prompts never.
-    The old count took every `type:"user"` record with text (77 on the lead
-    transcript vs 7 human)."""
+    machine records (notification relays, hook feedback, v4.9 pipeline-marked
+    prompts) and non-prompts never. The old count took every `type:"user"`
+    record with text (77 on the lead transcript vs 7 human)."""
     try:
         from _capture import _classify_record  # type: ignore
     except Exception:
         return []
-    kinds = [(_classify_record(r) if not (isinstance(r, dict) and r.get("type") == "assistant") else "assistant")
+    kinds = [(_classify_record(r, settings)
+              if not (isinstance(r, dict) and r.get("type") == "assistant") else "assistant")
              for r in records]
     keep: list = []
     for i, kind in enumerate(kinds):
@@ -118,9 +125,9 @@ def _prompt_records(records: list) -> list:
     return keep
 
 
-def user_turn_count(transcript_path: str) -> int:
+def user_turn_count(transcript_path: str, settings: "dict | None" = None) -> int:
     """Count the user's substantive prompts in the transcript (see _prompt_records)."""
-    return len(_prompt_records(_read_records(transcript_path)))
+    return len(_prompt_records(_read_records(transcript_path), settings))
 
 
 def _extract_text(content) -> str:
@@ -138,7 +145,8 @@ def _extract_text(content) -> str:
     return ""
 
 
-def extract_recent_turns(transcript_path: str, max_chars: int = RAW_DUMP_MAX_CHARS) -> str:
+def extract_recent_turns(transcript_path: str, max_chars: int = RAW_DUMP_MAX_CHARS,
+                         settings: "dict | None" = None) -> str:
     """Read transcript JSONL and return the most recent user+assistant text turns,
     oldest-first, capped at `max_chars`. User turns = the user's own words
     (v4.8 classification); each assistant chunk is capped at ASSISTANT_CHUNK_CHARS."""
@@ -149,7 +157,7 @@ def extract_recent_turns(transcript_path: str, max_chars: int = RAW_DUMP_MAX_CHA
         from _capture import prompt_text  # type: ignore
     except Exception:
         return ""
-    keep = set(_prompt_records(records))
+    keep = set(_prompt_records(records, settings))
     turns: list = []
     for i, rec in enumerate(records):
         if i in keep:
@@ -228,11 +236,22 @@ def read_payload() -> dict:
 
 
 def main() -> int:
+    # v4.9: the opt-out comes FIRST — before any vault access or logging.
+    if hooks_off():
+        drain_stdin()
+        return 0
     payload = read_payload()
     transcript_path = payload.get("transcript_path", "") if isinstance(payload, dict) else ""
+    if not isinstance(transcript_path, str):
+        transcript_path = ""
+    # One settings snapshot (capture.pipeline_prefixes for the classification).
+    try:
+        settings = read_settings()
+    except Exception:
+        settings = {}
 
     # Pass-through if transcript has nothing substantive to flush yet.
-    if user_turn_count(transcript_path) < MIN_USER_TURNS:
+    if user_turn_count(transcript_path, settings) < MIN_USER_TURNS:
         return 0
 
     # Pass-through if a flush already happened recently (mtime heuristic).
@@ -249,7 +268,7 @@ def main() -> int:
         ws, ws_ok = "", False
 
     if ws_ok:
-        text = extract_recent_turns(transcript_path)
+        text = extract_recent_turns(transcript_path, settings=settings)
         if not text:
             log_debug("precompact-flush", "no substantive turns extracted; pass-through")
         elif not raw_dump_to_journal(text, ws):
@@ -264,4 +283,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        rc = main()
+    except Exception as exc:  # v3.5.1 contract: never block /compact
+        try:
+            log_debug("precompact-flush", f"unhandled crash: {exc}")
+        except Exception:
+            pass
+        rc = 0
+    sys.exit(rc)

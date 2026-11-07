@@ -508,6 +508,13 @@ def push(gh: Path, branch: str, quiet: bool,
 
 
 def main() -> int:
+    # v4.9: GOWTH_MEM_OFF disables the hook variant entirely (SessionStart pull,
+    # PreCompact commit, PostCompact sync, the Stop hook's detached push) —
+    # checked first, before any vault access. /mem-sync (_sync.py) still works.
+    from _home import drain_stdin, hooks_off  # type: ignore
+    if hooks_off():
+        drain_stdin()
+        return 0
     ap = argparse.ArgumentParser()
     ap.add_argument("--pull-only", action="store_true")
     ap.add_argument("--commit-only", action="store_true")
