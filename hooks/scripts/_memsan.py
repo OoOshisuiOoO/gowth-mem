@@ -58,10 +58,10 @@ MEMFILE_NAME = "MEMORY.md"
 # The changed-file pass (review safety-sync#2).
 SYNCED_DIRS = ("workspaces", "shared")
 MARKDOWN_SUFFIXES = (".md", ".markdown")       # what `_atomic.safe_write` sanitizes
-# shared/ files: a dedicated name no workspace lock can produce. NOTE for the
-# integrator: when `_topic` takes one lock for its shared/ side files (review
-# safety-sync#3), use that name here.
-SHARED_LOCK = "shared-md"
+# shared/ files: the ONE lock every read-modify-write under shared/ takes
+# (`_topic.SHARED_ENTRIES_LOCK`, review safety-sync#3) — a name no workspace
+# lock can produce. Kept as a literal so this module never imports _topic.
+SHARED_LOCK = "shared-entries"
 CHANGED_LOCK_TIMEOUT = 2.0
 CAS_ATTEMPTS = 3                                # re-reads when a writer outside our locks races us
 GIT_TIMEOUT = 60.0

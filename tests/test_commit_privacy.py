@@ -278,7 +278,7 @@ class FailClosedTest(_Vault):
         from _lock import file_lock  # type: ignore
         self.append(TOOLS, f"- [tool] gh 2.60 — {SECRET}\n")
         (self.vault / REF).write_text("# ref\n\n- [ref] heron cache is ARC now. Source: heron docs v3\n")
-        with file_lock("shared-md", timeout=1.0):
+        with file_lock("shared-entries", timeout=1.0):
             self.run_script("auto-sync.py", "--commit-only")
         self.assertNotIn(SECRET.encode(), self.blob(f"HEAD:{TOOLS}"))
         self.assertIn(b"ARC now", self.blob(f"HEAD:{REF}"))
@@ -338,14 +338,18 @@ class LockTableTest(unittest.TestCase):
             "workspaces/demo/research/heron/distilled.md": ("entries-demo",),
             "workspaces/demo/_MAP.md": ("entries-demo", "moc"),
             "workspaces/demo/memory/MEMORY.md": ("memfile-demo",),
-            "workspaces/_MAP.md": ("shared-md", "moc"),
-            "shared/secrets.md": ("shared-md",),
-            "shared/_MAP.md": ("shared-md", "moc"),
+            "workspaces/_MAP.md": ("shared-entries", "moc"),
+            "shared/secrets.md": ("shared-entries",),
+            "shared/_MAP.md": ("shared-entries", "moc"),
             # a workspace named "shared" can never produce the shared/ lock name
             "workspaces/shared/docs/ref.md": ("entries-shared",),
         }
         for rel, want in cases.items():
             self.assertEqual(_memsan.lock_names_for(rel), want, rel)
+        # one lock for shared/: the commit-boundary pass and _topic's [secret-ref]
+        # appends must serialise on the SAME name (the two drafts had diverged)
+        import _topic  # type: ignore
+        self.assertEqual(_memsan.SHARED_LOCK, _topic.SHARED_ENTRIES_LOCK)
 
 
 class RefusalReplayTest(_Vault):

@@ -486,8 +486,8 @@ def _private_tag(text: str):
     replaced everything between (the begin marker included) with
     `[REDACTED:private-block]`. A curated field never needs the tag."""
     try:
-        from _privacy import _PRIVATE_CLOSE_RE, _PRIVATE_OPEN_RE  # type: ignore
-        return bool(_PRIVATE_OPEN_RE.search(text) or _PRIVATE_CLOSE_RE.search(text))
+        from _privacy import has_private_tag  # type: ignore
+        return has_private_tag(text)
     except Exception:
         return None
 

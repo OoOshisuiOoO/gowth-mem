@@ -444,6 +444,22 @@ class BootstrapDeliveryTest(unittest.TestCase):
         self.boot()
         self.assertTrue(all((self.vault / dst).is_file() for dst in self.shipped()))
 
+    def test_git_but_no_remote_commits_the_delivery(self):
+        """review safety-sync#1 (bootstrap path): a vault with history but no
+        remote gets the canon at SessionStart COMMITTED — never left untracked
+        for the day a remote is added and a pull meets a peer's copy."""
+        git(self.vault, "init", "-q")
+        git(self.vault, "add", "-A")
+        git(self.vault, "commit", "-q", "-m", "seed")
+        self.boot()
+        tracked = set(git(self.vault, "ls-files").stdout.split())
+        for dst in self.shipped() + [".gitattributes"]:
+            self.assertIn(dst, tracked, f"{dst} delivered but not committed")
+        porcelain = git(self.vault, "status", "--porcelain").stdout
+        for dst in self.shipped():
+            self.assertNotIn(dst, porcelain)
+        self.assertIn("gowth-mem@", git(self.vault, "log", "-1", "--format=%ae").stdout)
+
     def test_synced_vault_waits_for_auto_sync(self):
         git(self.vault, "init", "-q")
         (self.vault / "config.json").write_text(json.dumps({"remote": str(self.tmp / "r.git")}))

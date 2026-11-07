@@ -122,7 +122,7 @@ class RulesDigestTest(_Case):
 
     def test_joined_length_is_pinned_under_2000(self):
         joined = "\n".join(_memfile.rules_digest())
-        self.assertEqual(len(joined), 1926, "re-measure and re-pin when the digest changes")
+        self.assertEqual(len(joined), 1993, "re-measure and re-pin when the digest changes")
         self.assertLessEqual(len(joined), 2000)
         self.assertEqual(len(_memfile.rules_digest()), 12)
 

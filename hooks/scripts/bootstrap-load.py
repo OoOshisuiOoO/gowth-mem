@@ -171,13 +171,24 @@ def _ensure_canon_unsynced() -> None:
         if not gh.is_dir():
             return
         from _git import load_config  # type: ignore
-        cfg = load_config()
-        if (gh / ".git").exists() and isinstance(cfg, dict) and cfg.get("remote"):
+
+        def synced() -> bool:
+            cfg = load_config()
+            return (gh / ".git").exists() and isinstance(cfg, dict) and bool(cfg.get("remote"))
+
+        if synced():
             return
-        from _canon import ensure  # type: ignore
+        from _canon import commit_delivered, ensure  # type: ignore
         from _lock import file_lock  # type: ignore
         with file_lock("sync", timeout=1.0):
-            ensure(gh)
+            # re-check under the lock: a `_sync.py --init` that finished during
+            # the wait made this a synced vault — auto-sync delivers there.
+            if synced():
+                return
+            # a vault with .git but no remote: commit the delivery right away,
+            # so it is never an untracked file when a remote is added later
+            # (review safety-sync#1; a no-op without .git, never raises).
+            commit_delivered(gh, ensure(gh))
     except TimeoutError:
         log_debug("bootstrap-load", "canon delivery skipped: sync lock held")
     except Exception as exc:

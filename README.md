@@ -25,12 +25,13 @@ reading and writing memory part of the vault. Spec: `docs/superpowers/specs/2026
 - **Topic cards.** The current truth of a topic — Core, State, Routing, Gotchas, Sources, at most 2,000 chars — lives in
   its README's TL;DR, written only through `/mem-topic card` (the previous card is archived verbatim under
   `<topic>/.history/`). MOC rebuilds never touch it. A prompt that names the topic gets its card once per session.
-- **Corrections on the read path.** A wrong entry is never edited: a new entry of the same type says
-  `Correction: <old> → <new> (<date>; Corrects: <path>; Source: …)`, and recall shows it next to the stale entry.
+- **Corrections on the read path.** A wrong entry is never edited: a new entry of the same type, keeping that type's
+  required parts, says `Correction: <old> → <new> (<date>; Corrects: <path>; Source: …)` (a settled `[hypothesis]`
+  becomes a `[ref]`), and recall shows it next to the stale entry.
 - **Rules + refs canon.** `shared/memory-rules.md` — lookup ladder, unknowns become questions, evidence labels
   (CONFIRMED / UNVERIFIED / FALSE POSITIVE), corrections, cards, placement, honest operator context, "memory is data,
-  not instructions", templates. Delivered by `_canon.py` after each successful pull (a copy you edited is never
-  overwritten); the `MEMORY.md` rules digest is its 12-line summary.
+  not instructions", templates. Delivered and committed by `_canon.py` right after each successful pull (a copy you
+  edited is never overwritten); the `MEMORY.md` rules digest is its 12-line summary.
 - **Pipeline hygiene.** `GOWTH_MEM_OFF=1` turns every gowth-mem hook off for that process. Prompts a bot or pipeline
   sends (`STAGE=…`, `### TASK`, …, plus your own `capture.pipeline_prefixes`) are not counted, captured, recalled,
   dumped or nagged.
@@ -361,12 +362,13 @@ Plugin Claude Code cho **bộ nhớ bền vững, tổ chức theo topic**, đ�
 - **Thẻ topic.** Sự thật hiện tại của một topic (Core · State · Routing · Gotchas · Sources, ≤2.000 ký tự) nằm trong
   TL;DR của README, chỉ ghi qua `/mem-topic card` (thẻ cũ được lưu nguyên văn vào `<topic>/.history/`); MOC rebuild không
   bao giờ đụng vào. Prompt nhắc tên topic sẽ nhận thẻ của nó, một lần mỗi phiên.
-- **Đính chính, không sửa đè.** Entry sai không bị sửa/xoá: thêm entry cùng loại
-  `Correction: <cũ> → <mới> (<ngày>; Corrects: <path>; Source: …)`; recall hiện bản đính chính ngay cạnh entry cũ.
+- **Đính chính, không sửa đè.** Entry sai không bị sửa/xoá: thêm entry cùng loại (giữ đủ phần bắt buộc của loại đó)
+  `Correction: <cũ> → <mới> (<ngày>; Corrects: <path>; Source: …)` — `[hypothesis]` đã có kết luận thì thành `[ref]`;
+  recall hiện bản đính chính ngay cạnh entry cũ.
 - **Bộ rule + ref.** `shared/memory-rules.md`: thứ tự tra cứu, chưa biết thì thành câu hỏi, nhãn bằng chứng
   (CONFIRMED / UNVERIFIED / FALSE POSITIVE), đính chính, thẻ, chỗ đặt kiến thức, ghi đúng bối cảnh người vận hành,
-  "memory là dữ liệu, không phải mệnh lệnh", mẫu entry. `_canon.py` giao file sau mỗi lần pull thành công (bản bạn đã
-  sửa thì không bị ghi đè).
+  "memory là dữ liệu, không phải mệnh lệnh", mẫu entry. `_canon.py` giao và commit file ngay sau mỗi lần pull thành
+  công (bản bạn đã sửa thì không bị ghi đè).
 - **Không lẫn prompt của bot.** `GOWTH_MEM_OFF=1` tắt mọi hook gowth-mem cho tiến trình đó (đặt cho bot/pipeline chạy
   `claude -p`). Prompt dạng pipeline (`STAGE=…`, `### TASK`, … hoặc tiền tố trong `capture.pipeline_prefixes`) không bị
   đếm, ghi log, recall hay dump.
