@@ -182,7 +182,9 @@ class TestForgetSessions(unittest.TestCase):
             "**User prompting: 4/10** — vague asks with no acceptance criteria\n\n"
             "## turn 16 — 09:30\n**User:** next thing\n**Thinking:** more\n**Did:** more\n"
         )
-        _backdate(old, 30)
+        # v4.9: its turns were never curated, so the curator hold keeps it up to
+        # curator.hold_days (30) past the 7-day TTL — age it past both.
+        _backdate(old, 45)
         r = self._forget()
         self.assertEqual(r["archived"], 1, "old session log must archive")
         self.assertFalse(old.exists())

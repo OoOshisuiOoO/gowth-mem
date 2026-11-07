@@ -106,6 +106,14 @@ v4.9 changes (pipeline hygiene):
     seen within the last day — its per-day session log may still grow). The
     live map had grown to 1,765 sessions / ~300 KB rewritten on every Stop.
   - A new session log starts with `<!-- cwd: <Stop input cwd> -->`.
+  - Daily curator (spec §4.1): on an otherwise quiet real-turn Stop, once the
+    workspace is due (`_curate.due`: hour, no worklog today, one curating
+    host, misses, claim markers, >= curator.min_new_turns unprocessed turns),
+    a claim marker is taken and the main session is told to launch ONE
+    background `gowth-mem:curator` subagent. Never in an SDK/`claude -p`
+    session; two missed days → a once-a-day `[gowth-mem:curator-paused]`.
+  - A session entry created while today's log for that sid already holds
+    `## turn N` blocks continues its numbering (no repeated turn numbers).
 """
 from __future__ import annotations
 
@@ -706,6 +714,109 @@ def _mark_paused_notified(session_id: str) -> None:
         log_debug("auto-journal", f"mark paused-notified failed: {e}")
 
 
+def _seed_total_turns(ws: str, session_id: str) -> int:
+    """v4.9: the last `## turn N` of today's session log for this sid (0 when
+    there is none). Called inside the counter lock only when the session's
+    state entry has no total_turns yet."""
+    try:
+        p = _session_log_path(ws, session_id)
+        if not p.is_file():
+            return 0
+        return int(_capture._last_turn_no(p.read_text(encoding="utf-8", errors="replace")) or 0)
+    except Exception:
+        return 0
+
+
+def _bump_curator_turns(state: dict, ws: str) -> None:
+    """v4.9: `state.curator_turns[ws] += 1` (inside the caller's locked save) —
+    the curator's signal floor when capture is off; the claim resets it."""
+    ct = state.get("curator_turns")
+    if not isinstance(ct, dict):
+        ct = state["curator_turns"] = {}
+    try:
+        cur = int(ct.get(ws) or 0)
+    except (TypeError, ValueError):
+        cur = 0
+    ct[ws] = max(cur, 0) + 1
+
+
+def _curator_on(settings: dict | None) -> bool:
+    return setting("curator.enabled", bool, True, settings=settings)
+
+
+def _sdk_session(prompt_rec) -> bool:
+    """A headless `claude -p` / SDK session: the process exits before a
+    background curator could finish (spec §4.1)."""
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk"):
+        return True
+    if isinstance(prompt_rec, dict):
+        if prompt_rec.get("promptSource") == "sdk" or prompt_rec.get("turnOrigin") == "sdk":
+            return True
+    return False
+
+
+def _curator_due(ws: str, settings: dict, state: dict, capture_on: bool = True):
+    """False | 1 | 2 | "paused" (spec §4.1) — `_curate.due` plus the state
+    bookkeeping: the misses it computed are stored in `state.curator_misses`
+    and the paused notice is answered at most once per calendar day
+    (`state.curator_paused_day`), both under the state lock."""
+    from _curate import due  # type: ignore
+    result, info = due(ws, settings, state, capture_on=capture_on)
+    m = info.get("misses")
+    known = state.get("curator_misses") if isinstance(state, dict) else None
+    if result != "paused" and (m is None or (isinstance(known, dict) and known.get(ws) == m)):
+        return result                       # nothing to record: no state lock on this Stop
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with file_lock("state", timeout=5.0):
+            st = _load_state()
+            changed = False
+            if m is not None:
+                cm = st.get("curator_misses")
+                if not isinstance(cm, dict):
+                    cm = st["curator_misses"] = {}
+                if cm.get(ws) != m:
+                    cm[ws] = m
+                    changed = True
+            if result == "paused":
+                pd = st.get("curator_paused_day")
+                if not isinstance(pd, dict):
+                    pd = st["curator_paused_day"] = {}
+                if pd.get(ws) == today:
+                    result = False          # already told today
+                else:
+                    pd[ws] = today
+                    changed = True
+            if changed:
+                _save_state(st)
+    except TimeoutError as e:
+        log_debug("auto-journal", f"state lock timeout (curator bookkeeping): {e}")
+        if result == "paused":
+            return False                    # cannot record the notice → do not repeat it
+    return result
+
+
+def _claim_curator(ws: str, attempt) -> bool:
+    """Claim today's attempt marker (O_CREAT|O_EXCL) and reset the workspace's
+    capture-off turn counter. False when another session claimed it first."""
+    from _curate import claim, reset_turn_counter  # type: ignore
+    if not claim(ws, attempt):
+        return False
+    reset_turn_counter(ws)
+    return True
+
+
+def _build_curator_reason(ws: str, settings: dict | None = None) -> str:
+    """The §4.2 directive: launch ONE background `gowth-mem:curator` subagent."""
+    from _curate import build_directive  # type: ignore
+    return build_directive(ws, settings)
+
+
+def _curator_paused_notice(ws: str) -> str:
+    from _curate import paused_notice  # type: ignore
+    return paused_notice(ws)
+
+
 def main() -> int:
     # v4.9: the opt-out comes FIRST — before any vault access, logging or mkdir.
     if hooks_off():
@@ -812,6 +923,15 @@ def main() -> int:
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
+    # Resolve workspace once (prefer stdin cwd, else config/default). v4.9:
+    # before the counter lock — the curator's per-workspace turn counter and
+    # the total_turns seed (today's session log) are keyed on it.
+    cwd = data.get("cwd")
+    try:
+        ws = active_workspace(Path(cwd)) if cwd else active_workspace()
+    except Exception:
+        ws = active_workspace()
+
     # Single lock acquisition: bump all cadence counters together so the two
     # cadences (journal turn_count vs review review_count) can never collide.
     try:
@@ -827,6 +947,13 @@ def main() -> int:
                 real_turn = True
                 if prompt_key is not None:
                     sess["last_prompt_key"] = prompt_key
+                if not isinstance(sess.get("total_turns"), int) or isinstance(sess.get("total_turns"), bool):
+                    # v4.9: the entry was (re)created — pruned from the session
+                    # map, or first written by recall telemetry — while today's
+                    # log for this sid may already hold `## turn N` blocks.
+                    # Continue its numbering so a turn number never repeats
+                    # within one log (the curator's coverage keys on it).
+                    sess["total_turns"] = _seed_total_turns(ws, session_id)
                 sess["turn_count"] = sess.get("turn_count", 0) + 1
                 sess["total_turns"] = sess.get("total_turns", 0) + 1  # monotonic
                 sess["review_count"] = sess.get("review_count", 0) + 1
@@ -834,6 +961,9 @@ def main() -> int:
                 total_turns = sess["total_turns"]
                 review_count = sess["review_count"]
                 paused_notified = bool(sess.get("review_paused_notified"))
+                # v4.9 curator: the capture-off signal floor, per workspace
+                # (reset by the curator claim).
+                _bump_curator_turns(state, ws)
                 # v4.9: liveness stamp + bounded session map (same locked save).
                 now = int(time.time())
                 sess["seen"] = now
@@ -848,13 +978,6 @@ def main() -> int:
         _autosync()
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
-
-    # Resolve workspace once (prefer stdin cwd, else config/default).
-    cwd = data.get("cwd")
-    try:
-        ws = active_workspace(Path(cwd)) if cwd else active_workspace()
-    except Exception:
-        ws = active_workspace()
 
     # One session-log path per Stop for the reason builders and the review
     # gate. capture_turn derives its own date internally, so a Stop straddling
@@ -937,6 +1060,20 @@ def main() -> int:
                     f"settings.reflection.capture_enabled: true. Tell the user this in ONE line, "
                     f"then continue." + _backlog_stat()
                 )
+
+    # v4.9 daily curator (spec §4.1). Deferred — not appended — whenever
+    # another directive or notice was emitted this Stop; never in a headless
+    # `claude -p` / SDK session (the process exits before a background agent
+    # ends). Pure checks + marker files: no git, no network on the Stop path.
+    if not reasons and _curator_on(settings) and not _sdk_session(prompt_rec):
+        try:
+            due = _curator_due(ws, settings, state, capture_on)
+            if due == "paused":
+                reasons.append(_curator_paused_notice(ws))
+            elif due and _claim_curator(ws, attempt=due):
+                reasons.append(_build_curator_reason(ws, settings))
+        except Exception as e:
+            log_debug("auto-journal", f"curator trigger failed: {e}")
 
     if reasons:
         reason = "\n\n".join(reasons)

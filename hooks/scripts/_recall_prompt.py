@@ -74,7 +74,7 @@ DEFAULT_PROMPT_CAP = 2_000
 SNIPPET_CHARS = 700
 IDS_KEEP = 300
 FETCH_LIMIT = 8
-EXCLUDES = ("journal/", "memory/MEMORY.md", "docs/questions.md")
+EXCLUDES = ("journal/", "memory/MEMORY.md", "docs/questions.md", "docs/worklog/")
 _TAG_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:-\s*)?\[(?:[a-z-]+)\]\s*")
 _WS_RE = re.compile(r"\s+")
 

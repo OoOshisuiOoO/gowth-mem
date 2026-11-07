@@ -51,6 +51,7 @@ _DEFAULT_GITIGNORE = (
     "*.pyc\n"
     "SYNC-CONFLICT.md\n"
     ".*.pruning-*\n"
+    ".curator/\n"
 )
 
 # review-ledger.json is machine-local: it references transcript paths under
@@ -66,9 +67,13 @@ _DEFAULT_GITIGNORE = (
 #
 # `.*.pruning-*`: a README `_validate.py --prune-junk` holds aside mid-delete
 # (v4.7.6) — only ever left behind by a hard kill, never worth syncing.
+#
+# `.curator/` (v4.9): the daily curator's machine-local files — claim markers,
+# prep digests (raw session-log excerpts), the card-terms file. Every writer
+# of `.curator/` calls write_default_gitignore() first.
 _REQUIRED_IGNORES = (".audit/", ".dedup-window.json", "review-ledger.json",
                      ".archive/", ".backup/", ".session-workspace", "*.log",
-                     ".*.pruning-*")
+                     ".*.pruning-*", ".curator/")
 
 
 def _gitignore_has_entry(existing: str, entry: str) -> bool:
@@ -324,17 +329,26 @@ def _sync_settings() -> dict:
 
 
 def _record_autosync() -> None:
-    """Stamp `last_autosync` in state.json without clobbering other keys."""
+    """Stamp `last_autosync` in state.json without clobbering other keys.
+
+    v4.9: the read-modify-write holds file_lock("state", 2) — every other
+    state.json writer (the Stop hook's turn counters, the curator's claim and
+    miss bookkeeping, recall telemetry) takes that lock, and an unlocked
+    rewrite here could silently undo one of their saves. On timeout the stamp
+    is skipped: the next Stop re-evaluates the debounce."""
     try:
-        p = gowth_home() / "state.json"
-        try:
-            d = json.loads(p.read_text()) if p.is_file() else {}
-            if not isinstance(d, dict):
+        with file_lock("state", timeout=2.0):
+            p = gowth_home() / "state.json"
+            try:
+                d = json.loads(p.read_text()) if p.is_file() else {}
+                if not isinstance(d, dict):
+                    d = {}
+            except Exception:
                 d = {}
-        except Exception:
-            d = {}
-        d["last_autosync"] = time.time()
-        atomic_write(p, json.dumps(d, indent=2) + "\n")
+            d["last_autosync"] = time.time()
+            atomic_write(p, json.dumps(d, indent=2) + "\n")
+    except TimeoutError as exc:
+        log_debug("sync", f"last_autosync stamp skipped (state lock busy): {exc}")
     except Exception as exc:
         log_debug("sync", f"could not record last_autosync: {exc}")
 
