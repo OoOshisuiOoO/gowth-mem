@@ -399,6 +399,7 @@ class CardCliTests(_Vault):
                 "sys.exit(_card.main(sys.argv[2:]))\n")
         before = self.readme.read_bytes()
         from _lock import file_lock  # type: ignore
+        saved = os.environ.get("GOWTH_MEM_HOME")
         os.environ["GOWTH_MEM_HOME"] = self.tmp
         try:
             with file_lock("moc", timeout=5):
@@ -409,7 +410,10 @@ class CardCliTests(_Vault):
                                      "redis-cache", "--summary", "Locked out"], capture_output=True,
                                     text=True, timeout=60, env=_env(self.home))
         finally:
-            os.environ.pop("GOWTH_MEM_HOME", None)
+            if saved is None:
+                os.environ.pop("GOWTH_MEM_HOME", None)
+            else:
+                os.environ["GOWTH_MEM_HOME"] = saved
         self.assertEqual(r.stdout.strip().split("\t")[1], "rejected:lock_timeout", r.stderr)
         self.assertEqual(r2.stdout.strip().split("\t")[1], "rejected:lock_timeout", r2.stderr)
         self.assertEqual(self.readme.read_bytes(), before)
@@ -730,12 +734,17 @@ class GrowthThroughEntryPointsTests(unittest.TestCase):
         self.home = Path(self.tmp)
         self.wsd = self.home / "workspaces" / "w1"
         _w(self.wsd / "workspace.json", "{}")
+        self._saved = {k: os.environ.get(k) for k in ("GOWTH_MEM_HOME",) + _SCRUB}
         os.environ["GOWTH_MEM_HOME"] = self.tmp
         for k in _SCRUB:
             os.environ.pop(k, None)
 
     def tearDown(self):
-        os.environ.pop("GOWTH_MEM_HOME", None)
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _linear(self, name: str, times: list, bound: float = 2.0) -> None:

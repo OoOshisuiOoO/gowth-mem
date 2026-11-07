@@ -192,13 +192,20 @@ class TopicFlagTests(_Vault):
 
 
 class EntriesLockTests(_Vault):
+    def setUp(self):
+        super().setUp()
+        self._saved_home = os.environ.get("GOWTH_MEM_HOME")
+
     def _hold(self):
         os.environ["GOWTH_MEM_HOME"] = self.tmp
         from _lock import file_lock  # type: ignore
         return file_lock("entries-w1", timeout=5)
 
     def tearDown(self):
-        os.environ.pop("GOWTH_MEM_HOME", None)
+        if self._saved_home is None:
+            os.environ.pop("GOWTH_MEM_HOME", None)
+        else:
+            os.environ["GOWTH_MEM_HOME"] = self._saved_home
         super().tearDown()
 
     def test_every_writer_refuses_or_skips_while_the_lock_is_held(self):
@@ -335,24 +342,31 @@ print(rounds)
 class ConcurrencyTests(_Vault):
     N = 50
     LESSONS = 12
+    STALE = "- [exp] stale lantern cache note kept for the prune leg (superseded by the eviction policy)"
 
-    def _run(self, with_prune: bool) -> None:
+    def _run(self, with_prune: bool, scripts: Path = SCRIPTS) -> None:
         go = self.home.parent / f"{self.home.name}.go"
         stop = self.home.parent / f"{self.home.name}.stop"
         env = _env(self.home)
-        procs = [subprocess.Popen([sys.executable, "-c", _APPENDER, str(SCRIPTS), str(go), p, str(self.N), COMMON],
+        if with_prune:
+            # A deletable entry in the very file the appenders grow, so the
+            # prune really rewrites it (under the lock) while they append.
+            import _topic  # type: ignore
+            slug = _topic.derive_aspect_slug(f"[exp] {COMMON} ua000x va000y wa000z qa000k because the relay drifts")
+            _w(self.topic / f"{TODAY}-{slug}.md", self.STALE + "\n")
+        procs = [subprocess.Popen([sys.executable, "-c", _APPENDER, str(scripts), str(go), p, str(self.N), COMMON],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
                  for p in ("a", "b")]
-        side = [subprocess.Popen([sys.executable, "-c", _CHURN, str(SCRIPTS), str(go), str(stop), str(self.topic)],
+        side = [subprocess.Popen([sys.executable, "-c", _CHURN, str(scripts), str(go), str(stop), str(self.topic)],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)]
         if with_prune:
-            side.append(subprocess.Popen([sys.executable, "-c", _PRUNE_LOOP, str(SCRIPTS), str(go), str(stop)],
+            side.append(subprocess.Popen([sys.executable, "-c", _PRUNE_LOOP, str(scripts), str(go), str(stop)],
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env))
         try:
             go.write_text("go")
             lesson_out = []
             for i in range(self.LESSONS):                              # the `_lesson.py` loop
-                r = self.run_py(str(SCRIPTS / "_lesson.py"), "--topic", "redis-cache", "--ws", "w1",
+                r = self.run_py(str(scripts / "_lesson.py"), "--topic", "redis-cache", "--ws", "w1",
                                 "--symptom", f"lesson symptom {i:02d} under contention",
                                 "--tried", f"attempt {i:02d}", "--root", f"root cause {i:02d} because of load",
                                 "--fix", f"fix number {i:02d}")
@@ -382,6 +396,8 @@ class ConcurrencyTests(_Vault):
         lessons = (self.topic / "lessons.md").read_text()
         self.assertEqual([i for i in range(self.LESSONS) if f"lesson symptom {i:02d} under contention" not in lessons],
                          [])
+        if with_prune:
+            self.assertNotIn("stale lantern cache note", text, "the prune never rewrote the shared aspect")
 
     def test_two_appenders_a_lesson_loop_and_backfill_fix_churn_lose_nothing(self):
         self._run(with_prune=False)
