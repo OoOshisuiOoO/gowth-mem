@@ -588,12 +588,15 @@ class GrowthTest(_Vault):
         for shape, make in SHAPES.items():
             times = []
             for n in (10_000, 20_000, 40_000):
-                target.write_text(make(n))
-                t0 = time.perf_counter()
-                report = _memsan.sanitize_changed_files()
-                times.append(time.perf_counter() - t0)
-                self.assertEqual(report["scanned"], 1, f"{shape}: {report}")   # positive: it was read
-                self.assertEqual(report["skipped"], [], shape)
+                best = float("inf")
+                for _ in range(3):           # best of 3, re-seeded: one pass includes git + I/O jitter
+                    target.write_text(make(n))
+                    t0 = time.perf_counter()
+                    report = _memsan.sanitize_changed_files()
+                    best = min(best, time.perf_counter() - t0)
+                    self.assertEqual(report["scanned"], 1, f"{shape}: {report}")   # positive: it was read
+                    self.assertEqual(report["skipped"], [], shape)
+                times.append(best)
             self.assertLess(times[2], 2.0, f"{shape}: {times}")
             if times[2] > 0.05:
                 self.assertLess(times[2], 6 * max(times[0], 1e-3), f"{shape} not linear: {times}")

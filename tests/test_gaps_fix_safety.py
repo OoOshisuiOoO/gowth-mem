@@ -607,15 +607,22 @@ class GrowthTest(unittest.TestCase):
                 times = []
                 for n in (10_000, 20_000, 40_000):
                     seed = _doc("## Open", "  " + SHAPES[shape](n), "## Closed")
-                    q.write_text(seed)
-                    t0 = time.perf_counter()
-                    _qid, st = _gaps.add("demo", "ask", Q2, settings={})
-                    times.append(time.perf_counter() - t0)
-                    self.assertEqual(st, want, shape)
-                    if want != "added":
-                        self.assertEqual(q.read_text(), seed, shape)
-                    else:
-                        self.assertIn(Q2, q.read_text(), shape)
+                    best = float("inf")
+                    # best of 5: one write includes a file replace, whose I/O jitter on a CI
+                    # runner made a single shot read as super-linear (8.6 / 15.3 / 94 ms on
+                    # ubuntu-24.04 while the same code measures 4.7 / 8.8 / 16.6 ms, flat 2x
+                    # per doubling to 160k, locally)
+                    for _ in range(5):
+                        q.write_text(seed)
+                        t0 = time.perf_counter()
+                        _qid, st = _gaps.add("demo", "ask", Q2, settings={})
+                        best = min(best, time.perf_counter() - t0)
+                        self.assertEqual(st, want, shape)
+                        if want != "added":
+                            self.assertEqual(q.read_text(), seed, shape)
+                        else:
+                            self.assertIn(Q2, q.read_text(), shape)
+                    times.append(best)
                 self.assertLess(times[2], 2.0, f"{shape}: {times}")
                 if times[2] > 0.05:
                     self.assertLess(times[2], 6 * max(times[0], 1e-3), f"{shape} not linear: {times}")
