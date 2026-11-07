@@ -30,7 +30,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" add --kind ask "<question
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" list                    # open questions, oldest first
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" list --kind ask --json
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" list --closed           # history, with answers
-python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" answer Q-xxxxxxxx "<answer>" --evidence "<vault path | URL | commit | user>"
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" answer Q-xxxxxxxx "<answer>" --evidence "<vault path of the [ref] entry | URL | commit | user>"
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" close Q-xxxxxxxx --evidence "<why>" --reason obsolete
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" tried Q-xxxxxxxx --note "<why it is not answerable now>"
 ```
@@ -46,11 +46,17 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_gaps.py" tried Q-xxxxxxxx --note "
 | `duplicate` | the same question exists — open, or closed (`list --closed` shows its answer); use that id |
 | `similar:Q-…` | a near-identical OPEN question exists: answer or `tried` that one; `--force` only when yours is really different |
 | `rejected:too_short` / `too_long` | a question is 12..300 chars |
-| `rejected:secret_leak` | never store a credential — name the env var instead |
+| `rejected:private_tag` | a field contains a lone `<private>` or `</private>` tag (any spelling): it would pair with a tag in another line and delete every line between them — rephrase without the tag (say "the private tag") |
+| `rejected:secret_leak` | never store a credential — name the env var instead (a whole `<private>…</private>` block counts). Also printed, with a stderr line naming the file, when the ledger AS IT WOULD BE WRITTEN holds a secret or a `<private>`…`</private>` pair across lines (a hand edit, a merge from another machine, or two lines the re-render brings together): nothing was written. Show the user the line; with their OK, remove only the secret or the stray tag text — never the lines between two tags — then retry |
+| `rejected:sanitize_failed` | the privacy filter itself failed — nothing was written; retry, and report it if it repeats |
 | `rejected:control_token` | the text quotes a `[gowth-mem:` hook directive — rephrase it |
 | `rejected:not_english` | `gate.english_only` is on — store it in English |
 | `rejected:no_evidence` | `answer` / `close` need `--evidence` |
-| `rejected:weak_evidence` | a `research` answer must cite a vault path, URL or commit: save the `[ref]` (with `Source:`) first, then answer with its path |
+| `rejected:weak_evidence` | a `research` answer must cite a vault path, URL or commit: save the `[ref]` (with `Source:`) first, then answer with its path. A bare file name or file:line (`settings.json`, `_gaps.py:425`) or only `user` is refused |
+| `rejected:unreadable` | the ledger exists but cannot be read as UTF-8 (permissions, I/O, a hand edit in another encoding), or a directory above it cannot be read: nothing was written. Tell the user; fix the file or directory (permissions, or re-save it as UTF-8), then retry — `list` says "ledger unreadable" meanwhile |
+| `rejected:docs_not_a_dir` | `<ws>/docs` is a regular file or a dangling link, so the ledger cannot be created: nothing was written — tell the user; do not move or delete it yourself |
+| `rejected:write_failed` | an OS error stopped the write (disk full, a read-only `docs/`, …): the ledger is unchanged — fix the cause, then retry |
+| `rejected:symlink` / `not_a_file` / `outside_workspace` | the ledger path is a link, not a regular file, or `docs/` points outside the workspace: nothing was written — tell the user |
 | `rejected:lock_timeout` | another session is writing the ledger — retry |
 | `not_found`, `rejected:already_closed` | check `list` / `list --closed` for the right id |
 
