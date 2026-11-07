@@ -60,6 +60,10 @@ log()  { [ "$QUIET" -eq 0 ] && echo "[doctor:${KEY}] $*" >&2 || true; }
 say()  { echo "[doctor:${KEY}] $*" >&2; }
 warn() { echo "[doctor:${KEY}] WARN: $*" >&2; }
 
+# v4.9: the opt-out every hook honours (same truthy set as _home.hooks_off);
+# informational, so --quiet keeps it silent like every other non-heal line.
+case "${GOWTH_MEM_OFF:-}" in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) log "GOWTH_MEM_OFF is set — hooks are disabled" ;; esac
+
 # ─── env validation ──────────────────────────────────────────────────────
 # 1. gowth-mem home directory
 GOWTH_HOME="${GOWTH_MEM_HOME:-${HOME}/.gowth-mem}"

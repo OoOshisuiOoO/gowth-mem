@@ -2,6 +2,12 @@
 # SessionStart: merged bootstrap-load + auto-sync --pull-only + registry self-heal.
 # Always pulls (background). Runs bootstrap on startup/compact sources.
 
+# v4.9: GOWTH_MEM_OFF=1|true|yes|on (any case) disables every gowth-mem hook.
+# Checked FIRST: drain the event, no output, no vault access, exit 0.
+case "${GOWTH_MEM_OFF:-}" in
+    1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) [ -t 0 ] || cat >/dev/null 2>&1; exit 0 ;;
+esac
+
 INPUT=$(cat)
 
 SCRIPTS_DIR="$(dirname "$0")"
@@ -46,4 +52,8 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "compact" ] || [ "$SOURCE" = "clea
     python3 "$SCRIPTS_DIR/bootstrap-load.py" <<<"$INPUT"
 fi
 
+# v4.9: the script's status was the pull's (`wait` returns it): a pending
+# SYNC-CONFLICT.md (rc 2) or an offline pull (rc 1) made the SessionStart hook
+# "fail". A hook entrypoint always exits 0.
 wait $SYNC_PID
+exit 0

@@ -67,6 +67,9 @@
     "max_lines": 130,
     "max_chars": 12000
   },
+  "capture": {
+    "pipeline_prefixes": []
+  },
   "_notes": {
     "schema": "v4.8: every key here is read by hooks/scripts (tests/test_settings_example.py pins both directions). Booleans accept true/false or the strings \"true\"/\"false\"; a malformed value falls back to its default without resetting its section.",
     "layout_version": "Integer schema version. v3 is current (topic-FOLDER + dated-aspect layout).",
@@ -83,6 +86,7 @@
     "doctor": "auto_heal: let SessionStart run bin/doctor.sh detached to repair a stale plugin registration (no network). Also GOWTH_MEM_NO_AUTOHEAL=1.",
     "native": "v4.8: keep <ws>/memory/MEMORY.md (Claude Code auto memory, 200 lines / 25 KB, re-attached after compaction) as the bootstrap carrier. Wire a project with /mem-setup native. enabled:false → the SessionStart hook prints the ≤8,500-char fallback bootstrap instead.",
     "recall": "v4.8 per-prompt recall (UserPromptSubmit, BM25, no LLM). on_prompt_enabled: master switch; on_prompt_max_entries / on_prompt_max_chars: injection caps; on_prompt_min_terms: distinct query terms a chunk must contain; on_prompt_min_coverage: share (0-1) of the prompt's content terms the chunk must contain — 0.5 measured on the live vault: 0-3/20 generic prompts inject per workspace vs 14/20 with the 2-term gate alone, 29/30 real paraphrases still served; the prompt's subject term (first identifier, else longest word) is always required; on_prompt_score_threshold: bm25 (negative, lower is better) a chunk must reach; \"auto\" (default) = min(-1, 2.5 - 1.55 × ln(live index chunks)) because bm25 scales with corpus idf (measured 2026-09-28 on a 15.6k-chunk vault: generic prompts score -5 … -9.7, real queries -14 … -88, so 15.6k → -12.5; a 6-chunk vault → -1) — a number pins it; on_prompt_prompt_cap: chars of the prompt that are profiled.",
-    "memfile": "v4.8 budget of the managed block in MEMORY.md (the host reads 200 lines / 25 KB; Claude's own notes share the file)."
+    "memfile": "v4.8 budget of the managed block in MEMORY.md (the host reads 200 lines / 25 KB; Claude's own notes share the file).",
+    "capture": "v4.9 pipeline hygiene. A prompt that STARTS with a bot/pipeline marker — `STAGE=<NAME>` then a newline/./( —, a first line `### TASK|DAILY … ###`, the session summarizer's `Below is a conversation log from a Claude Code coding session` — is a machine record: never counted as a turn, captured, recalled, dumped at PreCompact or nagged about SYNC-CONFLICT.md. pipeline_prefixes: extra literal prefixes (each 1-200 chars, at most 20 used, plain startswith on the prompt after leading whitespace — never a regex). To switch every gowth-mem hook off for a process tree (a bot's tmux / `claude -p` stages) export GOWTH_MEM_OFF=1 instead."
   }
 }

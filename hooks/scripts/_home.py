@@ -129,6 +129,45 @@ def setting(path: str, kind: type = str, default=None, settings: "dict | None" =
     return node if isinstance(node, kind) else default
 
 
+# ─── hook opt-out (v4.9) ──────────────────────────────────────────────────
+
+# GOWTH_MEM_OFF=1|true|yes|on (ASCII, case-insensitive, no trimming — the bash
+# wrappers test the same set with a bash-3.2 `case`) disables EVERY hook
+# entrypoint: each checks it first, drains the event from stdin and exits 0
+# with no output, no logging and no vault access. Bot pipelines that drive
+# Claude Code (tmux sessions, `claude -p` stages) set it so their rounds are
+# never counted, captured, recalled, dumped or nagged. Explicit CLIs
+# (_topic.py, _query.py, _sync.py, …) ignore it.
+HOOKS_OFF_ENV = "GOWTH_MEM_OFF"
+HOOKS_OFF_NOTICE = "GOWTH_MEM_OFF is set — hooks are disabled"
+_OFF_WORDS = frozenset({"1", "true", "yes", "on"})
+
+
+def hooks_off(env=None) -> bool:
+    """True when GOWTH_MEM_OFF holds 1|true|yes|on (case-insensitive). `env`
+    defaults to os.environ. Never raises."""
+    try:
+        value = (os.environ if env is None else env).get(HOOKS_OFF_ENV)
+    except Exception:
+        return False
+    return isinstance(value, str) and value.isascii() and value.lower() in _OFF_WORDS
+
+
+def drain_stdin() -> None:
+    """Read and discard the hook event on stdin, so the host never writes into
+    a closed pipe (a Stop payload can be hundreds of KB). Binary read — an
+    undecodable payload cannot stop the drain halfway. Skipped on a terminal.
+    Never raises."""
+    try:
+        stream = sys.stdin
+        if stream is None or stream.isatty():
+            return
+        buf = getattr(stream, "buffer", None)
+        (buf if buf is not None else stream).read()
+    except Exception:
+        pass
+
+
 # ─── host context limit (v4.8) ────────────────────────────────────────────
 
 # Claude Code (measured on 2.1.283) persists any hook additionalContext or

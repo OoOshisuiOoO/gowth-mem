@@ -234,7 +234,8 @@ class HookHarness(unittest.TestCase):
         }))
 
     def stop(self, stop_hook_active=False, transcript: bool = True,
-             prompt_id: str | None = "__chain__", last_message: str | None = None) -> dict:
+             prompt_id: str | None = "__chain__", last_message: str | None = None,
+             extra: dict | None = None) -> dict:
         payload: dict = {"session_id": self.sid, "hook_event_name": "Stop",
                          "stop_hook_active": stop_hook_active}
         if last_message is not None:
@@ -244,11 +245,14 @@ class HookHarness(unittest.TestCase):
             payload["prompt_id"] = pid
         if transcript:
             payload["transcript_path"] = str(self.tx.path)
+        payload.update(extra or {})
         env = {**os.environ, "GOWTH_MEM_HOME": str(self.home),
                # isolate the backlog scan from the real ~/.claude/projects
                "CLAUDE_CONFIG_DIR": str(self.home / "claude-config")}
-        # runner env must not leak in (a GOWTH_WORKSPACE=trade shell broke 8 tests)
-        for k in ("AI_AGENT", "GOWTH_WORKSPACE", "CLAUDE_SUBAGENT"):
+        # runner env must not leak in (a GOWTH_WORKSPACE=trade shell broke 8 tests;
+        # v4.9: a GOWTH_MEM_OFF bot shell would silence every hook)
+        for k in ("AI_AGENT", "GOWTH_WORKSPACE", "CLAUDE_SUBAGENT", "GOWTH_MEM_OFF",
+                  "CLAUDE_CODE_ENTRYPOINT"):
             env.pop(k, None)
         if self.AI_AGENT:
             env["AI_AGENT"] = self.AI_AGENT
@@ -507,12 +511,16 @@ class TestTransparentAndAmbiguousRecords(HookHarness):
 
     def test_headless_prompt_without_origin_still_counts(self):
         """origin-less is ambiguous (claude -p, /goal): never silently drop a
-        real turn — only KNOWN machine sources are excluded."""
+        real turn — only KNOWN machine sources are excluded.
+
+        v4.9: the fixture used to read `STAGE=VERIFY check the rollout` — the
+        shape of a bot pipeline's stage prompt (TestPipelinePrompts). A person's
+        headless prompt is neutral text."""
         self.tx.notification()           # an origin-bearing record elsewhere in the tail
-        self.tx.headless_prompt("STAGE=VERIFY check the rollout")
+        self.tx.headless_prompt("verify the canary rollout in staging")
         self.stop()
         self.assertEqual(self.state().get("total_turns"), 1)
-        self.assertIn("**User:** STAGE=VERIFY check the rollout", self.log())
+        self.assertIn("**User:** verify the canary rollout in staging", self.log())
 
 
 class TestCadencesFireOnRealTurns(HookHarness):
@@ -597,10 +605,12 @@ class TestStopTimeFlush(HookHarness):
         self.assertIn("**User:** rename the module", self.log())
 
     def test_headless_prompt_source_sdk_counts_before_the_reply_lands(self):
-        self.tx.headless_prompt("STAGE=VERIFY check it", prompt_source="sdk", flushed=False)
+        """`promptSource: sdk` (claude -p) is a person's prompt — the contract
+        stands; v4.9 moved the fixture off the pipeline `STAGE=` shape."""
+        self.tx.headless_prompt("check the canary rollout", prompt_source="sdk", flushed=False)
         self.stop(prompt_id=None)
         self.assertEqual(self.state().get("total_turns"), 1)
-        self.assertIn("**User:** STAGE=VERIFY check it", self.log())
+        self.assertIn("**User:** check the canary rollout", self.log())
 
     def test_origin_less_prompt_confirmed_by_the_stop_prompt_id(self):
         self.tx.headless_prompt("<command-name>/goal</command-name> ship it", flushed=False)
@@ -803,6 +813,278 @@ class TestCaptureCompleteness(HookHarness):
         self.assertEqual(self.line("User"), "legacy second ask")
 
 
+# v4.9 — real pipeline prompt shapes (mention-agent stages and a session
+# summarizer, read from live transcripts; names and chat lines anonymised).
+PASTED_TASK = ("### TASK 469044d829 R13 ###\nSTAGE=EXECUTE\nOperator APPROVED. Execute the PLAN from the "
+               "VERIFY stage (same session) — plus the operator's\nextra instructions if present "
+               "(extra overrides PLAN).\n\n- SKILL-FIRST: load the matching skill")
+SDK_VERIFY = ("STAGE=VERIFY\nVerify the mention below BEFORE the operator decides anything. READ-ONLY.\n\n"
+              "1. Who is asking, which service does it belong to (team-map §3 ownership)?")
+SDK_REVERIFY = ("STAGE=VERIFY\nThe requester answered the clarifying question:\n[05/10 11:48] someone: prod\n\n"
+                "Re-verify with the new information. Output BRIEF/EVIDENCE/PLAN/RISK/VERDICT.")
+REFLECT = "STAGE=REFLECT — task done. GOAL: join every source → extract lessons → push gowth-mem."
+TEST_STAGE = "STAGE=TEST (operator check, not a mention). Without any tool, from startup context only: quote N1"
+DAILY = ("### DAILY KNOWLEDGE REFRESH + SELF-IMPROVE (incremental · token-lean) ###\n"
+         "STAGE=SELF-IMPROVE. Window: FROM 2026-10-26T03:25:49Z TO NOW.")
+SUMMARIZER = ("Below is a conversation log from a Claude Code coding session.\nCreate a summary to help the "
+              "next session quickly understand the context.\n\n## Prioritize including\n- Design decisions")
+PIPELINE_SHAPES = (PASTED_TASK, SDK_VERIFY, SDK_REVERIFY, REFLECT, TEST_STAGE, DAILY, SUMMARIZER)
+HUMAN_LOOKALIKES = (
+    "STAGE=PROD make deploy for the api service",          # an env assignment typed by a person
+    "STAGE=prod\nrun the deploy",                            # lowercase name
+    "stage=VERIFY\nverify the mention",                      # lowercase key
+    "please look at why the bot sent this:\nSTAGE=VERIFY\nVerify the mention below",  # mid-text quote
+    "### Task: fix the login ###\nthen deploy",              # not TASK
+    "### TASKS for today ###\n- a",                          # TASK must be a whole word
+    "### TASK 1 ### and more words on the same line",        # the marker line must end there
+    "STAGE=V\nname too short",
+    "STAGE=" + "A" * 40 + "\nname too long",
+    "Below is a conversation log",                           # not the whole prefix
+    "below is a conversation log from a Claude Code coding session",
+    "x" * 600 + PASTED_TASK,                                 # never searched past the start
+)
+
+
+def _collapsed(text: str) -> str:
+    """What a session log stores: _capture._oneline."""
+    import re as _re
+    return _re.sub(r"\s+", " ", text).strip()
+
+
+class TestPipelinePrompts(HookHarness):
+    """v4.9 §1.2: bot/pipeline-marked prompts are machine records — never a
+    turn, never captured, never answered with a cadence directive — through
+    the real Stop hook. 16/86 devops session logs opened with
+    `**User:** STAGE=VERIFY …` before this."""
+
+    def test_pasted_task_prompt_is_not_counted_logged_or_nagged(self):
+        """A tmux paste carries origin.kind=human — the marker must win."""
+        self.settings(journal_every=1, turn_interval=1, min_review_turns=1)
+        self.tx.human(PASTED_TASK, reply="executing the plan", tool="Bash")
+        d = self.stop()
+        self.assertEqual(_directive(d), "", "no cadence directive may interrupt a bot round")
+        self.assertIsNone(self.state().get("total_turns"))
+        self.assertEqual(self.log(), "", "a pipeline round is never captured")
+
+    def test_sdk_stage_prompts_are_not_counted(self):
+        for text in (SDK_VERIFY, SDK_REVERIFY, REFLECT, TEST_STAGE, SUMMARIZER):
+            self.tx.headless_prompt(text, prompt_source="sdk", flushed=False)
+            self.stop(prompt_id=None)
+        self.assertIsNone(self.state().get("total_turns"))
+        self.assertEqual(self.log(), "")
+
+    def test_daily_pipeline_prompt_is_not_counted(self):
+        self.tx.human(DAILY, reply="refreshing knowledge", tool="Read")
+        self.stop()
+        self.assertIsNone(self.state().get("total_turns"))
+
+    def test_human_lookalikes_still_count(self):
+        """`STAGE=PROD make deploy …` and quoted markers are a person's words."""
+        for i, text in enumerate(HUMAN_LOOKALIKES[:7], start=1):
+            self.tx.human(text)
+            self.stop()
+            self.assertEqual(self.state().get("total_turns"), i, text)
+        log = self.log()
+        self.assertIn("**User:** STAGE=PROD make deploy for the api service", log)
+        self.assertIn("**User:** please look at why the bot sent this: STAGE=VERIFY Verify the mention below", log)
+
+    def test_human_turns_around_pipeline_turns_count(self):
+        self.tx.human("rotate the staging certificate")
+        self.stop()
+        self.tx.headless_prompt(SDK_VERIFY, prompt_source="sdk")
+        self.stop()
+        self.tx.human(PASTED_TASK, reply="executing", tool="Bash")
+        self.stop()
+        self.tx.human("now check the ingress logs")
+        self.stop()
+        self.assertEqual(self.state().get("total_turns"), 2)
+        users = [l for l in self.log().splitlines() if l.startswith("**User:**")]
+        self.assertEqual(users, ["**User:** rotate the staging certificate",
+                                 "**User:** now check the ingress logs"])
+        self.assertNotIn("STAGE=", self.log())
+        self.assertNotIn("### TASK", self.log())
+
+    def test_typed_ahead_pipeline_prompt_is_not_an_ask(self):
+        self.tx.human("summarize the incident")
+        self.tx.typed_ahead(PASTED_TASK)
+        self.stop()
+        self.assertEqual(self.state().get("total_turns"), 1)
+        users = [l for l in self.log().splitlines() if l.startswith("**User:**")]
+        self.assertEqual(users, ["**User:** summarize the incident"], "the pasted round never joins the ask")
+
+    def test_settings_prefixes_are_honoured_and_junk_entries_ignored(self):
+        settings = json.loads((self.home / "settings.json").read_text())
+        settings["capture"] = {"pipeline_prefixes": ["[nightly-bot]", 42, None, "", "y" * 201, {"a": 1}]}
+        (self.home / "settings.json").write_text(json.dumps(settings))
+        self.tx.human("[nightly-bot] digest the alerts of the last 24h")
+        self.stop()
+        self.assertIsNone(self.state().get("total_turns"), "a configured prefix is a pipeline marker")
+        self.tx.human("[nightly-botany] a person's prompt that merely shares letters")
+        self.stop()
+        self.tx.human("yyyy is not a prefix: the 201-char entry is ignored")
+        self.stop()
+        self.assertEqual(self.state().get("total_turns"), 2, "'' must not match everything; junk is ignored")
+
+    def test_pipeline_stops_leave_the_log_byte_identical(self):
+        """4-test rule (repeated write): after a human turn is logged, three
+        Stops ending pipeline rounds leave the session log byte-identical."""
+        self.tx.human("rename the parser module")
+        self.stop()
+        first = self.log()
+        self.assertIn("**User:** rename the parser module", first)
+        for text in (SDK_VERIFY, PASTED_TASK, SUMMARIZER):
+            if text is PASTED_TASK:
+                self.tx.human(text, reply="executing", tool="Bash")
+            else:
+                self.tx.headless_prompt(text, prompt_source="sdk")
+            self.stop()
+            self.assertEqual(self.log(), first)
+        self.assertEqual(self.state().get("total_turns"), 1)
+
+    def test_huge_pasted_pipeline_prompt_is_fast(self):
+        """Growth through the real entry point: only 512 chars are examined."""
+        import time
+        self.tx.human(PASTED_TASK + "\n" + "z" * 200_000, flushed=False)
+        t = time.perf_counter()
+        self.stop()
+        self.assertLess(time.perf_counter() - t, 5.0)
+        self.assertIsNone(self.state().get("total_turns"))
+
+
+class TestPipelineMarkers(unittest.TestCase):
+    """Unit level: _capture.is_pipeline_prompt / pipeline_prefixes /
+    _classify_record (v4.9 §1.2)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cap = _load("_capture")
+
+    def test_real_pipeline_shapes(self):
+        for text in PIPELINE_SHAPES:
+            self.assertTrue(self.cap.is_pipeline_prompt(text), text[:40])
+            self.assertTrue(self.cap.is_pipeline_prompt(text, logged=True), text[:40])
+        self.assertTrue(self.cap.is_pipeline_prompt("\n\n   " + SDK_VERIFY), "leading whitespace is skipped")
+        self.assertTrue(self.cap.is_pipeline_prompt(" " * 600 + "STAGE=VERIFY\nx"),
+                        "the 512-char window starts after the leading whitespace")
+        self.assertTrue(self.cap.is_pipeline_prompt("STAGE=VERIFY"), "the end of the prompt ends the name")
+        self.assertTrue(self.cap.is_pipeline_prompt("STAGE=SELF-IMPROVE.\nwindow"))
+        self.assertTrue(self.cap.is_pipeline_prompt("STAGE=EXECUTE\t– round 2"))
+
+    def test_human_lookalikes(self):
+        for text in HUMAN_LOOKALIKES:
+            self.assertFalse(self.cap.is_pipeline_prompt(text), text[:60])
+        for junk in (None, 42, b"STAGE=VERIFY\n", "", "   \n"):
+            self.assertFalse(self.cap.is_pipeline_prompt(junk), repr(junk))
+
+    def test_logged_mode_reads_collapsed_session_log_lines(self):
+        """Session logs collapse whitespace: the newline after a marker became a
+        space. logged=True (curator only) accepts that; turn counting never
+        uses it."""
+        for text in (SDK_VERIFY, SDK_REVERIFY, PASTED_TASK, DAILY):
+            line = _collapsed(text)
+            self.assertTrue(self.cap.is_pipeline_prompt(line, logged=True), line[:50])
+            self.assertFalse(self.cap.is_pipeline_prompt(line), "normal mode needs the real newline: " + line[:50])
+        for text in (REFLECT, TEST_STAGE, SUMMARIZER):
+            self.assertTrue(self.cap.is_pipeline_prompt(_collapsed(text), logged=True))
+        for text in ("### Task: fix the login ### then deploy", "please run STAGE=VERIFY now",
+                     "STAGE=prod run the deploy", "STAGE=V name too short"):
+            self.assertFalse(self.cap.is_pipeline_prompt(text, logged=True), text)
+        # the documented ambiguity: a logged `STAGE=PROD make deploy` reads as a marker
+        self.assertTrue(self.cap.is_pipeline_prompt("STAGE=PROD make deploy", logged=True))
+        self.assertFalse(self.cap.is_pipeline_prompt("STAGE=PROD make deploy"))
+
+    def test_settings_prefixes(self):
+        s = {"capture": {"pipeline_prefixes": ["[bot]", "### JOB\nmode=nightly"]}}
+        self.assertTrue(self.cap.is_pipeline_prompt("  [bot] summarize", s))
+        self.assertFalse(self.cap.is_pipeline_prompt("[bot] summarize"), "no settings → built-ins only")
+        self.assertFalse(self.cap.is_pipeline_prompt("a [bot] mid-text", s))
+        self.assertTrue(self.cap.is_pipeline_prompt("### JOB\nmode=nightly digest", s))
+        self.assertTrue(self.cap.is_pipeline_prompt("### JOB mode=nightly digest", s, logged=True),
+                        "logged mode matches the whitespace-collapsed prefix")
+        self.assertFalse(self.cap.is_pipeline_prompt("### JOB mode=nightly digest", s))
+
+    def test_pipeline_prefixes_parsing(self):
+        pp = self.cap.pipeline_prefixes
+        self.assertEqual(pp(None), ())
+        self.assertEqual(pp({}), ())
+        self.assertEqual(pp({"capture": {"pipeline_prefixes": "[bot]"}}), (), "a string is not a list")
+        self.assertEqual(pp({"capture": "x"}), ())
+        self.assertEqual(pp({"capture": {"pipeline_prefixes": ["[a]", 1, None, "", "z" * 201, "z" * 200]}}),
+                         ("[a]", "z" * 200))
+        many = [f"[p{i}]" for i in range(30)]
+        self.assertEqual(pp({"capture": {"pipeline_prefixes": many}}), tuple(many[:20]))
+
+    def test_classification_puts_the_marker_before_the_origin(self):
+        c = self.cap._classify_record
+        pasted = {"type": "user", "uuid": "u", "origin": {"kind": "human"}, "promptSource": "typed",
+                  "message": {"content": PASTED_TASK}}
+        sdk = {"type": "user", "uuid": "s", "promptSource": "sdk", "message": {"content": SDK_VERIFY}}
+        turn_origin = {"type": "user", "uuid": "t", "turnOrigin": "human",
+                       "message": {"content": [{"type": "text", "text": DAILY}]}}
+        queued = {"type": "attachment", "uuid": "q", "attachment": {
+            "type": "queued_command", "prompt": PASTED_TASK, "commandMode": "prompt",
+            "origin": {"kind": "human"}}}
+        for rec in (pasted, sdk, turn_origin, queued):
+            self.assertEqual(c(rec), "machine", rec.get("uuid"))
+        human = {"type": "user", "uuid": "h", "origin": {"kind": "human"},
+                 "message": {"content": "STAGE=PROD make deploy for the api"}}
+        self.assertEqual(c(human), "human")
+        bot = {"type": "user", "uuid": "b", "origin": {"kind": "human"}, "message": {"content": "[bot] run"}}
+        self.assertEqual(c(bot), "human")
+        self.assertEqual(c(bot, {"capture": {"pipeline_prefixes": ["[bot]"]}}), "machine")
+        # find_human_prompt skips a pipeline record like any machine record
+        reply = {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+        recs = [human, reply, pasted, reply, sdk, reply]
+        self.assertEqual(self.cap.find_human_prompt(recs), 0)
+        self.assertEqual(self.cap.find_human_prompt([bot, reply], settings={"capture": {
+            "pipeline_prefixes": ["[bot]"]}}), -1)
+
+    def test_growth_is_flat(self):
+        """4-test rule: every new marker regex on 10k/20k/40k-char adversarial
+        inputs, both modes. Only 512 chars are examined, so time stays flat."""
+        import time
+        shapes = {
+            "stage-name-flood": lambda n: "STAGE=" + "A" * n,
+            "stage-token-flood": lambda n: ("STAGE=" * (n // 6 + 1))[:n],
+            "task-unclosed-hashes": lambda n: "### TASK " + "#" * n,
+            "daily-whitespace-run": lambda n: "### DAILY" + " " * n + "###",
+            "task-repeated-separators": lambda n: ("### TASK ###" * (n // 12 + 1))[:n],
+            "blanks-then-dash": lambda n: "STAGE=AB" + " " * n + "-",
+            "leading-whitespace-then-marker": lambda n: " " * n + "STAGE=VERIFY\nx",
+        }
+        settings = {"capture": {"pipeline_prefixes": ["[bot]" + " " * 150, "### JOB\n" * 20]}}
+        for logged in (False, True):
+            for name, make in shapes.items():
+                times, results = [], []
+                for size in (10_000, 20_000, 40_000):
+                    text = make(size)
+                    best = None
+                    for _ in range(5):
+                        t0 = time.perf_counter()
+                        r = self.cap.is_pipeline_prompt(text, settings, logged=logged)
+                        dt = time.perf_counter() - t0
+                        best = dt if best is None else min(best, dt)
+                    times.append(best)
+                    results.append(r)
+                self.assertLess(times[2], 0.01, (name, logged, times))
+                self.assertLessEqual(times[2], 2.5 * times[0] + 0.002, (name, logged, times))
+                self.assertEqual(len(set(results)), 1, f"{name}: the verdict must not depend on the size")
+                if name == "leading-whitespace-then-marker":
+                    self.assertEqual(results, [True] * 3, "positive signal: the marker was really parsed")
+                if name in ("stage-name-flood", "task-unclosed-hashes"):
+                    self.assertEqual(results, [False] * 3, name)
+                if name == "blanks-then-dash":
+                    # the dash lies past the 512-char window; a logged line
+                    # accepts the space right after the name
+                    self.assertEqual(results, [logged] * 3, (name, logged))
+        # and through the classifier, on a record (prompt_text + marker)
+        rec = {"type": "user", "uuid": "x", "origin": {"kind": "human"},
+               "message": {"content": PASTED_TASK + "q" * 40_000}}
+        t0 = time.perf_counter()
+        self.assertEqual(self.cap._classify_record(rec), "machine")
+        self.assertLess(time.perf_counter() - t0, 0.05)
+
+
 class TestDisplayPrompt(unittest.TestCase):
     """Unit level: _capture.display_prompt — readable, verbatim unless the WHOLE
     text is Claude Code markup, and linear-time on hostile pastes."""
@@ -935,7 +1217,8 @@ class TestHumanPromptFinder(unittest.TestCase):
         teammate = {"type": "user", "message": {"content": "<teammate-message id=1>hi</teammate-message>"}}
         tool = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "o"}]}}
         meta = {"type": "user", "isMeta": True, "message": {"content": "Stop hook feedback:\n[x]"}}
-        headless = {"type": "user", "uuid": "p", "message": {"content": "STAGE=VERIFY go"}}
+        # v4.9: neutral text (`STAGE=VERIFY go` is a pipeline marker now)
+        headless = {"type": "user", "uuid": "p", "message": {"content": "verify the rollout and report"}}
         # `!cmd` bash mode never invokes the model — its records are not asks
         # (live audit: a relay Stop counted <bash-stdout> as a new turn, 3x).
         bash_in = {"type": "user", "uuid": "b1", "message": {"content": "<bash-input>ls</bash-input>"}}

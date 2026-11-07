@@ -93,6 +93,19 @@ v4.7.4 changes:
     Stop input's `last_assistant_message` — Claude Code writes the final
     assistant record only after this hook, so 20% of live turns logged an
     empty Claude line. `/goal` and `!cmd` prompts are logged as typed.
+
+v4.9 changes (pipeline hygiene):
+  - `GOWTH_MEM_OFF=1|true|yes|on` is checked FIRST: the event is drained and
+    the hook exits 0 with no output, no logging and no vault access.
+  - Bot/pipeline-marked prompts (`_capture.is_pipeline_prompt`: `STAGE=…`,
+    `### TASK|DAILY … ###`, the session summarizer, `capture.pipeline_prefixes`)
+    are machine records — never counted, captured or answered with a directive.
+  - Real-turn Stops stamp `state.session[sid].seen`; the locked save stamps any
+    entry lacking it and, past 300 entries, drops the ones unseen for 30 days,
+    then caps to the 300 most recent (never the current session, never an entry
+    seen within the last day — its per-day session log may still grow). The
+    live map had grown to 1,765 sessions / ~300 KB rewritten on every Stop.
+  - A new session log starts with `<!-- cwd: <Stop input cwd> -->`.
 """
 from __future__ import annotations
 
@@ -112,7 +125,9 @@ from _debug import log_debug  # type: ignore
 from _home import (  # type: ignore
     active_workspace,
     clamp_context,
+    drain_stdin,
     gowth_home,
+    hooks_off,
     journal_dir,
     list_workspaces,
     read_settings,
@@ -124,6 +139,9 @@ from _version import supports_stop_context  # type: ignore
 
 AUTO_DISTILL_EVERY = 10  # fallback default; overridden by settings.json journal_every
 DEFAULT_MIN_REVIEW_TURNS = 10  # matches rubric §0b: <10 turns → judge skips
+SESSION_MAP_CAP = 300          # v4.9: state.session entries kept past a prune
+SESSION_MAX_AGE_DAYS = 30      # … and an entry unseen this long is dropped first
+SESSION_GRACE_SECONDS = 86400  # … but one seen within a day is never pruned
 
 _TURN_RE = re.compile(r"^##\s+turn\s+\d+\b", re.MULTILINE)
 
@@ -197,6 +215,62 @@ def _save_state(state: dict) -> None:
         atomic_write(state_path(), json.dumps(state, indent=2))
     except Exception as e:
         log_debug("auto-journal", f"save_state failed: {e}")
+
+
+def _seen_of(entry, now: int):
+    """An entry's `seen` stamp as an int, or None when absent or unusable (not a
+    number, a bool, <= 0, or more than a day in the future)."""
+    if not isinstance(entry, dict):
+        return None
+    v = entry.get("seen")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    v = int(v)
+    if v <= 0 or v > now + 86400:
+        return None
+    return v
+
+
+def _stamp_and_prune_sessions(state: dict, current_sid: str, now: int) -> None:
+    """v4.9: keep `state.session` bounded (the live map held 1,765 sessions,
+    ~300 KB rewritten on every Stop). Runs inside the locked save of a real
+    turn, after the current session was stamped.
+
+    * An entry without a usable `seen` is stamped `seen = now` — it is never
+      dropped for lacking one (a session still driven by an older plugin, or
+      every entry right after the upgrade).
+    * Over SESSION_MAP_CAP entries: drop those unseen for SESSION_MAX_AGE_DAYS,
+      then keep the SESSION_MAP_CAP most recent by (seen, sid).
+    * Never dropped: the current session, and any entry seen within the last
+      SESSION_GRACE_SECONDS. Session logs are per day: a live session whose
+      entry vanished restarts total_turns and repeats `## turn N` numbers
+      inside today's log. Right after the upgrade every entry carries the same
+      fresh stamp, so the cap would otherwise drop live sessions by sid order;
+      a day later the dead ones still hold that stamp and the cap applies."""
+    sessions = state.get("session")
+    if not isinstance(sessions, dict):
+        return
+    for entry in sessions.values():
+        if isinstance(entry, dict) and _seen_of(entry, now) is None:
+            entry["seen"] = now
+    if len(sessions) <= SESSION_MAP_CAP:
+        return
+
+    def seen(sid) -> int:
+        return _seen_of(sessions.get(sid), now) or 0
+
+    grace_floor = now - SESSION_GRACE_SECONDS
+    protected = {current_sid} | {s for s in sessions if seen(s) >= grace_floor}
+    cutoff = now - SESSION_MAX_AGE_DAYS * 86400
+    for sid in [s for s in sessions if s not in protected and seen(s) < cutoff]:
+        del sessions[sid]
+    if len(sessions) <= SESSION_MAP_CAP:
+        return
+    rest = sorted((s for s in sessions if s not in protected),
+                  key=lambda s: (seen(s), str(s)), reverse=True)
+    room = max(0, SESSION_MAP_CAP - sum(1 for s in protected if s in sessions))
+    for sid in rest[room:]:
+        del sessions[sid]
 
 
 def _read_journal_settings(settings: dict | None = None) -> tuple[int, bool]:
@@ -633,6 +707,10 @@ def _mark_paused_notified(session_id: str) -> None:
 
 
 def main() -> int:
+    # v4.9: the opt-out comes FIRST — before any vault access, logging or mkdir.
+    if hooks_off():
+        drain_stdin()
+        return 0
     try:
         raw_stdin = sys.stdin.read()
     except Exception:
@@ -696,7 +774,10 @@ def main() -> int:
     # without tools is only recognisable through this id.
     cur_pid = data.get("prompt_id")
     cur_pid = cur_pid if isinstance(cur_pid, str) and cur_pid else None
-    hp_idx = _capture.find_human_prompt(records, cur_pid)
+    # v4.9: pipeline-marked prompts (incl. capture.pipeline_prefixes of this
+    # Stop's settings snapshot) classify as machine records — skipped here
+    # exactly like a task notification, so a bot round is never a turn.
+    hp_idx = _capture.find_human_prompt(records, cur_pid, settings=settings)
     prompt_rec = records[hp_idx] if hp_idx >= 0 else None
     if identity:
         # Real transcript: stop_hook_active is redundant (a continuation with
@@ -704,7 +785,8 @@ def main() -> int:
         # prompt typed DURING our own dispatch continuation was dropped.
         if prompt_rec is None:
             prompt_rec = _capture.scan_back_for_human(transcript_path,
-                                                      current_prompt_id=cur_pid)
+                                                      current_prompt_id=cur_pid,
+                                                      settings=settings)
         if prompt_rec is None:
             # Nobody typed anything: an agent-team teammate session (only
             # <teammate-message> prompts; 26 live sessions ran this hook), or
@@ -752,6 +834,10 @@ def main() -> int:
                 total_turns = sess["total_turns"]
                 review_count = sess["review_count"]
                 paused_notified = bool(sess.get("review_paused_notified"))
+                # v4.9: liveness stamp + bounded session map (same locked save).
+                now = int(time.time())
+                sess["seen"] = now
+                _stamp_and_prune_sessions(state, session_id, now)
                 _save_state(state)
     except TimeoutError as e:
         log_debug("auto-journal", f"state lock timeout (increment): {e}")
@@ -789,7 +875,8 @@ def main() -> int:
             last_msg = data.get("last_assistant_message")
             _capture.capture_turn(transcript_path, ws, session_id, total_turns, settings,
                                   records=records or None, prompt_rec=prompt_rec,
-                                  final_text=last_msg if isinstance(last_msg, str) else None)
+                                  final_text=last_msg if isinstance(last_msg, str) else None,
+                                  cwd=cwd if isinstance(cwd, str) else None)
         except Exception as e:
             log_debug("auto-journal", f"capture_turn wrapper failed: {e}")
 
