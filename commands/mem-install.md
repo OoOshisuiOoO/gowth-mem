@@ -27,7 +27,7 @@ PYEOF
 
 Branch logic:
 - `status=no-settings`: corrupt install, refuse and suggest `/mem-doctor`.
-- `status=installed layout_version=3`: nothing to do. Print `[mem-install] already on v3.0` and stop.
+- `status=installed layout_version=3`: nothing to scaffold. Run Step 4b (canon delivery — idempotent, it only installs missing canon files and updates ones that still match a shipped version), print `[mem-install] already on v3.0`, and stop.
 - `status=installed layout_version<3`: this is a **v2 → v3 upgrade**. Run a **dry-run** of `/mem-ops migrate-v3` first so the user sees what would change, then prompt:
   ```
   Detected layout_version=<N> (< 3). v3.0 uses topic-FOLDER + dated-aspect layout.
@@ -43,7 +43,7 @@ Scaffold the shared + workspaces v3 layout:
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/settings.example.v3.json` → `~/.gowth-mem/settings.json` (carries `layout_version: 3`)
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/docs/secrets.md` → `~/.gowth-mem/shared/secrets.md`
 - Copy `${CLAUDE_PLUGIN_ROOT}/templates/docs/tools.md` → `~/.gowth-mem/shared/tools.md`
-- Copy `${CLAUDE_PLUGIN_ROOT}/templates/dot-gowth-mem/shared/research/data-quality-2026.md` → `~/.gowth-mem/shared/research/data-quality-2026.md` (canonical data-quality criteria referenced from `shared/AGENTS.md` §7)
+- Do NOT copy the canon files (`shared/memory-rules.md`, `shared/research/*.md`) by hand — Step 4b delivers them after the first sync
 - Run `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_workspace.py create default --title "Default Fallback"` (creates v3 scaffold: `docs/`, `journal/`, `skills/`, `research/`, `misc/00-README.md`)
 
 ## Step 2 — Git config (ask three questions)
@@ -72,6 +72,26 @@ Scaffold the shared + workspaces v3 layout:
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_sync.py --init
 ```
+
+(Skip this step for a local-only vault with no remote.)
+
+## Step 4b — Deliver the shipped canon (v4.9)
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_canon.py"
+```
+
+`_canon.py` copies the plugin's rules + reference canon into the vault — `shared/memory-rules.md`
+(lookup ladder, evidence labels, corrections, gap rules) and `shared/research/{data-quality,
+extraction-reuse,provenance}-2026.md` — and adds `workspaces/*/docs/questions.md merge=union` to
+the vault's `.gitattributes` (two machines appending to a gap ledger merge line-wise). One line
+per file: `installed` (was missing), `current`, `updated` (still matched a version an earlier
+release shipped) or `user-modified` (you edited it — never overwritten). It never deletes.
+
+It runs AFTER Step 4 on purpose: on a second machine the pull brings the first machine's copy,
+which `_canon.py` then updates in place. Copying first would collide with that copy (add/add).
+Afterwards nothing needs re-running: auto-sync delivers newer canon right after each successful
+pull, and SessionStart does it for a vault without a remote.
 
 ## Step 5 — Suggest next steps
 

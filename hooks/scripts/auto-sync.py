@@ -503,6 +503,22 @@ def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
     return rc
 
 
+def ensure_canon(gh: Path, quiet: bool) -> None:
+    """v4.9 (spec §3.5): deliver the shipped rules + research canon and the gap
+    ledger's `.gitattributes` union line. Called only where no pull can race
+    it — right after a successful pull while the sync lock is still held, or
+    when no remote is configured — so a peer's older canon arrives first and
+    is then updated in place (a tracked modification), never an add/add.
+    Never raises."""
+    try:
+        from _canon import ensure  # type: ignore
+        for dst, status in ensure(gh):
+            if status in ("installed", "updated"):
+                log(f"sync: canon {dst} {status}", quiet=quiet)
+    except Exception as e:
+        log_debug("auto-sync", f"canon delivery failed: {e}")
+
+
 def push(gh: Path, branch: str, quiet: bool,
          remote: str, token: Optional[str]) -> int:
     r = run_git(gh, "push", "-u", "origin", branch, check=False,
@@ -555,6 +571,7 @@ def main() -> int:
 
     if not remote:
         log("sync: no remote configured — run /mem-ops config or /mem-install", quiet=quiet)
+        ensure_canon(gh, quiet)          # nothing is pulled here, nothing can race it
         return 0
 
     # SessionStart pull-only path must never block > ~8s. Full sync is more
@@ -566,13 +583,17 @@ def main() -> int:
                 return 1
 
             if args.pull_only:
-                return pull_rebase(gh, branch, quiet, remote, token, host=host)
+                rc = pull_rebase(gh, branch, quiet, remote, token, host=host)
+                if rc == 0:
+                    ensure_canon(gh, quiet)      # after the pull, still under the lock
+                return rc
 
             # Default & --pull-rebase-push: commit local, pull, push.
             commit_local(gh, host, quiet)
             rc = pull_rebase(gh, branch, quiet, remote, token, host=host)
             if rc != 0:
                 return rc
+            ensure_canon(gh, quiet)              # after the pull, still under the lock
             return push(gh, branch, quiet, remote, token)
     except TimeoutError as e:
         log_debug("auto-sync", f"sync lock timeout (pull_only={args.pull_only}): {e}")

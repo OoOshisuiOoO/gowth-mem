@@ -1,0 +1,16 @@
+{
+  "shared/research/data-quality-2026.md": [
+    "959da9db03f04394bed32b8e272d6d7bd61e471f",
+    "34dfaaad932b8b5e474012b9b08448c949fba180",
+    "f4ef81cc5c0f568dec2ee37b030a3be75b405fb2"
+  ],
+  "shared/research/extraction-reuse-2026.md": [
+    "30884d43b83eb1497f1518c6cadd393d3f0f1373",
+    "86b12ec06fc79c66011d0d3eaac14eb06d4d6934",
+    "9e318a32dc4cc48ccfde43c259adc588fb40bfb0",
+    "026be1d2ca78c4b76cc681cc2e0d652ed9fca6a9"
+  ],
+  "shared/research/provenance-2026.md": [
+    "9deb6a408e3f17e05d37eaf64b0820b93f501ab5"
+  ]
+}

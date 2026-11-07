@@ -160,9 +160,34 @@ def _spawn_incremental_index() -> None:
         log_debug("bootstrap-load", f"incremental index spawn failed: {exc}")
 
 
+def _ensure_canon_unsynced() -> None:
+    """v4.9 (spec §3.5): a vault that never pulls — no `.git`, or no remote in
+    config.json — gets the shipped canon here. A synced vault gets it from
+    auto-sync right after its pull instead; the sync lock (short wait, skip on
+    timeout) keeps this from ever running beside a pull."""
+    try:
+        from _home import gowth_home  # type: ignore
+        gh = gowth_home()
+        if not gh.is_dir():
+            return
+        from _git import load_config  # type: ignore
+        cfg = load_config()
+        if (gh / ".git").exists() and isinstance(cfg, dict) and cfg.get("remote"):
+            return
+        from _canon import ensure  # type: ignore
+        from _lock import file_lock  # type: ignore
+        with file_lock("sync", timeout=1.0):
+            ensure(gh)
+    except TimeoutError:
+        log_debug("bootstrap-load", "canon delivery skipped: sync lock held")
+    except Exception as exc:
+        log_debug("bootstrap-load", f"canon delivery failed: {exc}")
+
+
 def prepare(ws: str, settings: dict) -> None:
-    """Startup side effects: workspace.json, MEMORY.md refresh, detached reindex.
-    Each best-effort; the emission never depends on them."""
+    """Startup side effects: workspace.json, MEMORY.md refresh, canon delivery
+    for an unsynced vault, detached reindex. Each best-effort; the emission
+    never depends on them."""
     try:
         from _workspace import ensure_workspace_json  # type: ignore
         ensure_workspace_json(ws)
@@ -175,6 +200,7 @@ def prepare(ws: str, settings: dict) -> None:
                 write(ws)
         except Exception as exc:
             log_debug("bootstrap-load", f"memfile refresh failed: {exc}")
+    _ensure_canon_unsynced()
     _spawn_incremental_index()
 
 
