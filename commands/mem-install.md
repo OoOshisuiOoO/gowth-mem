@@ -27,7 +27,11 @@ PYEOF
 
 Branch logic:
 - `status=no-settings`: corrupt install, refuse and suggest `/mem-doctor`.
-- `status=installed layout_version=3`: nothing to scaffold. Run Step 4b (canon delivery — idempotent, it only installs missing canon files and updates ones that still match a shipped version), print `[mem-install] already on v3.0`, and stop.
+- `status=installed layout_version=3`: nothing to scaffold. Deliver the shipped canon the sync-safe way — pull FIRST, then deliver and commit what was delivered, all under one sync lock (a vault with no remote gets it without a pull):
+  ```bash
+  python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py" --pull-only
+  ```
+  Idempotent: it only installs missing canon files and updates ones that still match a shipped version. Do not use Step 4b's bare CLI here — on a synced machine that has not pulled a peer's canon yet it would deliver BEFORE the pull. A non-zero exit means the pull did not complete: offline (the canon waits for the next good pull — nothing to do) or a conflict (run `/mem-sync resolve`). With `GOWTH_MEM_OFF` set auto-sync does nothing: run `/mem-sync` first, then Step 4b. Then print `[mem-install] already on v3.0`, and stop.
 - `status=installed layout_version<3`: this is a **v2 → v3 upgrade**. Run a **dry-run** of `/mem-ops migrate-v3` first so the user sees what would change, then prompt:
   ```
   Detected layout_version=<N> (< 3). v3.0 uses topic-FOLDER + dated-aspect layout.
@@ -86,12 +90,15 @@ python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_canon.py"
 extraction-reuse,provenance}-2026.md` — and adds `workspaces/*/docs/questions.md merge=union` to
 the vault's `.gitattributes` (two machines appending to a gap ledger merge line-wise). One line
 per file: `installed` (was missing), `current`, `updated` (still matched a version an earlier
-release shipped) or `user-modified` (you edited it — never overwritten). It never deletes.
+release shipped) or `user-modified` (you edited it — never overwritten). It never deletes. In a
+git vault it then commits exactly the files it installed or updated (gowth-mem identity, nothing
+else staged goes in), so they are never left untracked for the next pull's stash; the next full
+sync pushes that commit.
 
 It runs AFTER Step 4 on purpose: on a second machine the pull brings the first machine's copy,
 which `_canon.py` then updates in place. Copying first would collide with that copy (add/add).
-Afterwards nothing needs re-running: auto-sync delivers newer canon right after each successful
-pull, and SessionStart does it for a vault without a remote.
+Afterwards nothing needs re-running: auto-sync delivers (and commits) newer canon right after each
+successful pull, and SessionStart does it for a vault without a remote.
 
 ## Step 5 — Suggest next steps
 

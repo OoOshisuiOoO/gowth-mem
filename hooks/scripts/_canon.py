@@ -23,11 +23,25 @@ gap ledger at once merge line-wise instead of writing SYNC-CONFLICT.md.
 
 WHERE it runs (sync-safe — never concurrently with a pull):
   * `auto-sync.py` right after `pull_rebase()` returns 0, still under the sync
-    lock (`--pull-only` and `--pull-rebase-push`), and in its no-remote branch;
+    lock (`--pull-only` and `--pull-rebase-push`), and in its no-remote branch
+    (under the sync lock too) — `/mem-install` on an installed vault runs
+    `auto-sync.py --pull-only` for exactly this (pull first, then deliver);
   * `bootstrap-load.prepare()` only when the vault has no `.git` or no remote;
-  * `/mem-install` (this CLI, which waits for the sync lock) after the first sync.
+  * this CLI (waits for the sync lock): `/mem-install` Step 4b, after the
+    first sync — never before a pull.
 A pull that brings a peer's older canon therefore lands first and is then
 updated in place — a tracked modification, never an add/add conflict.
+
+COMMITTED, never left untracked (review safety-sync#1 / gaps-docs#1): auto-sync
+and this CLI commit exactly what `ensure()` installed or updated
+(`commit_delivered`, gowth-mem identity, `git commit --only -- <those paths>`),
+and auto-sync's pull commits any canon path still untracked right before its
+`stash push -u` (`commit_untracked`). An untracked copy used to ride that stash;
+when a peer had pushed the same path (same plugin version is enough) the pop
+failed with "already exists, no checkout" — rc 2, a stranded stash and, on git
+2.33, the user's uncommitted edits to tracked files left only in it. A committed
+copy rebases onto the peer's identical one as an empty commit, which git drops;
+a different version surfaces as SYNC-CONFLICT.md (spec §11), never silently.
 
 Writes go through `_atomic.safe_write` (the canon is synced markdown) under
 `file_lock("canon")`; `.gitattributes` through `atomic_write` after an explicit
@@ -36,6 +50,7 @@ shared/) gets nothing.
 
 CLI:
   _canon.py                    # ensure the canon in the vault; prints "<dst>\\t<status>"
+                               # and commits what it installed/updated (git vaults)
   _canon.py --rebuild-hashes   # regenerate templates/canon-hashes.json (git log --follow)
 """
 from __future__ import annotations
@@ -240,6 +255,202 @@ def ensure(vault: "Path | str | None" = None, *, root: "Path | str | None" = Non
         return []
 
 
+# ── commit what was delivered (review safety-sync#1 / gaps-docs#1) ────────
+#
+# A delivered file left UNTRACKED rides the next pull's `stash push -u`. When a
+# peer pushed the same path meanwhile, the pull brings its tracked copy and
+# `stash pop` fails with "already exists, no checkout" even for byte-identical
+# content: rc 2, the pre-pull stash stranded, and git 2.33 (first on PATH on the
+# author's Mac) restores untracked files BEFORE re-applying tracked changes, so
+# the user's uncommitted edits stay only in that stash. A COMMITTED delivery
+# rebases onto the peer's identical one as an empty commit, which git drops.
+
+DELIVERED = ("installed", "updated")
+DELIVER_SUBJECT = "update(shared): deliver gowth-mem canon"
+TRACK_SUBJECT = "update(shared): track gowth-mem canon before the pull"
+GIT_TIMEOUT = 60.0
+MARKER_SCAN_MAX = 4_000_000          # the same bound auto-sync's commit guard uses
+_IN_PROGRESS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD")
+
+
+def canon_destinations() -> tuple:
+    """Every vault path canon delivery writes: the CANON destinations, then `.gitattributes`."""
+    return tuple(dst for _src, dst in CANON) + (GITATTRIBUTES,)
+
+
+def _run(gh: Path, *args: str):
+    from _git import run_git  # type: ignore
+    return run_git(gh, *args, check=False, timeout=GIT_TIMEOUT)
+
+
+def _commit_blocked(gh: Path) -> str:
+    """'' when a canon commit may run now, else why not: no `.git` directory; a
+    rebase / merge / cherry-pick / revert in progress; no commit yet (an unborn
+    branch — the first commit is `_sync.py --init`'s, with the whole vault); or
+    unmerged paths."""
+    git_dir = gh / ".git"
+    if not git_dir.is_dir():
+        return "no .git directory"
+    for name in _IN_PROGRESS:
+        if (git_dir / name).exists():
+            return f"{name} in progress"
+    if _run(gh, "rev-parse", "--verify", "-q", "HEAD").returncode != 0:
+        return "no commit yet"
+    unmerged = _run(gh, "ls-files", "-u")
+    if unmerged.returncode != 0 or unmerged.stdout.strip():
+        return "unmerged paths"
+    return ""
+
+
+def _has_conflict_markers(path: Path) -> bool:
+    """A raw git conflict sentinel line — exactly 7 `<` or `>`, then a space or
+    the end of the line: the rule auto-sync's commit boundary refuses, checked
+    without a regex. Files above MARKER_SCAN_MAX are not read (same bound)."""
+    try:
+        if path.stat().st_size > MARKER_SCAN_MAX:
+            return False
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if line[:7] in ("<<<<<<<", ">>>>>>>") and (len(line) == 7 or line[7] == " "):
+            return True
+    return False
+
+
+def _through_link(gh: Path, rel: str) -> bool:
+    """True when any component of `rel` under `gh` (the file itself or a parent
+    directory) is a symlink — never commit through one."""
+    cur = gh
+    for part in Path(rel).parts:
+        cur = cur / part
+        if cur.is_symlink():
+            return True
+    return False
+
+
+def _committable(gh: Path, paths: list) -> list:
+    """Of `paths`, those a commit would carry — untracked and not ignored, or
+    different from HEAD — that are regular files reached without a symlink and
+    free of raw conflict markers. Order kept."""
+    found: set = set()
+    r = _run(gh, "ls-files", "--others", "--exclude-standard", "-z", "--", *paths)
+    if r.returncode == 0:
+        found.update(p for p in r.stdout.split("\0") if p)
+    r = _run(gh, "diff", "--name-only", "-z", "HEAD", "--", *paths)
+    if r.returncode == 0:
+        found.update(p for p in r.stdout.split("\0") if p)
+    out: list = []
+    for rel in paths:
+        if rel not in found:
+            continue
+        f = gh / rel
+        if _through_link(gh, rel) or not f.is_file():
+            log_debug("canon", f"not committed: {rel} is not a regular file")
+            continue
+        if _has_conflict_markers(f):
+            log_debug("canon", f"not committed: {rel} holds raw conflict markers")
+            continue
+        out.append(rel)
+    return out
+
+
+def _message(subject: str, paths: list, statuses: dict, host: str) -> str:
+    n = len(paths)
+    lines = [f"{subject} ({n} file{'' if n == 1 else 's'})", ""]
+    lines += [f"- {p}: {statuses.get(p, 'changed')}" for p in paths]
+    lines += ["", f"Files: {n}", f"Machine: {host}", "Context: canon"]
+    return "\n".join(lines) + "\n"
+
+
+def commit_paths(gh: "Path | str", paths, host: "str | None" = None, *,
+                 subject: str = DELIVER_SUBJECT, statuses: "dict | None" = None) -> list:
+    """Stage and commit EXACTLY `paths` — canon destinations only, any other path
+    is dropped — as one commit with the gowth-mem identity: `git add -- <paths>`,
+    then `git commit --only -- <paths>`, so whatever else is staged or dirty
+    stays out of it. Runs only when `_commit_blocked()` allows; skips a path that
+    is unchanged, ignored, not a regular file or holds raw conflict markers.
+    Returns the committed paths ([] when nothing was committed). Never raises;
+    a failure is logged via log_debug."""
+    try:
+        gh = Path(gh)
+        allowed = set(canon_destinations())
+        want = [p for p in dict.fromkeys(paths or ()) if isinstance(p, str) and p in allowed]
+        if not want:
+            return []
+        why = _commit_blocked(gh)
+        if why:
+            log_debug("canon", f"canon commit skipped ({why}): {', '.join(want)}")
+            return []
+        todo = _committable(gh, want)
+        if not todo:
+            return []
+        added = _run(gh, "add", "--", *todo)
+        if added.returncode != 0:
+            log_debug("canon", f"git add failed: {(added.stderr or added.stdout or '').strip()[:300]}")
+            return []
+        from _git import identity_args, identity_host  # type: ignore
+        host = host or identity_host()
+        msg = _message(subject, todo, statuses or {}, host)
+        done = _run(gh, *identity_args(host), "commit", "-q", "--only", "-m", msg, "--", *todo)
+        if done.returncode != 0:
+            log_debug("canon", f"git commit failed: {(done.stderr or done.stdout or '').strip()[:300]}")
+            return []
+        log_debug("canon", f"committed {', '.join(todo)}")
+        return todo
+    except Exception as exc:
+        log_debug("canon", f"canon commit failed: {exc}")
+        return []
+
+
+def commit_delivered(gh: "Path | str", results, host: "str | None" = None) -> list:
+    """Commit exactly the destinations `ensure()` reported `installed` or
+    `updated` (incl. `.gitattributes` when it changed) — a `current` or
+    `user-modified` file is never committed by this helper. The caller holds the
+    sync lock. See commit_paths()."""
+    statuses: dict = {}
+    for item in results or ():
+        try:
+            dst, status = item
+        except (TypeError, ValueError):
+            continue
+        if status in DELIVERED and isinstance(dst, str):
+            statuses.setdefault(dst, status)
+    if not statuses:
+        return []
+    return commit_paths(gh, list(statuses), host, statuses=statuses)
+
+
+def untracked(gh: "Path | str") -> list:
+    """The canon destinations git reports as untracked and not ignored (CANON
+    order); [] when the vault is not a git repository. Never raises."""
+    try:
+        gh = Path(gh)
+        if not (gh / ".git").is_dir():
+            return []
+        dsts = canon_destinations()
+        r = _run(gh, "ls-files", "--others", "--exclude-standard", "-z", "--", *dsts)
+        if r.returncode != 0:
+            return []
+        found = {p for p in r.stdout.split("\0") if p}
+        return [p for p in dsts if p in found]
+    except Exception as exc:
+        log_debug("canon", f"untracked canon check failed: {exc}")
+        return []
+
+
+def commit_untracked(gh: "Path | str", host: "str | None" = None) -> list:
+    """Defence in depth for a pull (auto-sync, right before `stash push -u`):
+    commit every canon destination that is still untracked — left by an earlier
+    build that did not commit, by bootstrap-load before a remote existed, or
+    copied by hand — so the stash never carries one. See commit_paths()."""
+    paths = untracked(gh)
+    if not paths:
+        return []
+    return commit_paths(gh, paths, host, subject=TRACK_SUBJECT,
+                        statuses={p: "untracked" for p in paths})
+
+
 # ── shipped-version hashes ────────────────────────────────────────────────
 
 def _history_blobs(root: Path, rel: str) -> list:
@@ -323,15 +534,21 @@ def _cli(argv=None) -> int:
         return 1
     # the sync lock: a hook-spawned pull may be running beside an interactive
     # /mem-install — wait for it rather than write next to it (lock order
-    # sync → canon, as in auto-sync)
+    # sync → canon, as in auto-sync). What it delivers is committed under the
+    # same lock (review safety-sync#1), never left untracked for the next pull.
     try:
         with file_lock("sync", timeout=CLI_SYNC_TIMEOUT):
             results = ensure(gh)
+            committed = commit_delivered(gh, results)
     except TimeoutError:
         print("a sync is in progress (sync lock held) — run _canon.py again in a moment", file=sys.stderr)
         return 1
     for dst, status in results:
         print(f"{dst}\t{status}")
+    if committed:
+        print(f"committed {len(committed)} delivered file(s) to the vault's local git history "
+              f"({DELIVER_SUBJECT}); a configured remote gets it with the next full sync",
+              file=sys.stderr)
     return 0
 
 

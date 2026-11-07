@@ -11,7 +11,7 @@ The wizard for a fresh v3.0 install. Run when the user has the plugin installed 
 
 If `~/.gowth-mem/shared/AGENTS.md` already exists, this is a re-run or an upgrade — do NOT scaffold or copy anything. Read `~/.gowth-mem/settings.json` `layout_version`:
 
-- `layout_version = 3`: already installed. Run Step 4b (canon delivery — idempotent), print `[mem-install] already on v3.0` and stop. Suggest `/mem-ops config` to change remote, `/mem-sync` to sync.
+- `layout_version = 3`: already installed. Deliver the canon pull-first: `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/auto-sync.py" --pull-only` (pulls, then delivers and commits what it delivered under one sync lock; a vault with no remote gets it without a pull) — not Step 4b's bare CLI, which would deliver before the pull. Non-zero exit: offline (the canon waits for the next good pull) or a conflict (`/mem-sync resolve`); with `GOWTH_MEM_OFF` set run `/mem-sync`, then Step 4b. Print `[mem-install] already on v3.0` and stop. Suggest `/mem-ops config` to change remote, `/mem-sync` to sync.
 - `layout_version < 3`: **v2 → v3 upgrade**. Dry-run `/mem-ops migrate-v3` so the user sees what would change, then ask to proceed. On yes run `/mem-ops migrate-v3`; otherwise abort with `[mem-install] upgrade declined — re-run when ready`.
 - `settings.json` missing but vault exists: corrupt install — refuse and suggest `/mem-doctor`.
 
@@ -70,7 +70,7 @@ This creates `.git`, sets up `origin`, commits, attempts pull (allowing unrelate
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/_canon.py"
 ```
 
-Copies the rules + reference canon (`shared/memory-rules.md`, `shared/research/{data-quality,extraction-reuse,provenance}-2026.md`) into the vault and adds `workspaces/*/docs/questions.md merge=union` to its `.gitattributes`. One line per file: `installed`, `current`, `updated` (matched an older shipped version) or `user-modified` (never overwritten). It runs AFTER the first sync on purpose: on a second machine the pull brings the first machine's copy, which `_canon.py` then updates in place — copying first would collide with it (add/add). Run it also for a local-only vault (no remote).
+Copies the rules + reference canon (`shared/memory-rules.md`, `shared/research/{data-quality,extraction-reuse,provenance}-2026.md`) into the vault and adds `workspaces/*/docs/questions.md merge=union` to its `.gitattributes`. One line per file: `installed`, `current`, `updated` (matched an older shipped version) or `user-modified` (never overwritten). In a git vault it commits exactly the files it installed or updated (never left untracked for the next pull's stash); the next full sync pushes that commit. It runs AFTER the first sync on purpose: on a second machine the pull brings the first machine's copy, which `_canon.py` then updates in place — copying first would collide with it (add/add). Run it also for a local-only vault (no remote).
 
 ## Step 5 — confirm + suggest next
 

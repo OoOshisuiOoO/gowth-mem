@@ -233,6 +233,33 @@ def _stash_if_dirty(gh: Path, quiet: bool, host: Optional[str] = None):
     return _STASH_MSG
 
 
+_NO_CHECKOUT = " already exists, no checkout"
+_UNTRACKED_RESTORE_FAILED = "error: could not restore untracked files from stash"
+
+
+def _untracked_collisions(gh: Path, stderr: str, stdout: str) -> list:
+    """The paths of a failed `stash pop` whose ONLY problem was untracked files
+    from the stash that the pull brought as tracked files — every stderr line is
+    `<path> already exists, no checkout` or git's "could not restore untracked
+    files" summary, stdout reports no CONFLICT and git lists no unmerged path.
+    [] for any other failure (a real conflict keeps its own message).
+
+    Captured on git 2.33 and 2.54 (both print the same stderr; stdout carries
+    "The stash entry is kept…", plus `git status` on 2.54)."""
+    paths: list = []
+    for raw in (stderr or "").splitlines():
+        line = raw.strip()
+        if not line or line == _UNTRACKED_RESTORE_FAILED:
+            continue
+        if line.endswith(_NO_CHECKOUT) and len(line) > len(_NO_CHECKOUT):
+            paths.append(line[: -len(_NO_CHECKOUT)])
+            continue
+        return []
+    if not paths or "CONFLICT" in (stdout or "") or _unmerged_paths(gh):
+        return []
+    return paths
+
+
 def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
     """Pop the auto-stash. Returns False when the tree is left needing attention.
 
@@ -241,6 +268,10 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
     markers, and the caller still reported success. The next commit then published the
     corruption. Now the failure is propagated so `pull_rebase` can return 2 and the
     marker guard in `commit_local` has a chance to refuse.
+
+    Review safety-sync#1: a pop that failed only because untracked files from the
+    stash collide with files the pull brought ("already exists, no checkout")
+    writes no markers and blocks no commit — it says that instead.
     """
     if not pull_ok:
         git_dir = gh / ".git"
@@ -259,6 +290,21 @@ def _restore_stash(gh: Path, pull_ok: bool, quiet: bool) -> bool:
         log("sync: pull failed before any rebase — restoring the stashed changes", quiet=quiet)
     r = run_git(gh, "stash", "pop", check=False)
     if r.returncode != 0:
+        collided = _untracked_collisions(gh, r.stderr or "", r.stdout or "")
+        if collided:
+            shown = ", ".join(collided[:3]) + (f" (+{len(collided) - 3} more)" if len(collided) > 3 else "")
+            log(
+                f"sync: stash pop could not restore {len(collided)} untracked file(s) from the "
+                f"stash because the pull brought tracked files at the same path(s) ({shown}; "
+                f"'already exists, no checkout'). No conflict markers were written. The stash "
+                f"entry '{_STASH_MSG}' was kept: it holds this machine's copy of those files "
+                f"and, when git stopped before re-applying them (git 2.33 does), your "
+                f"uncommitted changes to tracked files too. Check: cd {gh} && git status && "
+                f"git stash show -p",
+                quiet=quiet, err=True,
+            )
+            log_debug("auto-sync", f"stash pop: untracked collisions kept the stash: {collided}")
+            return False
         err = (r.stderr or r.stdout or "").strip()[:300]
         log(
             f"sync: stash pop CONFLICTED — the working tree now holds conflict "
@@ -462,8 +508,27 @@ def pull_rebase(gh: Path, branch: str, quiet: bool,
 PULL_TIMEOUT = 120.0
 
 
+def _commit_untracked_canon(gh: Path, quiet: bool, host: Optional[str] = None) -> None:
+    """Review safety-sync#1 (defence in depth): a canon file that is still
+    UNTRACKED — delivered by an earlier v4.9 build, by bootstrap-load before a
+    remote existed, or copied by hand — would ride the `stash push -u` below.
+    When the pull brings a peer's tracked copy, `stash pop` fails with "already
+    exists, no checkout" and strands the stash (git 2.33 leaves the user's
+    uncommitted edits to tracked files only in it). Commit exactly those canon
+    paths first (`_canon.commit_untracked`: never with a rebase/merge in
+    progress, unmerged paths or no commit yet). Never raises."""
+    try:
+        from _canon import commit_untracked  # type: ignore
+        done = commit_untracked(gh, host)
+        if done:
+            log(f"sync: committed {len(done)} untracked canon file(s) before the pull", quiet=quiet)
+    except Exception as e:
+        log_debug("auto-sync", f"untracked canon commit failed: {e}")
+
+
 def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
                        token: Optional[str], saved: list, host: Optional[str] = None) -> int:
+    _commit_untracked_canon(gh, quiet, host)
     stash_ref = _stash_if_dirty(gh, quiet, host)
     if stash_ref is False:
         return 1
@@ -503,18 +568,25 @@ def _pull_rebase_inner(gh: Path, branch: str, quiet: bool, remote: str,
     return rc
 
 
-def ensure_canon(gh: Path, quiet: bool) -> None:
+def ensure_canon(gh: Path, quiet: bool, host: Optional[str] = None) -> None:
     """v4.9 (spec §3.5): deliver the shipped rules + research canon and the gap
-    ledger's `.gitattributes` union line. Called only where no pull can race
-    it — right after a successful pull while the sync lock is still held, or
-    when no remote is configured — so a peer's older canon arrives first and
-    is then updated in place (a tracked modification), never an add/add.
+    ledger's `.gitattributes` union line, then COMMIT exactly what was installed
+    or updated (`_canon.commit_delivered`, gowth-mem identity — review
+    safety-sync#1). Called only under the sync lock and where no pull can race
+    it — right after a successful pull, or when no remote is configured — so a
+    peer's older canon arrives first and is then updated in place, and nothing
+    delivered is left untracked for the next pull's `stash push -u` (a peer's
+    identical delivery rebases to an empty commit, which git drops).
     Never raises."""
     try:
-        from _canon import ensure  # type: ignore
-        for dst, status in ensure(gh):
+        from _canon import commit_delivered, ensure  # type: ignore
+        results = ensure(gh)
+        for dst, status in results:
             if status in ("installed", "updated"):
                 log(f"sync: canon {dst} {status}", quiet=quiet)
+        done = commit_delivered(gh, results, host)
+        if done:
+            log(f"sync: committed the delivered canon ({len(done)} file(s))", quiet=quiet)
     except Exception as e:
         log_debug("auto-sync", f"canon delivery failed: {e}")
 
@@ -578,7 +650,13 @@ def main() -> int:
 
     if not remote:
         log("sync: no remote configured — run /mem-ops config or /mem-install", quiet=quiet)
-        ensure_canon(gh, quiet)          # nothing is pulled here, nothing can race it
+        # nothing is pulled here, nothing can race the delivery; the sync lock
+        # keeps its commit away from a concurrent --commit-only
+        try:
+            with file_lock("sync", timeout=5.0):
+                ensure_canon(gh, quiet, host)
+        except TimeoutError as e:
+            log_debug("auto-sync", f"canon delivery skipped — sync lock held: {e}")
         return 0
 
     # SessionStart pull-only path must never block > ~8s. Full sync is more
@@ -592,7 +670,7 @@ def main() -> int:
             if args.pull_only:
                 rc = pull_rebase(gh, branch, quiet, remote, token, host=host)
                 if rc == 0:
-                    ensure_canon(gh, quiet)      # after the pull, still under the lock
+                    ensure_canon(gh, quiet, host)    # after the pull, still under the lock
                 return rc
 
             # Default & --pull-rebase-push: commit local, pull, push.
@@ -600,8 +678,8 @@ def main() -> int:
             rc = pull_rebase(gh, branch, quiet, remote, token, host=host)
             if rc != 0:
                 return rc
-            ensure_canon(gh, quiet)              # after the pull, still under the lock
-            return push(gh, branch, quiet, remote, token)
+            ensure_canon(gh, quiet, host)            # after the pull, still under the lock
+            return push(gh, branch, quiet, remote, token)  # the canon commit goes out with it
     except TimeoutError as e:
         log_debug("auto-sync", f"sync lock timeout (pull_only={args.pull_only}): {e}")
         log("sync: skipped — another session holds the sync lock", quiet=quiet, err=True)
