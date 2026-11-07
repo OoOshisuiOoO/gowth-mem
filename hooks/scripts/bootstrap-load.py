@@ -197,7 +197,7 @@ def prepare(ws: str, settings: dict) -> None:
         try:
             from _memfile import memfile_path, sources_changed, write  # type: ignore
             if not memfile_path(ws).is_file() or sources_changed(ws):
-                write(ws)
+                write(ws, settings=settings)
         except Exception as exc:
             log_debug("bootstrap-load", f"memfile refresh failed: {exc}")
     _ensure_canon_unsynced()
@@ -212,7 +212,7 @@ def _report(ws: str, cwd: str, settings: dict) -> int:
         # v4.9: the report still runs (an explicit CLI); the hooks do not.
         print(HOOKS_OFF_NOTICE)
     mode_ = mode(ws, cwd, settings)
-    block = render(ws)
+    block = render(ws, settings=settings)
     print(f"bootstrap (v4.8) workspace={ws} mode={mode_} cwd={cwd or '(none)'}")
     p = memfile_path(ws)
     free_lines = 0
@@ -253,9 +253,10 @@ def _report(ws: str, cwd: str, settings: dict) -> int:
         daily = st.get("recall_daily") if isinstance(st.get("recall_daily"), dict) else {}
         seen = sum(int((d or {}).get("prompts", 0) or 0) for d in daily.values() if isinstance(d, dict))
         got = sum(int((d or {}).get("injected", 0) or 0) for d in daily.values() if isinstance(d, dict))
+        cards = sum(int((d or {}).get("cards", 0) or 0) for d in daily.values() if isinstance(d, dict))
         if seen:
-            print(f"recall rate: {got}/{seen} prompts injected ({100 * got // seen}%) over "
-                  f"{len(daily)} day(s) of recall_daily")
+            print(f"recall rate: {got}/{seen} prompts injected ({100 * got // seen}%), "
+                  f"{cards} with a topic card, over {len(daily)} day(s) of recall_daily")
     except Exception as exc:
         print(f"recall: (no telemetry: {exc})")
     # v4.9 daily curator: one line per workspace (last run, misses, open

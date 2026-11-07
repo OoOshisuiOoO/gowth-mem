@@ -233,7 +233,10 @@ def _seen_of(entry, now: int):
     v = entry.get("seen")
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    v = int(v)
+    try:
+        v = int(v)
+    except (OverflowError, ValueError):  # inf / -inf / NaN (json accepts all three)
+        return None
     if v <= 0 or v > now + 86400:
         return None
     return v
@@ -631,7 +634,7 @@ def _post_turn(ws: str, settings: dict) -> None:
             from _memfile import sources_changed, write  # type: ignore
             if sources_changed(ws):
                 changed = True
-                write(ws)
+                write(ws, settings=settings)
         except Exception as e:
             log_debug("auto-journal", f"memfile refresh failed: {e}")
     _sanitize_memory_dirs()
