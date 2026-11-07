@@ -14,15 +14,22 @@ adapted to its v3 file types — deterministic, no LLM.
 
 Checks (per v3 file type):
   <slug>/00-README.md (MOC)      → frontmatter needs: slug, title, type, status
+                                   v4.9, only when a card marker exists:
+                                   card-markers:<unbalanced|duplicate>, card-outside-tldr,
+                                   card-over-budget:<n>/<max>, card-bad-heading:<line>,
+                                   card-entry-line:<line>, card-control-token
   <slug>/YYYY-MM-DD-<aspect>.md  → frontmatter needs: type=aspect, date, topic, slug, title
   <slug>/lessons.md              → light: has a `## ` entry heading
   Naming  → topic slug + aspect slug match ^[a-z0-9][a-z0-9-]{0,59}$
   Path    → topic files live inside a topic folder (not ws-root, not reserved subdir)
 
 CLI:
-  python3 _validate.py --scan [--ws X | --all] [--json]   # report violations
+  python3 _validate.py --scan [--ws X | --all] [--json] [--cards]  # report violations
+                                                          # (--cards: also card-none /
+                                                          #  card-todo-summary per README)
   python3 _validate.py --fix  [--ws X | --all]            # deterministically add
                                                           # missing aspect frontmatter
+                                                          # (per file, under entries-<ws>)
 """
 from __future__ import annotations
 
@@ -36,9 +43,10 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import atomic_write, safe_write  # type: ignore
 from _home import (  # type: ignore
-    RESERVED_SUBDIRS, active_workspace, gowth_home, list_workspaces, workspace_dir,
+    RESERVED_SUBDIRS, active_workspace, gowth_home, list_workspaces, read_settings,
+    workspace_dir,
 )
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,59}$")
@@ -86,7 +94,23 @@ def _classify(p: Path, ws_root: Path) -> str | None:
     return None
 
 
-def validate_file(p: Path, ws_root: Path) -> list[str]:
+def _card_issues(text: str, settings: dict | None, cards: bool) -> list[str]:
+    """v4.9 topic-card findings for a README: the `card-*` structure checks
+    whenever a marker exists; with `cards` also `card-none` (no card) and
+    `card-todo-summary` (the TL;DR one-liner is missing or still the TODO)."""
+    from _card import TODO_SUMMARY, card_state, summary_text, validate_issues  # type: ignore
+    issues = validate_issues(text, settings)
+    if cards:
+        if card_state(text)[0] == "none":
+            issues.append("card-none")
+        summ = summary_text(text)
+        if not summ or summ == TODO_SUMMARY:
+            issues.append("card-todo-summary")
+    return issues
+
+
+def validate_file(p: Path, ws_root: Path, settings: dict | None = None,
+                  cards: bool = False) -> list[str]:
     kind = _classify(p, ws_root)
     if kind is None:
         return []
@@ -109,6 +133,9 @@ def validate_file(p: Path, ws_root: Path) -> list[str]:
         if "## " not in text:
             issues.append("lessons-no-entries")
         return issues
+
+    if kind == "moc":
+        issues.extend(_card_issues(text, settings, cards))
 
     # Frontmatter required fields (moc / aspect).
     fm = _frontmatter(text)
@@ -136,11 +163,12 @@ def _iter_topic_files(ws: str) -> list[Path]:
     return out
 
 
-def scan_workspace(ws: str) -> list[dict]:
+def scan_workspace(ws: str, cards: bool = False, settings: dict | None = None) -> list[dict]:
     root = workspace_dir(ws)
+    s = settings if isinstance(settings, dict) else read_settings()
     out: list[dict] = []
     for p in _iter_topic_files(ws):
-        issues = validate_file(p, root)
+        issues = validate_file(p, root, s, cards)
         if issues:
             out.append({"file": str(p), "ws": ws, "issues": issues})
     return out
@@ -153,6 +181,10 @@ def fix_aspect(p: Path) -> bool:
     → add only the missing required fields + correct a wrong `type`. Every value
     derives from the path (topic=parent folder, date+aspect=filename, slug=topic-aspect,
     title=first H1 or aspect titleized). Preserves existing fields/order. Idempotent.
+
+    v4.9: lock-free by design — callers hold `entries-<ws>` (the append path
+    inside its critical section, `--fix` per file); `flock` is not re-entrant.
+    Writes through `safe_write` (the file syncs).
     """
     m = DATED_ASPECT_RE.match(p.name)
     if not m:
@@ -179,7 +211,7 @@ def fix_aspect(p: Path) -> bool:
     if not text.startswith("---"):
         block = "---\n" + "".join(
             f"{k}: {derived.get(k, extras.get(k, ''))}\n" for k in field_order) + "---\n\n"
-        atomic_write(p, block + text.lstrip("\n"))
+        safe_write(p, block + text.lstrip("\n"))
         return True
 
     # Partial frontmatter: merge in missing required fields + fix wrong type.
@@ -207,7 +239,7 @@ def fix_aspect(p: Path) -> bool:
             changed = True
     if not changed:
         return False
-    atomic_write(p, "---\n" + "\n".join(out_lines) + "\n---" + body)
+    safe_write(p, "---\n" + "\n".join(out_lines) + "\n---" + body)
     return True
 
 
@@ -524,6 +556,17 @@ def _prune_junk(ws: str) -> int:
     return removed
 
 
+def _fix_locked(ws: str, p: Path):
+    """`fix_aspect(p)` under `entries-<ws>`: True/False = changed or not,
+    None = skipped (the lock was not free within 5 s — never fixed unlocked)."""
+    from _topic import EntriesLockTimeout, entries_lock  # type: ignore
+    try:
+        with entries_lock(ws):
+            return fix_aspect(p)
+    except EntriesLockTimeout:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="File-level schema validator (vault-keeper-style).")
     ap.add_argument("--scan", action="store_true")
@@ -533,12 +576,20 @@ def main() -> int:
     ap.add_argument("--ws")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--cards", action="store_true",
+                    help="v4.9: also list card-less topics and TODO TL;DR summaries")
     args = ap.parse_args()
 
     if not gowth_home().is_dir():
         print("no ~/.gowth-mem directory")
         return 0
     wss = list_workspaces() if args.all else [args.ws or active_workspace()]
+    if not args.all:
+        from _topic import WS_RE  # type: ignore
+        if not WS_RE.match(wss[0] or ""):
+            # v4.9: `--ws ../x` used to walk (and `--fix` to write) outside the vault.
+            print(f"validate: rejected:bad_ws {wss[0]!r}")
+            return 0
 
     if args.fix or args.prune_junk:
         # Prune FIRST: --fix stamps `slug:` onto aspects that had none, and
@@ -548,19 +599,28 @@ def main() -> int:
             removed = sum(_prune_junk(ws) for ws in wss)
             print(f"validate --prune-junk: removed {removed} junk README-only folder(s).")
         if args.fix:
-            fixed = 0
+            fixed = skipped = 0
             for ws in wss:
                 root = workspace_dir(ws)
                 for p in _iter_topic_files(ws):
-                    if _classify(p, root) == "aspect" and fix_aspect(p):
+                    if _classify(p, root) != "aspect":
+                        continue
+                    changed = _fix_locked(ws, p)
+                    if changed is None:
+                        skipped += 1
+                        print(f"  skipped (entries lock busy — re-run later): "
+                              f"{p.relative_to(gowth_home())}")
+                    elif changed:
                         fixed += 1
                         print(f"  +frontmatter: {p.relative_to(gowth_home())}")
-            print(f"validate --fix: added frontmatter to {fixed} aspect file(s).")
+            print(f"validate --fix: added frontmatter to {fixed} aspect file(s)."
+                  + (f" {skipped} skipped (locked)." if skipped else ""))
         return 0
 
     findings: list[dict] = []
+    settings = read_settings()
     for ws in wss:
-        findings.extend(scan_workspace(ws))
+        findings.extend(scan_workspace(ws, cards=args.cards, settings=settings))
         for j in junk_topic_folders(ws):
             findings.append({"file": str(Path(j["folder"]) / _README), "ws": ws,
                              "issues": [f"junk-topic-folder:{j['minted_from']}"]})

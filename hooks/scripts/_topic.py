@@ -28,6 +28,14 @@ reflections, evergreen ledger) that need the folder Path WITHOUT creating a
 dated aspect file. Shares `ensure_topic_folder` with `route()` so the folder
 exists when callers append to `lessons.md`.
 
+v4.9: every read-modify-write of a workspace topic/docs file holds
+`entries_lock(ws)` (`file_lock(f"entries-{ws}", 5)`) from its read to its
+write — `append_entry_status` (folder + body + tag merge + fix_aspect as one
+critical section), `_lesson`, `_tags --backfill`, `_validate --fix`; a timeout
+is `rejected:lock_timeout`, never an unlocked write. `--append --topic <slug>`
+forces an EXISTING topic (no creation; `rejected:no_topic` otherwise). Routing
+never scores a README's topic card (`_card.strip_card`).
+
 Section mapping (from line prefix):
   [exp]/[reflection] → "## [exp]"
   [ref]/[tool]       → "## [ref]"
@@ -39,13 +47,16 @@ from __future__ import annotations
 
 import re
 import sys
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import safe_write  # type: ignore
+from _card import strip_card  # type: ignore
 from _dedup import _extract_tag, is_duplicate  # type: ignore
 from _frontmatter import parse_file  # type: ignore
+from _lock import file_lock  # type: ignore
 from _tags import (  # type: ignore
     apply_inline_tags,
     extract_tags,
@@ -161,6 +172,39 @@ def validate_workspace(ws: str) -> str:
     if not isinstance(ws, str) or not WS_RE.match(ws):
         raise ValueError(f"invalid workspace: {ws!r} (must match {WS_RE.pattern})")
     return ws
+
+
+# v4.9 (spec §0, §2.6): the shared entries lock. Every read-modify-write of a
+# workspace topic or docs file holds it from its read to its write, so two
+# writers (two sessions' teammates, a lesson, a prune, a backfill) can no
+# longer interleave and drop each other's entries. `flock` locks are per open
+# file, so the lock is NOT re-entrant: helpers called inside it
+# (`_validate.fix_aspect`, `merge_frontmatter_tags`) never take it themselves.
+ENTRIES_LOCK_TIMEOUT = 5.0
+
+
+class EntriesLockTimeout(Exception):
+    """`entries-<ws>` could not be taken in time (never raised from inside)."""
+
+
+@contextmanager
+def entries_lock(ws: str, timeout: float | None = None):
+    """`file_lock(f"entries-{ws}", timeout)`; EntriesLockTimeout when it cannot
+    be taken — distinct from a TimeoutError (an OSError) raised by the work.
+    The raw workspace name is used (other writers take the same
+    `f"entries-{ws}"`); only a name that is no single path segment is refused.
+    `timeout` defaults to ENTRIES_LOCK_TIMEOUT (read at call time)."""
+    if not isinstance(ws, str) or ws in ("", ".", "..") or "/" in ws or "\\" in ws or "\0" in ws:
+        raise ValueError(f"invalid workspace for a lock name: {ws!r}")
+    cm = file_lock(f"entries-{ws}", ENTRIES_LOCK_TIMEOUT if timeout is None else timeout)
+    try:
+        cm.__enter__()
+    except TimeoutError as exc:
+        raise EntriesLockTimeout(str(exc)) from exc
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
 
 
 def _validate_slug(slug: str) -> str:
@@ -426,6 +470,10 @@ def _pick_topic(content: str, ws: str,
             text = f.read_text(errors="ignore")
         except Exception:
             continue
+        if f.name == TOPIC_README:
+            # v4.9: a topic card is a dense summary (routing tables, source
+            # paths); scored, it would pull unrelated entries into its topic.
+            text = strip_card(text)
         slug_index.setdefault(slug, f)
         overlap = len(kws & _extract_keywords(text))
         if overlap > best_overlap:
@@ -560,13 +608,30 @@ def derive_topic_folder(content: str, ws: str | None = None,
     return _materialise(slug, folder, ws)
 
 
-def _plan(content: str, ws: str, s: dict) -> tuple[str, Path | None, Path | None, str | None]:
+def _forced_topic(topic: str, ws: str) -> Path | None:
+    """`--topic <slug>`: the EXISTING topic folder it names, or None — never
+    created. The guards of `_lesson.py --topic` (`resolve_topic_folder`):
+    an invalid slug, a domain folder, an ambiguous nested name, a folder that
+    resolves outside the workspace (symlink) are refused; so is a name with no
+    topic folder (no landing) behind it."""
+    try:
+        folder = resolve_topic_folder(topic, ws=ws, ensure=False)
+    except ValueError:
+        return None
+    if not is_topic_folder(folder) or not _inside_workspace(folder, ws):
+        return None
+    return folder
+
+
+def _plan(content: str, ws: str, s: dict,
+          forced: Path | None = None) -> tuple[str, Path | None, Path | None, str | None]:
     """The routing DECISION — reads the vault, never writes: `(slug, folder,
     side, section_hint)`. `side` is the side-channel file for `[secret-ref]` /
     `[skill-ref]` (nothing is ensured for those); otherwise `folder` is the
     existing topic folder to write into, or None to create `<ws>/<slug>/`.
     Split from the side effects (`_materialise`) so a write can be refused
-    before anything is created."""
+    before anything is created. `forced` (an existing topic folder, from
+    `--topic`) replaces the keyword match; side-channel types keep their file."""
     default_topic = _default_topic(s)
 
     first_line = content.splitlines()[0] if content else ""
@@ -582,14 +647,16 @@ def _plan(content: str, ws: str, s: dict) -> tuple[str, Path | None, Path | None
         skill_slug = _derive_skill_slug(content) or default_topic
         return skill_slug, None, skills_dir(ws) / f"{skill_slug}.md", None
 
+    if forced is not None:
+        return forced.name, forced, None, section_hint
     slug, folder = _pick_topic(content, ws, s)
     return slug, folder, None, section_hint
 
 
-def _planned_target(content: str, ws: str, s: dict):
+def _planned_target(content: str, ws: str, s: dict, forced: Path | None = None):
     """`(slug, folder, side, section_hint, target)` — the file an entry would
     be appended to, computed without creating anything."""
-    slug, folder, side, hint = _plan(content, ws, s)
+    slug, folder, side, hint = _plan(content, ws, s, forced)
     target = side if side is not None else _today_aspect_path(
         folder if folder is not None else workspace_dir(ws) / slug, derive_aspect_slug(content))
     return slug, folder, side, hint, target
@@ -649,19 +716,31 @@ def append_entry(content: str, ws: str | None = None,
 
 
 def append_entry_status(content: str, ws: str | None = None,
-                        settings: dict | None = None) -> tuple[Path, str]:
+                        settings: dict | None = None, *,
+                        topic: str | None = None) -> tuple[Path, str]:
     """v4.7.6: `append_entry` with the outcome spelled out — `written`,
     `duplicate` or `rejected:<gate rule>` — and decided BEFORE anything is
     created. The old order routed first, so a refused entry still left a
     README-only topic folder behind (one no junk check can prove), and the
     CLI printed `duplicate` for a gate refusal: the memory teammate then
     no-op'd an entry it could have repaired (e.g. by adding its `Source:`).
+
+    v4.9: `topic` forces an EXISTING topic folder (`rejected:no_topic` when
+    there is none — nothing is created); the folder ensure, the body write,
+    the frontmatter tag merge and `fix_aspect` run as ONE critical section
+    under `entries_lock(ws)` (`rejected:lock_timeout` when it cannot be taken
+    in 5 s — nothing is written then).
     """
     ws = ws or active_workspace()
     validate_workspace(ws)  # reject junk ws BEFORE any mkdir
     s = settings if isinstance(settings, dict) else read_settings()
+    forced = None
+    if topic is not None:
+        forced = _forced_topic(topic, ws)
+        if forced is None:
+            return workspace_dir(ws), "rejected:no_topic"
     try:
-        slug, folder, side, _section, target = _planned_target(content, ws, s)
+        slug, folder, side, _section, target = _planned_target(content, ws, s, forced)
     except UnroutableError as exc:   # no routable topic name (e.g. every candidate is a domain)
         from _debug import log_debug  # type: ignore
         log_debug("topic", f"unroutable: {exc}")
@@ -685,16 +764,9 @@ def append_entry_status(content: str, ws: str | None = None,
     except Exception:
         pass  # gate is best-effort; never block a write on gate internals failing
 
-    if side is None:
-        try:
-            target = _today_aspect_path(_materialise(slug, folder, ws), derive_aspect_slug(content))
-        except UnroutableError as exc:   # e.g. the folder resolves outside the workspace
-            from _debug import log_debug  # type: ignore
-            log_debug("topic", f"unroutable: {exc}")
-            return target, "rejected:unroutable"
-
     # v4.0: deterministic auto-tagging. Append inline #tags to the entry's first
-    # line, then union them into the aspect file's frontmatter tags:.
+    # line, then union them into the aspect file's frontmatter tags:. Pure —
+    # computed before the lock so the critical section stays short.
     entry = content
     tags: list[str] = []
     if tags_enabled(s):
@@ -704,6 +776,39 @@ def append_entry_status(content: str, ws: str | None = None,
         except Exception:
             entry = content  # tagging is best-effort; never block a write
 
+    try:
+        with entries_lock(ws):
+            if side is None:
+                try:
+                    target = _today_aspect_path(_materialise(slug, folder, ws),
+                                                derive_aspect_slug(content))
+                except UnroutableError as exc:   # e.g. the folder resolves outside the workspace
+                    from _debug import log_debug  # type: ignore
+                    log_debug("topic", f"unroutable: {exc}")
+                    return target, "rejected:unroutable"
+            _write_entry_locked(target, entry, tags, s)
+    except EntriesLockTimeout:
+        from _debug import log_debug  # type: ignore
+        log_debug("topic", f"entries lock timeout ({ws}): {content[:80]}")
+        return target, "rejected:lock_timeout"
+
+    # v4.3: refresh the index for just this file so the entry is recallable NOW.
+    # Nothing on the write path used to touch index.db, so a captured memory stayed
+    # invisible to /mem-recall until a manual /mem-ops reindex (live index: 5 days stale).
+    try:
+        from _index import reindex_paths  # type: ignore
+        reindex_paths([target])
+    except Exception:
+        pass  # best-effort; a stale index must never fail a write
+
+    return target, "written"
+
+
+def _write_entry_locked(target: Path, entry: str, tags: list, s: dict) -> None:
+    """The read-modify-write of one routed entry. The caller holds
+    `entries_lock(ws)`: body, frontmatter tag union and `fix_aspect` are ONE
+    critical section, so a concurrent writer can never interleave between
+    them and lose an entry."""
     if target.is_file():
         existing = target.read_text(errors="ignore")
         body = existing.rstrip() + "\n" + entry.rstrip() + "\n"
@@ -732,17 +837,6 @@ def append_entry_status(content: str, ws: str | None = None,
             fix_aspect(target)
         except Exception:
             pass  # best-effort; never block a write on frontmatter repair
-
-    # v4.3: refresh the index for just this file so the entry is recallable NOW.
-    # Nothing on the write path used to touch index.db, so a captured memory stayed
-    # invisible to /mem-recall until a manual /mem-ops reindex (live index: 5 days stale).
-    try:
-        from _index import reindex_paths  # type: ignore
-        reindex_paths([target])
-    except Exception:
-        pass  # best-effort; a stale index must never fail a write
-
-    return target, "written"
 
 
 def _derive_skill_slug(content: str) -> str | None:
@@ -806,6 +900,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--route")
     ap.add_argument("--append", help="route + cross-file dedup + atomic append (v3.4)")
+    ap.add_argument("--topic", help="with --append: write into this EXISTING topic folder "
+                                    "(never created; rejected:no_topic otherwise)")
     ap.add_argument("--ws")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--ensure")
@@ -815,21 +911,27 @@ if __name__ == "__main__":
     ap.add_argument("--parents", default="", help="comma-separated parent segments for --ensure")
     ap.add_argument("--summary", default="", help="cốt lõi 1-line summary for --ensure")
     args = ap.parse_args()
+    _ws = args.ws if args.ws is not None else active_workspace()   # an explicit "" is bad_ws
+    if (args.route or args.append or args.list or args.ensure) and not WS_RE.match(_ws or ""):
+        # v4.9: a junk --ws (or GOWTH_WORKSPACE) is a refusal, not a traceback
+        # — and never a path: `--ws ../..` used to walk / mkdir outside the vault.
+        print("-\trejected:bad_ws")
+        sys.exit(0)
     if args.route:
         # A PREVIEW (/mem-topic route): it must not create the folder it
         # predicts — a previewed gate-reject used to leave permanent junk.
-        slug, _f, _side, section, path = _planned_target(
-            args.route, args.ws or active_workspace(), read_settings())
+        slug, _f, _side, section, path = _planned_target(args.route, _ws, read_settings())
         print(f"{slug}\t{path}\t{section or ''}")
     elif args.append:
-        path, status = append_entry_status(args.append, ws=args.ws)
-        print(f"{path}\t{status}")   # written | duplicate | rejected:<gate rule>
+        path, status = append_entry_status(args.append, ws=_ws, topic=args.topic)
+        # written | duplicate | rejected:<gate rule> | rejected:no_topic | rejected:lock_timeout
+        print(f"{path}\t{status}")
     elif args.list:
-        for t in list_topics(args.ws):
+        for t in list_topics(_ws):
             print(f"{t['slug']:30s} {t['status']:10s} {t['last_touched']:10s} {t['title']}")
     elif args.ensure:
         parents = [p for p in args.parents.split(",") if p.strip()]
-        p = ensure_topic(args.ensure, ws=args.ws, title=args.title,
+        p = ensure_topic(args.ensure, ws=_ws, title=args.title,
                          parents=parents, topic_type=args.type, summary=args.summary)
         print(p)
     else:

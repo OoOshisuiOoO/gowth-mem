@@ -51,6 +51,7 @@ from _home import (  # type: ignore
     shared_dir,
     workspace_dir,
 )
+from _card import drop_marker_lines  # type: ignore  # v4.9 topic-card markers
 from _debug import log_debug  # type: ignore
 from _lock import file_lock  # type: ignore
 from _tags import TAG_TOKEN_RE, strip_tags_text  # type: ignore  # v4.0 keywords + tag-stable hash
@@ -845,6 +846,9 @@ def _index_one(
     # marker). Frontmatter `tags:` are unaffected: `_chunk_keywords` still receives
     # the ORIGINAL text and harvests them into the keywords column.
     body = FRONTMATTER_RE.sub("", text, count=1)
+    # v4.9: a topic card's two marker lines are plumbing, not knowledge — the
+    # card body between them is indexed, `gowth-mem:card updated=…` is not.
+    body = drop_marker_lines(body)
     for ci, (heading, content) in enumerate(split_chunks(body)):
         # v4.0: hash TAG-STRIPPED content so dedup (is_duplicate) matches an
         # entry whether or not it carries inline #tags.
