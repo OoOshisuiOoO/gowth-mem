@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _atomic import atomic_write  # type: ignore
+from _atomic import safe_write  # type: ignore
 from _home import (  # type: ignore
     RESERVED_SUBDIRS,
     gowth_home,
@@ -43,7 +43,6 @@ from _home import (  # type: ignore
     read_settings,
     workspace_dir,
 )
-from _lock import file_lock  # type: ignore
 
 # ── public token regex (used by _index.py, _dedup.py) ────────────────────
 # A stored/inline tag token: `#` + identifier char, then [a-z0-9._-]. Leading `_`
@@ -622,17 +621,34 @@ def _tags_from_entry_lines(text: str, cap: int) -> list[str]:
     return collected
 
 
+def _merged(text: str, cap: int):
+    """The aspect text with its entry-line tags unioned into frontmatter, or
+    None when that changes nothing."""
+    new_tags = _tags_from_entry_lines(text, cap)
+    if not new_tags:
+        return None
+    merged_text = merge_frontmatter_tags(text, new_tags, cap)
+    return None if merged_text == text else merged_text
+
+
 def backfill(ws: str | None = None, apply: bool = False,
              settings: dict | None = None) -> dict:
     """Frontmatter-union backfill over aspect files. Dry-run unless *apply*.
 
     Never rewrites entry lines (historical SHA-1 dedup + git noise). Returns a
-    summary dict: {"files": N, "changed": M, "applied": bool, "plan": [...]}.
+    summary dict: {"files": N, "changed": M, "applied": bool, "plan": [...],
+    "skipped": [paths]}.
+
+    v4.9: each applied file is re-read, merged and written under the shared
+    `entries-<ws>` lock (the lock every topic-file read-modify-write holds); a
+    file whose lock is not free within 5 s is SKIPPED — never written
+    unlocked (the old fallback raced the append path and could drop entries).
     """
     s = settings if isinstance(settings, dict) else read_settings()
     cap = max_frontmatter(s)
     wss = [ws] if ws else list_workspaces()
     plan: list[dict] = []
+    skipped: list[str] = []
     changed = 0
     total = 0
     for w in wss:
@@ -642,24 +658,36 @@ def backfill(ws: str | None = None, apply: bool = False,
                 text = p.read_text(errors="ignore")
             except Exception:
                 continue
-            new_tags = _tags_from_entry_lines(text, cap)
-            if not new_tags:
-                continue
-            merged_text = merge_frontmatter_tags(text, new_tags, cap)
-            if merged_text == text:
+            merged_text = _merged(text, cap)
+            if merged_text is None:
                 continue
             final_tags = _tags_from_frontmatter(merged_text)
             plan.append({"ws": w, "path": str(p), "tags": final_tags})
             changed += 1
-            if apply:
-                try:
-                    with file_lock(f"tags-backfill-{w}", timeout=10.0):
-                        atomic_write(p, merged_text)
-                except Exception:
-                    atomic_write(p, merged_text)
-    if apply and changed:
+            if apply and not _apply_locked(w, p, cap):
+                skipped.append(str(p))
+    if apply and changed > len(skipped):
         _reindex_best_effort()
-    return {"files": total, "changed": changed, "applied": bool(apply), "plan": plan}
+    return {"files": total, "changed": changed, "applied": bool(apply), "plan": plan,
+            "skipped": skipped}
+
+
+def _apply_locked(ws: str, p: Path, cap: int) -> bool:
+    """Re-read, merge and write `p` under `entries-<ws>`; False = skipped
+    (lock not free in time)."""
+    from _topic import EntriesLockTimeout, entries_lock  # type: ignore  # (_topic imports _tags)
+    try:
+        with entries_lock(ws):
+            try:
+                text = p.read_text(errors="ignore")
+            except OSError:
+                return True
+            merged_text = _merged(text, cap)
+            if merged_text is not None:
+                safe_write(p, merged_text)
+    except EntriesLockTimeout:
+        return False
+    return True
 
 
 def _tags_from_frontmatter(text: str) -> list[str]:
@@ -717,6 +745,8 @@ def _cli() -> int:
         print(f"retag [{mode}]: {result['changed']} of {result['files']} aspect file(s) "
               f"{verb} frontmatter tags"
               + ("" if result["applied"] else "  (re-run with --apply to write)"))
+        for sk in result.get("skipped", []):
+            print(f"  skipped (entries lock busy — re-run later): {sk}")
         return 0
 
     ap.print_help()

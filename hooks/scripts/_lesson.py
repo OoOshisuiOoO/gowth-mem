@@ -40,8 +40,8 @@ from _home import (  # type: ignore
 )
 from _tags import extract_tags, format_suffix, max_per_entry, tags_enabled  # type: ignore
 from _topic import (  # type: ignore
-    materialise_topic_folder, plan_topic_folder, resolve_topic_folder,
-    validate_workspace,
+    EntriesLockTimeout, entries_lock, materialise_topic_folder, plan_topic_folder,
+    resolve_topic_folder, validate_workspace,
 )
 
 
@@ -86,6 +86,10 @@ def append_lesson_status(
     folder is created — a refused lesson used to leave a README-only folder
     behind, and the CLI printed "appended:" for it.
 
+    v4.9: the folder ensure and the lessons.md read-modify-write hold
+    `entries_lock(ws)`; `rejected:lock_timeout` (nothing written) when it
+    cannot be taken in 5 s.
+
     Raises ValueError when an explicit `topic` names a domain folder, matches
     several nested topics, or resolves outside the workspace (a symlink) —
     the message names the candidates; nothing is written."""
@@ -120,10 +124,6 @@ def append_lesson_status(
     except Exception:
         pass
 
-    folder = (resolve_topic_folder(topic, ws=ws) if topic
-              else materialise_topic_folder(t_slug, t_folder, ws=ws))
-    target = folder / TOPIC_LESSONS
-
     # v4.0: deterministic auto-tags on the entry's first line (the heading).
     # lessons.md has no frontmatter — inline only (no frontmatter union).
     heading_line = f"## [{today}] {_truncate(symptom)}"
@@ -144,17 +144,23 @@ def append_lesson_status(
         body_lines.append(f"**Source:** {source.strip()}")
     entry = heading + "\n".join(body_lines) + "\n\n"
 
-    if target.is_file():
-        existing = target.read_text(errors="ignore")
-        if "## Entries" in existing:
-            head, _, rest = existing.partition("## Entries\n")
-            new = head + "## Entries\n\n" + entry + rest.lstrip("\n")
-        else:
-            new = existing.rstrip() + "\n\n## Entries\n\n" + entry
-    else:
-        new = HEADER + entry
-
-    safe_write(target, new)
+    try:
+        with entries_lock(ws):
+            folder = (resolve_topic_folder(topic, ws=ws) if topic
+                      else materialise_topic_folder(t_slug, t_folder, ws=ws))
+            target = folder / TOPIC_LESSONS
+            if target.is_file():
+                existing = target.read_text(errors="ignore")
+                if "## Entries" in existing:
+                    head, _, rest = existing.partition("## Entries\n")
+                    new = head + "## Entries\n\n" + entry + rest.lstrip("\n")
+                else:
+                    new = existing.rstrip() + "\n\n## Entries\n\n" + entry
+            else:
+                new = HEADER + entry
+            safe_write(target, new)
+    except EntriesLockTimeout:
+        return planned, "rejected:lock_timeout"
 
     # v4.3: refresh the index for this ledger so the lesson is recallable NOW
     # (see _index.reindex_paths — best-effort, never fails a write).

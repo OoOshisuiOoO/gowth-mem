@@ -18,6 +18,14 @@ Three kinds of MOCs:
 All writes atomic, under `file_lock("moc")`. `## Cross-links (manual)` and
 `## TL;DR` are preserved verbatim across rebuilds.
 
+v4.9: a topic CARD (`_card.py`) lives inside the TL;DR and is kept whole —
+even when a hand edit put a `## ` line inside it, which used to end the TL;DR
+there and drop the rest. Frontmatter keys the rebuild does not render are
+kept verbatim (after the known keys, original order), and a scalar
+`aliases:/parents:/links:/tags:` value is a 1-item list, no longer one item
+per character. A README with no card, no unknown key and no scalar list
+value renders byte-identically to v4.8 (tests/test_moc_golden.py).
+
 F18 lock (2026-05-17): dropped legacy `rebuild_topic_folder_moc` /
 `rebuild_topic_subfolders` (which emitted `_MAP.md` inside topic folders).
 v3 puts the topic MOC inside `00-README.md` instead.
@@ -32,7 +40,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write, safe_write  # type: ignore  # noqa: F401
-from _frontmatter import parse_file  # type: ignore
+from _card import card_region, is_begin_marker, is_end_marker  # type: ignore
+from _frontmatter import _FRONT_RE, parse, parse_file  # type: ignore
 from _home import (  # type: ignore
     RESERVED_FILES,
     RESERVED_SUBDIRS,
@@ -63,27 +72,6 @@ ASPECTS_HEADING = "## Aspects (auto)"
 
 # ─── helpers ─────────────────────────────────────────────────────────────
 
-def _extract_section(path: Path, heading: str, stop_headings: tuple[str, ...]) -> str:
-    """Read file and return verbatim text starting at `heading` (inclusive) up
-    to the next heading in `stop_headings` (exclusive). Empty if missing."""
-    if not path.is_file():
-        return ""
-    try:
-        text = path.read_text(errors="ignore")
-    except Exception:
-        return ""
-    idx = text.find(heading)
-    if idx < 0:
-        return ""
-    rest = text[idx:]
-    end = len(rest)
-    for stop in stop_headings:
-        pos = rest.find("\n" + stop, len(heading))
-        if pos >= 0 and pos < end:
-            end = pos + 1  # keep the trailing newline before stop heading
-    return rest[:end].rstrip() + "\n"
-
-
 def _extract_manual_block(path: Path) -> str:
     """Read existing MOC and return verbatim Cross-links (manual) onward.
     Empty if absent."""
@@ -93,6 +81,10 @@ def _extract_manual_block(path: Path) -> str:
         text = path.read_text(errors="ignore")
     except Exception:
         return ""
+    return _manual_block_from_text(text)
+
+
+def _manual_block_from_text(text: str) -> str:
     idx = text.find(MANUAL_HEADING)
     if idx < 0:
         return ""
@@ -101,7 +93,33 @@ def _extract_manual_block(path: Path) -> str:
 
 def _extract_tldr_block(path: Path) -> str:
     """Return verbatim `## TL;DR` section (up to next `## `). Empty if missing."""
-    return _extract_section(path, TLDR_HEADING, (ASPECTS_HEADING, MANUAL_HEADING, "## "))
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(errors="ignore")
+    except Exception:
+        return ""
+    return _tldr_block_from_text(text)
+
+
+def _tldr_block_from_text(text: str) -> str:
+    """`_extract_section(TL;DR)` on text (v4.8 semantics), extended over a
+    card that starts in the TL;DR and runs past where the section would end
+    (a hand-typed `## ` line inside the card) — the card is never cut."""
+    idx = text.find(TLDR_HEADING)
+    if idx < 0:
+        return ""
+    rest = text[idx:]
+    end = len(rest)
+    for stop in (ASPECTS_HEADING, MANUAL_HEADING, "## "):
+        pos = rest.find("\n" + stop, len(TLDR_HEADING))
+        if pos >= 0 and pos < end:
+            end = pos + 1  # keep the trailing newline before stop heading
+    region = card_region(text)
+    if region is not None and region[0] >= idx and region[1] - idx > end:
+        pos = rest.find("\n## ", region[1] - idx)
+        end = pos + 1 if pos >= 0 else len(rest)
+    return rest[:end].rstrip() + "\n"
 
 
 def _summary_line(fm: dict, fallback: str) -> str:
@@ -114,11 +132,19 @@ def _summary_line(fm: dict, fallback: str) -> str:
 
 def _first_tldr_line(path: Path) -> str:
     """Pull the first non-empty TL;DR line (after `## TL;DR`) for workspace MOC.
-    Strips leading `>` blockquote markers. Empty string if missing."""
+    Strips leading `>` blockquote markers. Empty string if missing. v4.9: card
+    lines (markers included) are never the label."""
     block = _extract_tldr_block(path)
     if not block:
         return ""
+    in_card = False
     for line in block.splitlines()[1:]:  # skip heading
+        if in_card:
+            in_card = not is_end_marker(line)
+            continue
+        if is_begin_marker(line):
+            in_card = True
+            continue
         s = line.strip()
         if not s:
             continue
@@ -127,6 +153,87 @@ def _first_tldr_line(path: Path) -> str:
             continue
         return s
     return ""
+
+
+# Frontmatter keys `rebuild_topic_readme` renders itself; any other key is
+# kept verbatim (v4.9).
+_KNOWN_FM_KEYS = ("slug", "title", "type", "status", "maturity", "created",
+                  "last_touched", "parents", "links", "aliases", "tags")
+# `_frontmatter.parse`'s own key-line test, so "known"/"unknown" agree with it.
+_FM_KEY_RE = re.compile(r"^([A-Za-z_][\w-]*)\s*:\s*(.*)$")
+
+
+def _frontmatter_items(text: str) -> list:
+    """[(key, [raw lines])] of the frontmatter block in file order: a key line
+    as `_frontmatter.parse` reads one, plus every following line that is not
+    a key line (block-list items, comments, continuation). Lines before the
+    first key are dropped, as v4.8 dropped them."""
+    m = _FRONT_RE.match(text or "")
+    if not m:
+        return []
+    items: list = []
+    for line in m.group("body").splitlines():
+        s = line.rstrip()
+        kv = _FM_KEY_RE.match(s) if s and not s.startswith("#") else None
+        if kv:
+            items.append((kv.group(1), [line]))
+        elif items:
+            items[-1][1].append(line)
+    return items
+
+
+def _unknown_frontmatter_lines(items: list) -> list:
+    """Raw lines of every key the rebuild does not render, original order;
+    trailing blank lines of an item dropped."""
+    out: list = []
+    for key, lines in items:
+        if key in _KNOWN_FM_KEYS:
+            continue
+        keep = list(lines)
+        while len(keep) > 1 and not keep[-1].strip():
+            keep.pop()
+        out.extend(keep)
+    return out
+
+
+def _as_list(value, items: list, key: str) -> list:
+    """A list frontmatter value: a list stays; a scalar is ONE item (v4.8
+    joined a string's characters: `aliases: foo` → `[f, o, o]`); an empty
+    value with `- item` lines below it (block form) yields those items."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    for k, lines in reversed(items):   # parse() keeps the LAST occurrence
+        if k != key:
+            continue
+        out = []
+        for ln in lines[1:]:
+            s = ln.strip()
+            if s.startswith("- "):
+                v = s[2:].strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                if v:
+                    out.append(v)
+        return out
+    return []
+
+
+def _fmt_item(x) -> str:
+    """One flow-list item; quoted only when it holds a comma (which would
+    split it on the next read)."""
+    x = str(x)
+    if "," in x:
+        if '"' not in x:
+            return f'"{x}"'
+        if "'" not in x:
+            return f"'{x}'"
+    return x
+
+
+def _fmt_list(values: list) -> str:
+    return "[" + ", ".join(_fmt_item(v) for v in values) + "]"
 
 
 def _aspect_preview(path: Path) -> str:
@@ -250,21 +357,26 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
     readme = topic_readme(folder)
     today = date.today().isoformat()
 
-    # Read existing frontmatter (or synthesize from folder name).
+    # Read the existing README once (or synthesize from folder name).
+    existing: str | None = None
     if readme.is_file():
-        fm, _ = parse_file(readme)
-    else:
-        fm = {}
+        try:
+            existing = readme.read_text(errors="ignore")
+        except Exception:
+            existing = None
+    fm = parse(existing)[0] if existing is not None else {}
+    items = _frontmatter_items(existing) if existing is not None else []
     slug = fm.get("slug") or folder.name
     title = fm.get("title") or slug.replace("-", " ").title()
     topic_type = fm.get("type") or "misc"
     status = fm.get("status") or "draft"
     maturity = fm.get("maturity") or "draft"
     created = fm.get("created") or today
-    parents = fm.get("parents") or []
-    links = fm.get("links") or []
-    aliases = fm.get("aliases") or []
-    tags = fm.get("tags") or []
+    parents = _as_list(fm.get("parents"), items, "parents")
+    links = _as_list(fm.get("links"), items, "links")
+    aliases = _as_list(fm.get("aliases"), items, "aliases")
+    tags = _as_list(fm.get("tags"), items, "tags")
+    extra = _unknown_frontmatter_lines(items)
 
     # Build Aspects (auto) — dated siblings, newest first, then lessons.md.
     aspect_rows: list[str] = []
@@ -309,12 +421,12 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
     if not aspect_rows:
         aspect_rows.append("(empty — dated `YYYY-MM-DD-<aspect>.md` siblings appear here after first write)")
 
-    # Preserve TL;DR + manual cross-links verbatim
-    tldr = _extract_tldr_block(readme)
+    # Preserve TL;DR (card included) + manual cross-links verbatim
+    tldr = _tldr_block_from_text(existing) if existing is not None else ""
     if not tldr:
         tldr = f"{TLDR_HEADING}\n\n> Cốt lõi 1 dòng (TODO).\n"
 
-    manual = _extract_manual_block(readme) or (
+    manual = (_manual_block_from_text(existing) if existing is not None else "") or (
         f"{MANUAL_HEADING}\n\n"
         f"(curate `[[wikilinks]]` to related topics here — preserved across MOC rebuilds)\n"
     )
@@ -328,10 +440,11 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
         f"maturity: {maturity}",
         f"created: {created}",
         f"last_touched: {today}",
-        f"parents: [{', '.join(parents)}]",
-        f"links: [{', '.join(links)}]",
-        f"aliases: [{', '.join(aliases)}]",
-        f"tags: [{', '.join(tags)}]",
+        f"parents: {_fmt_list(parents)}",
+        f"links: {_fmt_list(links)}",
+        f"aliases: {_fmt_list(aliases)}",
+        f"tags: {_fmt_list(tags)}",
+        *extra,
         "---",
         "",
     ]
@@ -344,9 +457,8 @@ def rebuild_topic_readme(folder: Path) -> Path | None:
     )
 
     # Idempotency: only write if content actually changed (mtime hygiene + git noise).
-    if readme.is_file():
+    if existing is not None:
         try:
-            existing = readme.read_text(errors="ignore")
             # Compare ignoring `last_touched:` line (otherwise we'd churn daily).
             def _strip_lt(t: str) -> str:
                 return re.sub(r"^last_touched: .+$", "last_touched: X", t, flags=re.M)

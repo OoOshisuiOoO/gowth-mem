@@ -36,6 +36,9 @@
     "archive_threshold_days": 90,
     "auto_archive_enabled": false
   },
+  "topic_card": {
+    "max_chars": 2000
+  },
   "workspace": {
     "default": "default",
     "auto_detect_from_cwd": true
@@ -80,6 +83,7 @@
     "tags": "v4.0 deterministic auto-tagging on the write path (inline #tags + frontmatter tags:, indexed as a weighted FTS5 column).",
     "topic_routing": "min_keyword_overlap: keyword overlap a topic needs to receive a routed entry; default_topic: where an entry goes when nothing matches.",
     "topic_layout": "v4.1 aspect retention: when auto_archive_enabled is true the Stop hook archives aspects older than archive_threshold_days (newest 3 per topic always kept). Default off; run /mem-ops forget --aspects by hand.",
+    "topic_card": "v4.9 topic cards (_card.py, /mem-topic card): max_chars is the budget of one card body in code points (a positive integer; anything else means 2000). A longer body is refused (rejected:over_budget) and an existing one is flagged by _validate.py (card-over-budget).",
     "workspace": "default: workspace when nothing else resolves; auto_detect_from_cwd: match config.json workspace_map globs against the session cwd.",
     "retrieval": "index_archive: also index .archive/**.gz so forgotten material stays searchable with /mem-recall --archive. daily_full_reindex (v4.8): once per day the Stop hook starts a detached full rebuild of an EXISTING index.db (the per-Stop incremental pass handles the rest; a Stop never creates the index).",
     "sync": "auto_sync_on_stop: debounced detached commit+pull+push from the Stop hook; min_interval_minutes: the debounce (floor 5).",
