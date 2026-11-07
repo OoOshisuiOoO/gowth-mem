@@ -4,6 +4,10 @@ A Claude Code plugin for **persistent, topic-organized memory** synced across ma
 
 Built on patterns from mem0, Letta/MemGPT, Zep, Cognee, MemPalace, Generative Agents, Voyager, Reflexion, Anthropic contextual retrieval, SM-2 spaced repetition, **OpenClaw "dreaming" staged consolidation**, **agentmemory 4-tier taxonomy**, and **rtk pre-storage compression**. See [`RESEARCH.md`](RESEARCH.md).
 
+**How to use it:** [docs/USAGE.md](docs/USAGE.md) — what runs on its own, the daily curator, the "must research"
+question ledger, topic cards, saving and correcting memory, bots and pipelines, troubleshooting.
+Tiếng Việt: [docs/USAGE.vi.md](docs/USAGE.vi.md).
+
 ## What's new in v4.9
 
 v4.9 keeps memory from going stale. It brings over the parts of a production bot that keep its knowledge current
@@ -347,6 +351,9 @@ See `templates/dot-gowth-mem/settings.example.v3.json` for every key with notes.
 ## 🇻🇳 Tiếng Việt
 
 Plugin Claude Code cho **bộ nhớ bền vững, tổ chức theo topic**, đồng bộ qua git remote của bạn giữa nhiều máy. State nằm ở `~/.gowth-mem/` — chia thành `shared/` (kiến thức chung) và `workspaces/<ws>/` (kiến thức theo workspace).
+
+**Hướng dẫn sử dụng đầy đủ:** [docs/USAGE.vi.md](docs/USAGE.vi.md) — cái gì tự chạy, curator hằng ngày, sổ câu hỏi
+"Phải research", thẻ topic, lưu và đính chính bộ nhớ, bot/pipeline, xử lý sự cố.
 
 ### Có gì mới ở v4.9 — kiến thức không bị cũ
 

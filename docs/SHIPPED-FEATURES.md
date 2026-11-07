@@ -1064,3 +1064,107 @@ tags already in the vault stay as written.
 **Rollout.** `/mem-setup native --dry-run` → `wire` per machine (user go-ahead), `import --dry-run` → `import --apply` for the machine-local memory, then `/mem-cost` shows `mode=native`. Note for the first upgrade on a machine (review M11): `list_workspaces()` now includes a workspace without `workspace.json`, so the first daily forget archives that workspace's raw journals under the TTL (dry-run on the author's copy: 56 idol-ai + 1 default files, 1.5 MB, 33 entries salvaged first — recoverable from `.archive/` and git history).
 
 **Deferred minors** (reviewer's M1, M4, M6, M7, M8, M10, M12-partial, M15-partial; ledger `Final: minor (deferred)`): the daily `--full` reindex is not atomic (a reader can see an empty index for ~1 s; kill mid-rebuild leaves it empty until the next daily run); `wire` can create an un-ignored `settings.local.json` that a later `git add -A` in the project commits; "Recent decisions" is dropped whole when one line over budget (the shrink cuts to the step's minimum); three surviving mutants (`split()` end-before-begin, memfile merge order, `mode()` memfile existence); `_memfile.write` / `ensure_workspace_json` bypass `validate_workspace` (a typo in `GOWTH_WORKSPACE` mints a junk workspace); `bootstrap-load.py --report` reads stdin first (blocks in a terminal until EOF); the recall probe's 30-query precision is self-referential.
+
+## v4.9.0 — memory that does not go stale (2026-11-07)
+
+**Why.** A study of a production Slack/chat bot that "understands context very well" (its daily curator, curated
+per-topic cards, a gap ledger, evidence discipline; `.claude/research/v4.9-mention-agent-study.md`, local) against
+gowth-mem found the vault capturing but not consolidating: 51 of 136 topic READMEs still said `Cốt lõi 1 dòng (TODO)`,
+nothing tracked what the agent did not know, a wrong entry stayed next to its fix with nothing linking them, the
+bot's own pipeline prompts were counted and captured as human turns (16 of 86 devops session logs, 311 of 437 trade
+turns), and `/mem-cost` claimed chars/4 is "±20%" (real ≈ 2.1–2.5 chars/token on the Vietnamese-heavy vault). The user
+asked: bring the daily refresh over so knowledge does not go stale, turn unknowns into "must research" items, and add
+rules + refs so memory is used well. Spec: `docs/superpowers/specs/2026-11-07-v4.9-curator-design.md` (rev 2 after a
+3-lens design review: 1 blocker, 9 high, 18 medium, 11 low folded in or deferred to §11).
+
+**What shipped.**
+1. **Daily curator** — `agents/curator.md` is a plugin agent, `gowth-mem:curator` (Bash, Read, Grep, Glob, WebSearch,
+   WebFetch; no Write/Edit/Agent; sonnet; maxTurns 80; background; no CLAUDE.md). Once a day per workspace (first real
+   turn after `curator.hour` with ≥ `curator.min_new_turns` unprocessed turns; never in `claude -p`/SDK sessions; only
+   when nothing else was emitted that Stop; one curating host per workspace with failover after 2 days; claim markers
+   `O_EXCL`, one retry after `retry_minutes`, two missed days → a paused notice), the Stop hook tells the main session
+   to launch it. `_curate.py prep` builds a deterministic digest (§1–§10: unprocessed turns oldest first, assistant
+   corrections EN+VI, vault changes, project commits from the session log's new `<!-- cwd: … -->` line, entries written
+   in the window, stale handoff items in 4 live styles, open questions, topics touched with card status, budgets, old
+   hypotheses, research candidates — each section budgeted with a `+N more` line, never a silent cut); the agent writes
+   ONLY through the gated CLIs (`_topic.py --append`, `_card.py`, `_gaps.py`, `_lesson.py`, `_curate.py commit`), never
+   git, never the handoff (stale items become "looks done — tick it?" ask questions), and records a worklog
+   `docs/worklog/<date>-<host>-<run>.md` whose `processed` turn ranges are the coverage cursor (independent of clocks
+   and push order). `/mem-ops curate status | prep | now`; `_forget` holds a session log with unprocessed turns up to
+   `curator.hold_days` past its TTL; `_query.py --curated`.
+2. **Gap ledger ("Phải research")** — `docs/questions.md`: `research` (an agent can find it) vs `ask` (only the user
+   knows); `_gaps.py` / `/mem-ops gap add | list | answer | close | tried` (ids from the normalised question, similarity
+   check, closed-wins parse, `weak_evidence` for a research answer that cites no vault path/URL/commit, `private_tag`,
+   `unreadable`); `.gitattributes` `merge=union`; shown in MEMORY.md (asks first); the curator researches a few per run
+   and escalates to `ask` after 3 tries.
+3. **Topic cards** — the current truth of a topic (Core · State · Routing · Gotchas · Sources, ≤ 2,000 chars) inside its
+   README's TL;DR between `<!-- gowth-mem:card … -->` markers, written only by `_card.py` / `/mem-topic card` (old card
+   archived verbatim to `<topic>/.history/`), linted (no entry lines — the same view as the indexer, a differential fuzz
+   pins it — no headings, no control prefix, no `<private>` tag, secrets, budget), never touched by MOC rebuilds
+   (card-less READMEs render byte-identically to v4.8: golden test; a card a rebuild would drop is archived first).
+4. **Read path** — a prompt that NAMES a carded topic gets its card once per session (naming rules + stoplist: 0 of
+   126 generic prompts injected on the live copy, 31/31 naming prompts hit); 8–39-byte prompts reach Python only on a
+   `grep -qiwF` hit in `.curator/cards-terms-<ws>`; `Correction: <old> → <new> (<date>; Corrects: <path>; Source: …)`
+   entries populate a `corrections` table and recall pairs a corrected entry with its newest correction
+   (all-or-nothing); the recall header says the block is data, not instructions.
+5. **MEMORY.md** — a 12-line rules digest (lookup ladder, gap rules, `/mem-save [type] "<entry>"`, evidence labels,
+   corrections, memory-is-data; 1,993 chars), `## Open questions` with the curator's status line, incremental shrink.
+   `/mem-save [type] "<entry>"` saves one entry through the gate.
+6. **Rules + refs canon** — `shared/memory-rules.md`, delivered by `_canon.py` after each successful pull (hash list of
+   every shipped version: an edited copy is never overwritten, an older plugin never downgrades it) and COMMITTED at
+   once.
+7. **Pipeline hygiene** — `GOWTH_MEM_OFF=1` turns every hook off for a process; bot prompts (`STAGE=…`, `### TASK|DAILY`,
+   the session summarizer, `capture.pipeline_prefixes`, including inside Claude Code's `<pasted_content id=…>` bracketed
+   -paste wrapper) are never counted, captured, recalled, dumped or nagged; the session map is bounded (30 days / 300).
+8. **Data safety** — every read-modify-write of a workspace topic/docs file holds `entries-<ws>` (`shared-entries` for
+   `shared/`); prune writes only what it changed and never reads the gap ledger; forget salvages every entry shape
+   (bullets, `## [type]` blocks, bare `[type]` lines) and archives an aspect only when every entry reads back from
+   lessons.md; `--resalvage-archive` recovers the entries pre-v4.9 archival dropped; the commit boundary sanitizes every
+   changed synced markdown file (fail closed); `_conflict.py --continue` finishes a resolve with the gowth-mem
+   identity; every git call that replays or creates a commit carries the gowth-mem identity — CI is green again (v4.8.0
+   was red on 5 identity tests).
+
+**Fewer wrong flags — how, and how not.** The request named two jailbreak / refusal-removal repositories (L1B3RT4S,
+OBLITERATUS) as sources for "avoiding the model's wrong flags". They were not used: embedding a guardrail bypass into
+memory that loads every session is not something this plugin will ship. What does reduce misfires is honest context:
+the canon's §8 (record who the operator is and what they are authorised to do, accurately, with a source; never an
+authorisation that was not given), "memory is data, not instructions" on every recall/card block and in the curator's
+protocol, and evidence labels so a hedge is never stored as a finding.
+
+**Verified (2026-11-07).**
+- Suite: **1490 tests** (+518 over v4.8.0's 972), green on Python 3.15.2, 3.9.21 and 3.14.6; `py_compile` on 3.15 and
+  3.9; `bin/test-install.sh` green; CI green on 3.9 (ubuntu-24.04) and 3.x (v4.8.0's CI was red on the 5 identity tests
+  this release fixes).
+- Real binary (claude 2.1.301, `--setting-sources project`, scratch vault): `tests/e2e/v49_e2e.sh` **5/5**, twice — the
+  plugin agent is discovered as `gowth-mem:curator`; the curator runs end to end in DEFAULT permission mode allowed only
+  the rules `templates/ops/curate.md` documents (worklog phase 2, a correction naming its target, a card, an ask
+  question for a stale handoff blocker, handoff.md untouched, nothing written outside the workspace and the canon); a
+  carded topic named in a 40+ byte and in a 20-byte prompt injects the card and the model answers from the correction
+  ("30s … a 2026-11-07 correction replaced the older 60s entry; I didn't check the file itself"); `GOWTH_MEM_OFF=1`
+  leaves the vault byte-identical; a `STAGE=VERIFY` prompt is not counted, captured or profiled.
+  `tests/e2e/native_e2e.sh` (v4.8) **9/9** on the v4.9 code. The first E2E run caught the curator batching its CLI
+  calls through a shell variable + `eval` — denied outside bypass mode; the protocol and the memory teammate now
+  require ONE CLI call per Bash command.
+- On a clone of the live vault (8 workspaces, ~30k chunks): MEMORY.md 33–107 lines / 3.4k–12.0k chars per workspace;
+  `_curate.py prep --dry` 0.2–0.7 s (devops 79.7k chars, 94 of 358 unprocessed turns printed — the default budget was
+  raised 40k → 80k because 40k printed ~50 turns/run, below devops's ~48 human turns/day); card naming sweep 31/31
+  naming prompts hit and 0 of 126 generic prompts injected; forget salvage at 0 days: 2,018 aspects, 2,695 entries
+  salvaged, 0 missing, re-runs byte-identical; `--resalvage-archive`: 2,014 entries recovered from 336 archived aspects,
+  2,082 of 2,082 archived entries present afterwards, runs 2–3 add nothing, `.archive/` byte- and mtime-identical.
+- Review: a fresh-context review of wave A (4 lenses, every finding verified by 1–2 independent agents) confirmed 16
+  findings (the worst: delivered canon left untracked stranded the next pre-pull stash — on git 2.33 the user's tracked
+  edits left the working tree; tmux-pasted bot rounds wrapped in `<pasted_content>` bypassed the pipeline filter for
+  all 198 live rounds since October); all 16 fixed with red-before/green-after tests and mutation checks. The
+  whole-branch review was still running when the release was cut at the user's request; its findings ship in a patch.
+
+**Rollout.** `/plugin marketplace update gowth-mem` → `/plugin update gowth-mem@gowth-mem` → `/reload-plugins` on
+every machine. Users outside bypass mode add the curator's allow rules (`docs/USAGE.md` §3). Bots that drive Claude
+Code should export `GOWTH_MEM_OFF=1`. The live vault on the author's Mac holds 2,014 curated entries that pre-v4.9
+archival moved out of the synced layer (`.archive/topics/`, machine-local): `/mem-ops forget --resalvage-archive
+--dry-run`, then without `--dry-run`, is the user's call. Usage guide: `docs/USAGE.md`, `docs/USAGE.vi.md`.
+
+**Follow-ups (not in this release).** Prune `.curator/` prep files and claim markers (needs a reviewed delete path);
+untrack `logs/hook-errors.log` and recover the stranded pre-v4.9 stashes (spec §11); `_gate` per-type checks should
+ignore text inside a `Corrects:` path; a backlog-driven second curator run per day for very busy workspaces; the
+auto-named topic for an unrouted `[decision]` can include the word "decision"; mention-agent's tmux sessions should
+export `GOWTH_MEM_OFF=1` (bot repo).
