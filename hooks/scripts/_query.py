@@ -87,6 +87,10 @@ def _ws_predicate(ws: str, params: list, archive: bool = False) -> str:
 # An exclude containing '%' is a raw LIKE pattern; a plain prefix matches
 # `%/<prefix>%`.
 DEFAULT_EXCLUDES = ("workspaces/%/research/%", "workspaces/%/docs/handoff-archive.md")
+# v4.9 `--curated`: curated memory only — no raw session logs / journals, no
+# curator worklogs, no gap ledger, no Claude auto-memory notes. The curator
+# checks "is this fact already stored?" against exactly this layer.
+CURATED_EXCLUDES = ("journal/", "docs/worklog/", "docs/questions.md", "memory/")
 
 
 def _exclude_pattern(prefix: str) -> str:
@@ -394,13 +398,17 @@ if __name__ == "__main__":
     ap.add_argument("--include-research", action="store_true",
                     help="also rank research/ scratch notes and docs/handoff-archive.md "
                          "(excluded from recall by default since v4.8)")
+    ap.add_argument("--curated", action="store_true",
+                    help="curated memory only: excludes journal/, docs/worklog/, "
+                         "docs/questions.md and memory/ (v4.9)")
     ap.add_argument("query_pos", nargs="*", help="Query terms (joined; same as --query)")
     args = ap.parse_args()
 
     query = args.query or " ".join(args.query_pos)
     res = query_ex(ws=args.ws, tag=args.tag, query=query, limit=args.limit,
                    keyword=args.keyword, topic=args.topic, days=args.days,
-                   include_archive=args.archive, include_research=args.include_research)
+                   include_archive=args.archive, include_research=args.include_research,
+                   exclude=CURATED_EXCLUDES if args.curated else ())
     hits = res["hits"]
     if res["error"]:
         # v4.3: an invalid or unsearchable query is NOT "no results" — say so, or the

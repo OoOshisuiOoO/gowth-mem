@@ -68,6 +68,53 @@ def read_settings() -> dict:
     return _read_json(gowth_home() / "settings.json")
 
 
+# ─── host identity (v4.9) ─────────────────────────────────────────────────
+
+HOST_ID_MAX = 24
+_HOST_KEEP = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
+HOST_ID_FALLBACK = "host"
+
+
+def normalize_host(raw) -> str:
+    """`raw` lowercased to `[a-z0-9-]` (any other run of characters becomes ONE
+    `-`), no leading/trailing `-`, at most 24 chars; '' when nothing usable
+    remains. Pure character scan — linear, never raises."""
+    if not isinstance(raw, str):
+        return ""
+    out: list = []
+    dash = True                      # suppresses a leading "-"
+    for c in raw.strip().lower():
+        if c in _HOST_KEEP:
+            out.append(c)
+            dash = False
+        elif not dash:
+            out.append("-")
+            dash = True
+        if len(out) > HOST_ID_MAX:
+            break
+    return "".join(out).strip("-")[:HOST_ID_MAX].strip("-")
+
+
+def host_id(config=None) -> str:
+    """The curator's name for this machine (v4.9 spec §4.3): config.json
+    `host_id`, else the first label of `socket.gethostname()`; normalised by
+    `normalize_host` (lowercase `[a-z0-9-]`, <= 24 chars); never empty
+    (`host` when nothing usable is left). Worklog file names and the
+    one-curating-host-per-workspace rule key on it. `config` = an already
+    loaded config.json dict (default: read it)."""
+    cfg = read_config() if config is None else config
+    raw = cfg.get("host_id") if isinstance(cfg, dict) else None
+    hid = normalize_host(raw) if isinstance(raw, str) else ""
+    if not hid:
+        try:
+            import socket
+            name = socket.gethostname() or ""
+        except Exception:
+            name = ""
+        hid = normalize_host(name.split(".")[0])
+    return hid or HOST_ID_FALLBACK
+
+
 # ─── typed settings access (v4.8) ────────────────────────────────────────
 
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on"})

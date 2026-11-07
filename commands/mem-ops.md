@@ -19,6 +19,7 @@ No `<sub>`, or one not in the table: print the table and stop.
 | changelog | themed changelog rolled up from the memory repo's commit history |
 | compress | rtk-style pre-storage compression of repeated lines |
 | config | configure git remote, branch and token for the vault sync |
+| curate | daily curator — status, a dry digest (prep), or run it now (docs/worklog/) |
 | dream | 3-phase dreaming consolidation (Light → REM → Deep) on one or all workspaces |
 | forget | archive raw journal past its TTL (and aged aspects with --aspects) |
 | gap | open questions ledger — add, list, answer, close or mark tried (docs/questions.md) |

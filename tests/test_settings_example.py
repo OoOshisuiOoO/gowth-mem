@@ -44,6 +44,11 @@ CODE_KEYS = [
     "memfile.max_lines", "memfile.max_chars",
     "capture.pipeline_prefixes",
     "topic_card.max_chars",
+    # v4.9 WP-B1 daily curator
+    "curator.enabled", "curator.hour", "curator.min_new_turns", "curator.first_window_days",
+    "curator.stale_days", "curator.max_cards", "curator.max_research", "curator.max_research_tries",
+    "curator.retry_minutes", "curator.hold_days", "curator.max_prep_chars", "curator.model",
+    "curator.hosts",
 ]
 # Deliberately undocumented: reflection.capture_enabled (an explicit true in the
 # example would defeat the enabled:false privacy opt-out) and the legacy

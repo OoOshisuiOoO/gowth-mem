@@ -258,6 +258,14 @@ def _report(ws: str, cwd: str, settings: dict) -> int:
                   f"{len(daily)} day(s) of recall_daily")
     except Exception as exc:
         print(f"recall: (no telemetry: {exc})")
+    # v4.9 daily curator: one line per workspace (last run, misses, open
+    # questions, cards TODO) — `_curate.py status` has the full rows.
+    try:
+        from _curate import report_lines  # type: ignore
+        for line in report_lines(settings):
+            print(line)
+    except Exception as exc:
+        print(f"curator: (no status: {exc})")
     if mode_ != "native":
         print("native memory not wired for this project: run /mem-setup native")
     return 0

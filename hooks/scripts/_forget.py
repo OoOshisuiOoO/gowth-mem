@@ -674,6 +674,28 @@ def forget_aspects(ws: str, threshold_days: int | None, keep_newest: int,
             "shapes": shapes, "threshold_days": threshold_days}
 
 
+def _curator_held(ws: str, ttl_days: int, now: float):
+    """v4.9 curator hold (spec §4.3): while `curator.enabled`, a session log
+    that still has unprocessed turns (`_curate.unprocessed`) is kept up to
+    `curator.hold_days` past its TTL. Returns (stems held, hard cutoff
+    timestamp) — a held log older than ttl + hold_days is archived anyway.
+    Any failure → nothing held (archival as before)."""
+    try:
+        from _home import read_settings, setting  # type: ignore
+        s = read_settings()                    # one snapshot for the knobs and the coverage
+        if not setting("curator.enabled", bool, True, settings=s):
+            return set(), now
+        hold = setting("curator.hold_days", int, 30, settings=s)
+        hold = max(0, min(365, hold if isinstance(hold, int) and not isinstance(hold, bool) else 30))
+        if hold <= 0:
+            return set(), now
+        from _curate import unprocessed  # type: ignore
+        return set(unprocessed(ws, s)), now - (ttl_days + hold) * 86400
+    except Exception as e:
+        log_debug("forget", f"curator hold skipped for {ws}: {e}")
+        return set(), now
+
+
 def forget_workspace(ws: str, ttl_days: int, max_bytes: int, salvage: bool,
                      dry_run: bool, gh: Path) -> dict:
     jd = journal_dir(ws)
@@ -713,12 +735,15 @@ def forget_workspace(ws: str, ttl_days: int, max_bytes: int, salvage: bool,
     session_candidates: list[Path] = []
     session_dir = jd / "sessions"
     if session_dir.is_dir():
+        held, hold_cutoff = _curator_held(ws, ttl_days, now)   # v4.9 curator hold
         for f in sorted(session_dir.glob("*.md")):
             if f.name.startswith("_"):
                 continue
             try:
                 st = f.stat()
             except OSError:
+                continue
+            if f.stem in held and st.st_mtime >= hold_cutoff:
                 continue
             if _is_candidate(st):
                 session_candidates.append(f)
