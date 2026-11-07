@@ -21,6 +21,7 @@ No `<sub>`, or one not in the table: print the table and stop.
 | config | configure git remote, branch and token for the vault sync |
 | dream | 3-phase dreaming consolidation (Light → REM → Deep) on one or all workspaces |
 | forget | archive raw journal past its TTL (and aged aspects with --aspects) |
+| gap | open questions ledger — add, list, answer, close or mark tried (docs/questions.md) |
 | gate | scan existing memory for entries that violate the write rules |
 | journal | open or create today's journal entry in the vault |
 | lint | heuristic contradiction lint across [ref]/[decision]/[tool] entries |
