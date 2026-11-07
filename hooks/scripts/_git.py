@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,27 @@ def run_git(cwd: Path, *args: str, check: bool = True,
 def auth_url(remote: str, token: Optional[str]) -> str:
     """Return the remote URL (token is never embedded in URL — use HTTP header)."""
     return remote
+
+
+def identity_host(config: Optional[dict] = None) -> str:
+    """The `<host>` of `gowth-mem@<host>` — the value the commit paths stamp:
+    config.json `host_id`, else the machine's hostname."""
+    cfg = load_config() if config is None else config
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return str(cfg.get("host_id") or socket.gethostname())
+
+
+def identity_args(host: Optional[str] = None) -> list:
+    """`-c user.name=gowth-mem -c user.email=gowth-mem@<host>` for EVERY git call
+    that can create a commit: commit, pull --rebase (it replays local commits),
+    rebase --continue, stash push.
+
+    v4.9 (spec §3.4): the pull and rebase paths ran without it, so a machine
+    with no global identity — CI, a fresh box, `user.useConfigOnly=true` —
+    could not replay a single local commit: the pull failed with "Please tell
+    me who you are" and the MEMORY.md self-merge never finished."""
+    return ["-c", "user.name=gowth-mem", "-c", f"user.email=gowth-mem@{host or identity_host()}"]
 
 
 def load_config() -> dict:

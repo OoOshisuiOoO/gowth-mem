@@ -25,7 +25,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _atomic import atomic_write  # type: ignore
-from _git import auth_url, git_cmd, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
+from _git import auth_url, git_cmd, identity_args, load_config, run_git  # type: ignore  # noqa: F401 (git_cmd re-exported for tests)
 from _home import conflict_md, gowth_home, read_settings  # type: ignore
 from _debug import log_debug  # type: ignore
 from _lock import file_lock  # type: ignore
@@ -203,7 +203,9 @@ def main() -> int:
                     except subprocess.CalledProcessError as e:
                         print(f"WARN: initial commit failed: {e.stderr}", file=sys.stderr)
                 try:
-                    run_git(gh, "pull", "origin", branch,
+                    # v4.9: a rebase REPLAYS local commits — it needs the same
+                    # identity the commit paths pass (spec §3.4)
+                    run_git(gh, *identity_args(host), "pull", "origin", branch,
                             "--allow-unrelated-histories", "--rebase",
                             remote=remote, token=token)
                     print(f"init: pulled origin/{branch}")
@@ -218,7 +220,7 @@ def main() -> int:
                         print(f"init: remote {branch} doesn't exist yet — will create on push")
                     elif "CONFLICT" in err:
                         from _conflict import package_conflict  # type: ignore
-                        if package_conflict() is None:
+                        if package_conflict(host=host) is None:
                             print("init: memory/MEMORY.md conflict merged automatically")
                         else:
                             print("init: conflict — wrote SYNC-CONFLICT.md, run /mem-sync resolve",
@@ -262,15 +264,15 @@ def main() -> int:
                         print(f"WARN: commit failed: {e.stderr.strip()[:200]}")
 
             if not args.push_only:
-                r = run_git(gh, "pull", "--rebase", "origin", branch, check=False,
-                            remote=remote, token=token)
+                r = run_git(gh, *identity_args(host), "pull", "--rebase", "origin", branch,
+                            check=False, remote=remote, token=token)
                 if r.returncode != 0:
                     err = (r.stderr or "") + (r.stdout or "")
                     if "CONFLICT" not in err:
                         print(f"sync: pull failed: {err.strip()[:300]}", file=sys.stderr)
                         return 1
                     from _conflict import package_conflict  # type: ignore
-                    if package_conflict() is not None:
+                    if package_conflict(host=host) is not None:
                         print("sync: conflict — wrote SYNC-CONFLICT.md, run /mem-sync resolve",
                               file=sys.stderr)
                         return 2
